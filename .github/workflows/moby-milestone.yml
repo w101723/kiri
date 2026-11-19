@@ -268,12 +268,36 @@ jobs:
           tar -czf Kiri-Moby-macos-arm64-app.tgz -C packaged "Kiri Moby.app"
           shasum -a 256 Kiri-Moby-macos-arm64-app.tgz > Kiri-Moby-macos-arm64-app.tgz.sha256
           ls -lh Kiri-Moby-macos-arm64-app.tgz
+      - name: Label unsigned/ad-hoc artifact as development-only
+        run: |
+          printf '%s\n' "Ad-hoc development build only; do not use for Gatekeeper-trusted updates." > DEV-ADHOC-ONLY.txt
+      - name: Developer ID sign + notarize for normal macOS updates
+        id: notarize
+        env:
+          MACOS_DEVELOPER_ID_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
+          MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          MACOS_DEVELOPER_ID_IDENTITY: ${{ secrets.MACOS_DEVELOPER_ID_IDENTITY }}
+          APPLE_NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: bash scripts/moby/sign-notarize-macos.sh "packaged/Kiri Moby.app"
+      - uses: actions/upload-artifact@v4
+        if: steps.notarize.outputs.notarized == 'true'
+        with:
+          name: Kiri-Moby-macos-arm64-DeveloperID-notarized
+          path: |
+            Kiri-Moby-macos-arm64-notarized.dmg
+            Kiri-Moby-macos-arm64-notarized.dmg.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
           name: Kiri-Moby-macos-arm64-app
           path: |
             Kiri-Moby-macos-arm64-app.tgz
             Kiri-Moby-macos-arm64-app.tgz.sha256
+            DEV-ADHOC-ONLY.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
