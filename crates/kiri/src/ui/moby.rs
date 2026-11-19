@@ -105,24 +105,103 @@ fn host_binary() -> io::Result<PathBuf> {
 
 fn install_guest_assets(data: &Path) -> io::Result<()> {
     let dest = data.join("guest");
+    let Some(resources) = resources() else { return Ok(()); };
+    let assets = resources.join("guest");
+    if !assets.is_dir() { return Ok(()); }
+
+    let files = [
+        "Image", "initramfs.cpio", "data.img.tgz",
+        "system.img.tgz", "rootfs.revision", "SHA256SUMS",
+    ];
+    let source_revision = resources.join("SOURCE_REVISION");
+    if source_revision.is_file() {
+        // App upgrades only: replace the bundled, versioned Guest boot
+        // assets as ONE directory, never edit the writable Docker data disk.
+        // Acquire the SAME disk lock used by the Host to avoid upgrading while
+        // any VM owns the persistent ext4 disk, even if its API isn't ready.
+        use std::os::fd::AsRawFd;
+        let lock = OpenOptions::new().create(true).read(true).write(true)
+            .open(data.join("moby-vm.lock"))?;
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(io::Error::new(io::ErrorKind::WouldBlock,
+                "Kiri Moby VM is running or starting; refusing to change Guest assets"));
+        }
+        let rev = fs::read_to_string(&source_revision)?;
+        let rev = rev.trim();
+        if rev.len() != 40 || !rev.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                "invalid bundled SOURCE_REVISION"));
+        }
+        if fs::symlink_metadata(&dest).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                "refusing to install Guest into symlink"));
+        }
+        let installed = fs::read_to_string(dest.join("SOURCE_REVISION"))
+            .ok().is_some_and(|old| old.trim() == rev);
+        if installed && files.iter().all(|file| dest.join(file).is_file()) {
+            return Ok(());
+        }
+        for file in files {
+            if !assets.join(file).is_file() {
+                return Err(io::Error::new(io::ErrorKind::NotFound,
+                    format!("bundled Kiri Moby Guest asset is missing: {file}")));
+            }
+        }
+        let stage = data.join(format!(".guest-staging-{}", std::process::id()));
+        if stage.exists() {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists,
+                format!("partial Guest asset staging at {}", stage.display())));
+        }
+        fs::create_dir(&stage)?;
+        fs::set_permissions(&stage, fs::Permissions::from_mode(0o700))?;
+        // Files are the signed App's copy; check the bundled SHA256SUMS before
+        // publishing the new assets. Old assets remain intact on any failure.
+        for file in files {
+            fs::copy(assets.join(file), stage.join(file))?;
+        }
+        let verified = Command::new("/usr/bin/shasum")
+            .args(["-a", "256", "-c", "SHA256SUMS"])
+            .current_dir(&stage)
+            .stdout(Stdio::null())
+            .status()?;
+        if !verified.success() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                "bundled Guest asset SHA256 verification failed"));
+        }
+        fs::write(stage.join("SOURCE_REVISION"), format!("{rev}\n"))?;
+
+        // Keep a whole rollback directory. There are only two renames:
+        // either boot assets are old, or new. Docker layers and volumes are
+        // NEVER inside guest/, and are never copied or removed here.
+        let backup = data.join(format!("guest-backup-{}-{}", rev, std::process::id()));
+        if backup.exists() {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists,
+                format!("Guest backup already exists at {}", backup.display())));
+        }
+        let had_old = dest.exists();
+        if had_old { fs::rename(&dest, &backup)?; }
+        if let Err(error) = fs::rename(&stage, &dest) {
+            if had_old { let _ = fs::rename(&backup, &dest); }
+            return Err(error);
+        }
+        // Lock is released when its owning descriptor is dropped. The new
+        // launcher then takes that same exclusive lock before VM creation.
+        return Ok(());
+    }
+
+    // CLI/sideloaded installs without an App SOURCE_REVISION still retain
+    // historical copy-if-missing behavior, not automatic upgrade behavior.
     fs::create_dir_all(&dest)?;
     fs::set_permissions(&dest, fs::Permissions::from_mode(0o700))?;
-    let Some(assets) = resources().map(|r| r.join("guest")) else {
-        return Ok(());
-    };
-    // Do not modify the VM's existing disk or mutate boot assets while it runs.
-    // Upgrades of existing assets are handled offline by the verified
-    // milestone installer, not by a running GUI.
-    for file in ["Image", "initramfs.cpio", "data.img.tgz", "system.img.tgz", "rootfs.revision", "SHA256SUMS"] {
-        let target = dest.join(file);
-        if !target.is_file() && assets.join(file).is_file() {
+    for file in files {
+        if !dest.join(file).is_file() && assets.join(file).is_file() {
             let staging = dest.join(format!(".{file}.new"));
             if staging.exists() {
                 return Err(io::Error::new(io::ErrorKind::AlreadyExists,
-                    format!("partial guest asset install at {}", staging.display())));
+                    format!("partial Guest asset install at {}", staging.display())));
             }
             fs::copy(assets.join(file), &staging)?;
-            fs::rename(&staging, &target)?;
+            fs::rename(&staging, dest.join(file))?;
         }
     }
     Ok(())
