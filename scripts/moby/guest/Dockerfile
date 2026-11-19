@@ -4,6 +4,7 @@ RUN apk add --no-cache docker containerd runc iptables ip6tables iproute2 ca-cer
  && command -v dockerd && command -v containerd && command -v runc \
  && command -v iptables && command -v udhcpc \
  && /bin/busybox --list | grep -qx switch_root \
+ && /bin/busybox --list | grep -qx blkid \
  && dockerd --version && containerd --version && runc --version
 COPY init /init
 COPY udhcpc-script /usr/local/sbin/kiri-udhcpc

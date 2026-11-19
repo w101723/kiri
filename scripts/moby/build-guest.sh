@@ -74,6 +74,9 @@ sudo mknod -m 600 "$work/boot/dev/console" c 5 1
 sudo mknod -m 666 "$work/boot/dev/null" c 1 3
 # Confirm the tiny root can execute BusyBox with only its packaged loader.
 sudo chroot "$work/boot" /bin/busybox true
+# Enumerating two virtio disks by letter is unsafe: the tiny root must be
+# able to match partitionless ext4 labels before mounting writable storage.
+sudo chroot "$work/boot" /bin/busybox --list | grep -Fxq blkid
 (cd "$work/boot" && sudo find . -print0 | LC_ALL=C sort -z |
   sudo cpio --null --quiet -o -H newc) > "$out/initramfs.cpio"
 

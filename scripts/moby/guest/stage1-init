@@ -13,9 +13,27 @@ $bb mount -t sysfs sysfs /sys || die "mount /sys"
 $bb mount -t devtmpfs devtmpfs /dev || die "mount /dev"
 exec >/dev/console 2>&1
 
-log "Mounting persistent ext4 root (vda) and read-only system image (vdb)"
-$bb mount -t ext4 -o noatime /dev/vda /newroot || die "mount Docker data/root disk"
-$bb mount -t ext4 -o ro,noatime /dev/vdb /seed || die "mount signed read-only OS seed"
+# Linux device enumeration can differ between boots. Require distinct ext4
+# labels before mounting anything writable: never mount the OS seed RW.
+data_dev=""
+seed_dev=""
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    for device in /dev/vda /dev/vdb /dev/vdc; do
+        [ -b "$device" ] || continue
+        label="$($bb blkid -s LABEL -o value "$device" 2>/dev/null || true)"
+        case "$label" in
+            kiri-moby) data_dev="$device" ;;
+            kiri-system) seed_dev="$device" ;;
+        esac
+    done
+    [ -n "$data_dev" ] && [ -n "$seed_dev" ] && break
+    $bb sleep 1
+done
+[ -n "$data_dev" ] && [ -n "$seed_dev" ] &&
+    [ "$data_dev" != "$seed_dev" ] || die "missing Kiri data or system disk label"
+log "Mounting persistent root $data_dev and read-only OS seed $seed_dev"
+$bb mount -t ext4 -o noatime "$data_dev" /newroot || die "mount Docker data/root disk"
+$bb mount -t ext4 -o ro,noatime "$seed_dev" /seed || die "mount signed read-only OS seed"
 
 stamp=.kiri-moby-rootfs-revision
 [ -r "/seed/$stamp" ] || die "system image has no rootfs revision"
