@@ -1,0 +1,40 @@
+name: Moby bridge verification
+
+on:
+  push:
+    branches: [moby-engine]
+  pull_request:
+    paths:
+      - 'crates/kiri-moby-bridge/**'
+      - 'crates/kiri-vmm/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/moby-bridge.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  guest:
+    name: Linux arm64 guest transport / Rust tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - name: Host unit tests
+        run: cargo test -p kiri-moby-bridge --lib
+      - name: Compile guest for Linux arm64
+        run: cargo check -p kiri-moby-bridge --bin kiri-moby-guest --target aarch64-unknown-linux-musl
+
+  macos:
+    name: Apple Silicon host compile check
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Cross-check arm64 macOS host (does not boot a VM)
+        run: cargo check -p kiri-moby-bridge --bin kiri-moby-host --target aarch64-apple-darwin
