@@ -5,7 +5,7 @@ on:
   # Build a single integrated artifact automatically when this milestone
   # workflow changes, without re-building the 90-minute kernel every push.
   push:
-    branches: [moby-engine]
+    branches: [moby-engine, memory-reclaim]
     paths:
       - ".github/workflows/moby-milestone.yml"
 
@@ -15,6 +15,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   guest:
@@ -23,6 +24,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-unknown-linux-musl
@@ -34,7 +37,221 @@ jobs:
         run: cargo build --release --target aarch64-unknown-linux-musl -p kiri-moby-bridge --bin kiri-moby-guest
       - name: Build standard Docker Guest and data disk template
         run: ./scripts/moby/build-guest.sh
-      - name: Build Linux ARM64 kernel
+      - name: Reuse exact-kernel verified ARM64 artifact if sources match
+        id: reuse_kernel
+        if: github.ref_name == 'memory-reclaim'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Reuse only a verified kernel from the successful milestone run,
+          # and only when source/config/build scripts are identical.
+          prior="3024338cf42d0fa8efc705328b71279caf3e78b0"
+          if ! git cat-file -e "$prior^{commit}" 2>/dev/null ||
+             ! git diff --quiet "$prior" HEAD -- guest/kernel xtask; then
+            echo 'reused=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! command -v gh >/dev/null 2>&1; then
+            echo 'reused=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p /tmp/kiri-kernel-previous
+          if ! gh run download 44546791830 --repo w101723/kiri               --name milestone-guest-arm64 --dir /tmp/kiri-kernel-previous; then
+            echo 'reused=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tar -xzf /tmp/kiri-kernel-previous/kiri-moby-guest-arm64.tgz             -C /tmp/kiri-kernel-previous Image SHA256SUMS
+          ( cd /tmp/kiri-kernel-previous
+            grep ' Image      - name: Bundle Guest with file checksums
+        run: |
+          cp guest/out/Image target/moby-guest/Image
+          (cd target/moby-guest && sha256sum Image >> SHA256SUMS)
+          tar -C target/moby-guest -czf kiri-moby-guest-arm64.tgz Image initramfs.cpio data.img.tgz SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: milestone-guest-arm64
+          path: kiri-moby-guest-arm64.tgz
+          compression-level: 0
+          retention-days: 14
+
+  host:
+    name: Apple Silicon Host (Intel macOS cross-link and sign)
+    runs-on: macos-15-intel
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Run Host-side protocol tests
+        run: cargo test -p kiri-moby-bridge --lib --target x86_64-apple-darwin
+      - name: Compile isolated libkrun v2 memory-replacement API probe
+        run: |
+          clang -std=c11 -Wall -Wextra -Werror -arch arm64             -o /tmp/kiri-libkrun-probe scripts/moby/libkrun2-memory-probe.c
+          test "$(lipo /tmp/kiri-libkrun-probe -archs)" = "arm64"
+      - name: Cross-build, verify ARM64 and sign Host
+        run: |
+          set -euo pipefail
+          cargo build --release -p kiri-moby-bridge --bin kiri-moby-host --target aarch64-apple-darwin
+          binary="target/aarch64-apple-darwin/release/kiri-moby-host"
+          test "$(lipo "$binary" -archs)" = "arm64"
+          codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$binary"
+          codesign --verify --strict --verbose=2 "$binary"
+          tar -C target/aarch64-apple-darwin/release -czf kiri-moby-host-arm64.tgz kiri-moby-host
+      - uses: actions/upload-artifact@v4
+        with:
+          name: milestone-host-arm64
+          path: kiri-moby-host-arm64.tgz
+          retention-days: 14
+      - name: Build native Apple Silicon Kiri Moby GUI
+        run: |
+          set -euo pipefail
+          cargo build --release -p kiri --target aarch64-apple-darwin
+          bin="target/aarch64-apple-darwin/release/kiri"
+          test "$(lipo "$bin" -archs)" = "arm64"
+          codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$bin"
+          codesign --verify --strict --verbose=2 "$bin"
+          tar -C target/aarch64-apple-darwin/release -czf kiri-moby-gui-arm64.tgz kiri
+      - uses: actions/upload-artifact@v4
+        with:
+          name: milestone-gui-arm64
+          path: kiri-moby-gui-arm64.tgz
+          retention-days: 14
+
+  bundle:
+    name: Unified Kiri Moby.app for Apple Silicon
+    needs: [guest, host]
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: milestone-guest-arm64
+          path: downloaded/guest
+      - uses: actions/download-artifact@v4
+        with:
+          name: milestone-host-arm64
+          path: downloaded/host
+      - uses: actions/download-artifact@v4
+        with:
+          name: milestone-gui-arm64
+          path: downloaded/gui
+      - name: Assemble same-commit verified Host+Guest bundle
+        run: |
+          set -euo pipefail
+          mkdir -p assembled/guest assembled/bin
+          tar -xzf downloaded/guest/kiri-moby-guest-arm64.tgz -C assembled/guest Image initramfs.cpio data.img.tgz SHA256SUMS
+          tar -xzf downloaded/host/kiri-moby-host-arm64.tgz -C assembled/bin kiri-moby-host
+          (cd assembled/guest && shasum -a 256 -c SHA256SUMS)
+          printf '%s\n' "${{ github.sha }}" > assembled/SOURCE_REVISION
+          (cd assembled && shasum -a 256 guest/Image guest/initramfs.cpio guest/data.img.tgz guest/SHA256SUMS bin/kiri-moby-host SOURCE_REVISION > BUNDLE_SHA256SUMS)
+          tar -C assembled -czf kiri-moby-macos-arm64-bundle.tgz guest bin SOURCE_REVISION BUNDLE_SHA256SUMS
+      - name: Fetch pinned official Docker CLI, Compose and Buildx
+        run: |
+          set -euo pipefail
+          mkdir -p downloaded/cli
+          curl -fL --retry 3 --retry-delay 2 -o downloaded/cli/docker.tgz \
+            https://download.docker.com/mac/static/stable/aarch64/docker-29.9.2.tgz
+          curl -fL --retry 3 --retry-delay 2 -o downloaded/cli/docker-compose \
+            https://github.com/docker/compose/releases/download/v5.6.1/docker-compose-darwin-aarch64
+          curl -fL --retry 3 --retry-delay 2 -o downloaded/cli/docker-buildx \
+            https://github.com/docker/buildx/releases/download/v0.38.1/buildx-v0.38.1.darwin-arm64
+          echo 'ea8a2ce5ac31f9f5f3fb711a7a485e1e46cc7a69798a629a70306f6e6af25b7a  downloaded/cli/docker.tgz' | shasum -a 256 -c -
+          echo 'fcce41226abd2b7b2936094e688bbd61284673dddafea542e08cb9a3b4423a8b  downloaded/cli/docker-compose' | shasum -a 256 -c -
+          echo '6f20ba2437865311ef99015bf5d1039c3c8e4d2177c1c64aa41b134b5ecd3012  downloaded/cli/docker-buildx' | shasum -a 256 -c -
+      - name: Build and sign single native Kiri Moby.app
+        run: |
+          set -euo pipefail
+          app="packaged/Kiri Moby.app"
+          mac="$app/Contents/MacOS"
+          res="$app/Contents/Resources"
+          mkdir -p "$mac" "$res/guest" "$res/bin/cli-plugins"
+          tar -xzf downloaded/gui/kiri-moby-gui-arm64.tgz -C "$mac" kiri
+          chmod 755 "$mac/kiri"
+          cp assembled/guest/Image assembled/guest/initramfs.cpio \
+             assembled/guest/data.img.tgz assembled/guest/SHA256SUMS "$res/guest/"
+          cp assembled/bin/kiri-moby-host "$res/bin/kiri-moby-host"
+          cp assembled/SOURCE_REVISION "$res/SOURCE_REVISION"
+          tar -xzf downloaded/cli/docker.tgz -C downloaded/cli docker/docker
+          cp downloaded/cli/docker/docker "$res/bin/docker"
+          cp downloaded/cli/docker-compose "$res/bin/cli-plugins/docker-compose"
+          cp downloaded/cli/docker-buildx "$res/bin/cli-plugins/docker-buildx"
+          chmod 755 "$res/bin/kiri-moby-host" "$res/bin/docker" \
+            "$res/bin/cli-plugins/docker-compose" "$res/bin/cli-plugins/docker-buildx"
+          cp LICENSE NOTICE "$res/"
+          mkdir -p packaged/Kiri.iconset
+          for spec in '16 1' '16 2' '32 1' '32 2' '128 1' '128 2' '256 1' '256 2' '512 1' '512 2'; do
+            set -- $spec
+            size="$1"
+            scale="$2"
+            pixels="$((size * scale))"
+            if [ "$scale" = 1 ]; then
+              name="icon_${size}x${size}.png"
+            else
+              name="icon_${size}x${size}@2x.png"
+            fi
+            cp "brand/icon/png/kiri-app-icon-${pixels}.png" "packaged/Kiri.iconset/$name"
+          done
+          iconutil -c icns -o "$res/Kiri.icns" packaged/Kiri.iconset
+          cat > "$app/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>Kiri Moby</string>
+            <key>CFBundleDisplayName</key><string>Kiri Moby</string>
+            <key>CFBundleIdentifier</key><string>dev.kiri.app.moby</string>
+            <key>CFBundleExecutable</key><string>kiri</string>
+            <key>CFBundleIconFile</key><string>Kiri</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>0.1.0</string>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>LSMinimumSystemVersion</key><string>14.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+          </dict>
+          </plist>
+          PLIST
+          plutil -lint "$app/Contents/Info.plist"
+          test "$(lipo "$res/bin/kiri-moby-host" -archs)" = "arm64"
+          codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$res/bin/kiri-moby-host"
+          for binary in "$res/bin/docker" \
+            "$res/bin/cli-plugins/docker-compose" "$res/bin/cli-plugins/docker-buildx"; do
+            test "$(lipo "$binary" -archs)" = "arm64"
+            codesign --force --sign - "$binary"
+          done
+          test "$(lipo "$mac/kiri" -archs)" = "arm64"
+          codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$mac/kiri"
+          codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          tar -czf Kiri-Moby-macos-arm64-app.tgz -C packaged "Kiri Moby.app"
+          shasum -a 256 Kiri-Moby-macos-arm64-app.tgz > Kiri-Moby-macos-arm64-app.tgz.sha256
+          ls -lh Kiri-Moby-macos-arm64-app.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kiri-Moby-macos-arm64-app
+          path: |
+            Kiri-Moby-macos-arm64-app.tgz
+            Kiri-Moby-macos-arm64-app.tgz.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kiri-moby-macos-arm64-bundle
+          path: kiri-moby-macos-arm64-bundle.tgz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+ SHA256SUMS | sha256sum -c -
+          )
+          mkdir -p guest/out
+          cp /tmp/kiri-kernel-previous/Image guest/out/Image
+          echo 'reused=true' >> "$GITHUB_OUTPUT"
+      - name: Build Linux ARM64 kernel if a verified reuse is not possible
+        if: steps.reuse_kernel.outputs.reused != 'true'
         run: cargo xtask kernel
       - name: Bundle Guest with file checksums
         run: |
