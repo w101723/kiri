@@ -62,12 +62,17 @@ kiri-moby-guest (opaque byte bridge)
   each client to the **real** Docker Engine socket; no Docker API parsing.
 - GitHub Actions compile checks for macOS arm64 and Linux arm64.
 
-**Implemented as build recipes, not yet validated on a Mac:** ARM64
-guest initramfs, kernel build and ext4 data-disk template. The existing
-Kiri GUI is still connected to the original Engine, and automatic port
-publishing, auto-sleep/balloon integration and Buildx/Compose end-to-end
-testing are still pending. The launcher refuses to run without guest
-assets; an incomplete build must not be described as a working runtime.
+**Apple Silicon real-device validation (2026-11-19):** a user has
+successfully booted the Guest, called the real Docker Engine API, pulled
+images, run native ARM64 and cross-architecture AMD64 containers, built
+both architectures with Buildx, executed Docker Compose, and read/write
+tested a named Docker Volume. Mac localhost TCP publishing reached Nginx
+after the original polling delay. The new Docker /events forwarding
+implementation has unit/CI tests, but its real-Mac latency and listener
+cleanup **must still be validated**.
+
+The existing Kiri GUI still uses the original Engine; replacing its consumers,
+sleep/balloon integration, UDP, and production hardening remain pending.
 
 ## Linux root filesystem and OCI pivot_root (2026-11-19 fix)
 
@@ -104,8 +109,8 @@ cp -c "$KIRI_MOBY_DATA_DIR/vm/data.img" \
 Do not delete or recreate `data.img` to fix the runc error. After updating
 the Guest artifact, the expected log includes `Stage 2: ext4 root verified`.
 Validate with `docker --host unix://.../run/docker.sock run --pull=never
---platform linux/arm64 alpine:3.22 echo hello`. Success on a real Apple
-Silicon Mac is still an **unpassed acceptance gate** until reported.
+--platform linux/arm64 alpine:3.22 echo hello`. The original OCI pivot_root error has since been resolved on a real
+Apple Silicon Mac: the test container printed `Hello from Kiri Moby`.
 
 ## Experimental Guest image build and test
 
@@ -132,11 +137,12 @@ The VM uses `$KIRI_MOBY_DATA_DIR/guest` for boot assets and
 `$KIRI_MOBY_DATA_DIR/vm/data.img` for the **separate writable data disk**;
 the latter is unpacked on first launch.
 
-This is an experimental build recipe, **not yet a VM smoke-test result**.
-GitHub ARM64 Actions build the Linux guest but do not prove that
-Virtualization.framework can boot it or that a Docker workload works on a
-real Apple Silicon machine. Alpine dependencies are not yet digest pinned;
-release/supply-chain hardening is another gate.
+GitHub ARM64 Actions validate the Guest build but **not** macOS VZ
+runtime behavior. A separate real Apple Silicon smoke test has now passed
+Docker Engine, native/cross-architecture containers, Buildx, Compose, and
+the original TCP publish path. The **new event-driven** forwarding changes
+still require real-Mac acceptance. Alpine dependencies are not digest pinned;
+release/supply-chain hardening remains a separate gate.
 
 ### Test on an Apple Silicon Mac
 
