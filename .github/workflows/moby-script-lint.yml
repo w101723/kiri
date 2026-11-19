@@ -1,0 +1,31 @@
+name: Moby shell script syntax
+
+on:
+  push:
+    branches: [moby-engine]
+    paths:
+      - "scripts/moby/**"
+      - ".github/workflows/moby-script-lint.yml"
+  pull_request:
+    paths:
+      - "scripts/moby/**"
+      - ".github/workflows/moby-script-lint.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  bash-syntax:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail on malformed upgrade and install scripts
+        shell: bash
+        run: |
+          bash -n scripts/moby/upgrade-artifacts-macos.sh
+          bash -n scripts/moby/install-artifacts-macos.sh
+          bash -n scripts/moby/build-guest.sh
+          bash -n scripts/moby/smoke-macos.sh
+          sh -n scripts/moby/guest/init
+          sh -n scripts/moby/guest/udhcpc-script
+          sh -n scripts/moby/guest/rosetta.sh

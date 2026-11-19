@@ -15,6 +15,19 @@ mount -t tmpfs tmpfs /dev/shm || die "mount /dev/shm"
 mount -t tmpfs tmpfs /run || die "mount /run"
 mount -t tmpfs tmpfs /tmp || die "mount /tmp"
 mount -t cgroup2 cgroup2 /sys/fs/cgroup || die "mount cgroup v2"
+# VZ guests may boot with a 1970 RTC, breaking TLS image pulls.
+# The host sends its Unix epoch through the kernel command line.
+for argument in $(cat /proc/cmdline); do
+    case "$argument" in
+        kiri.moby_boot_time=*)
+            boot_epoch="${argument#*=}"
+            case "$boot_epoch" in
+                ''|*[!0-9]*) log "Invalid boot clock from host: $boot_epoch" ;;
+                *) date -u -s "@$boot_epoch" >/dev/null || log "Could not set UTC guest clock" ;;
+            esac
+            ;;
+    esac
+done
 hostname kiri-moby
 echo kiri-moby >/etc/hostname
 

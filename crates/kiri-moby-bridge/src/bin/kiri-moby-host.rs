@@ -21,7 +21,7 @@ fn main() -> std::io::Result<()> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use kiri_vmm::{Config, Share, ShareDir, Vm};
 
@@ -123,12 +123,18 @@ fn main() -> std::io::Result<()> {
 
     let cpus = std::env::var("KIRI_MOBY_CPUS").ok().and_then(|v| v.parse::<usize>().ok()).filter(|v| (1..=16).contains(v)).unwrap_or(4);
     let memory_mib = std::env::var("KIRI_MOBY_MEMORY_MIB").ok().and_then(|v| v.parse::<u64>().ok()).filter(|v| (1024..=65536).contains(v)).unwrap_or(4096);
+    // Virtualization.framework guests may start with a 1970 RTC.
+    // Pass the actual host clock at VM creation so HTTPS image pulls work.
+    let boot_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| io::Error::other(format!("host clock before Unix epoch: {e}")))?
+        .as_secs();
     let mut vm = Vm::start(Config {
         cpus,
         memory_mib,
         kernel,
         initrd,
-        cmdline: "console=hvc0 rdinit=/init panic=-1".into(),
+        cmdline: format!("console=hvc0 rdinit=/init panic=-1 kiri.moby_boot_time={boot_epoch}"),
         console: Some(console_log.into()),
         agent_port: 5556,
         disk: Some(disk),
