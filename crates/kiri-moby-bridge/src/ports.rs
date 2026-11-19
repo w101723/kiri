@@ -49,7 +49,7 @@ fn list_published(socket: &PathBuf) -> io::Result<BTreeMap<u16, u16>> {
     // macOS ships /usr/bin/curl. A bounded CLI call avoids implementing a
     // second fragile HTTP/chunked parser for the Docker Engine API.
     let out = Command::new("/usr/bin/curl")
-        .args(["--fail", "--silent", "--show-error", "--max-time", "3", "--unix-socket"])
+        .args(["--fail", "--silent", "--show-error", "--max-time", "3", "--noproxy", "*", "--unix-socket"])
         .arg(socket)
         .arg("http://localhost/containers/json?all=0")
         .output()?;
