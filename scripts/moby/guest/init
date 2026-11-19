@@ -1,63 +1,12 @@
 #!/bin/sh
-# Switch PID 1 from Linux initramfs to a real ext4 root before starting runc.
-# Kernel rootfs cannot pivot_root (EINVAL). Preserve all Docker disk state.
+# Persistent ext4 stage-2 PID1: dockerd never runs from initramfs.
 set -eu
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 umask 022
 log() { echo "[kiri-moby-init] $*" >&2; }
 die() { log "FATAL: $*"; exec /bin/sh; }
-
-if [ "${1:-}" != "--ext4-root" ]; then
-    # STAGE 1: kernel rootfs. No dockerd/containerd process is started yet.
-    mount -t proc proc /proc || die "mount /proc"
-    mount -t sysfs sysfs /sys || die "mount /sys"
-    mount -t devtmpfs devtmpfs /dev || die "mount /dev"
-    if [ -c /dev/console ]; then
-        exec >/dev/console 2>&1
-    fi
-    log "Stage 1: preparing real ext4 root on /dev/vda"
-    mkdir -p /newroot
-    mount -t ext4 -o noatime /dev/vda /newroot || die "mount /dev/vda"
-
-    # Previous Kiri Moby releases mounted this ext4 disk on /var/lib.
-    # Their /docker and /containerd directory trees must be moved (not
-    # copied) to /var/lib/* when the disk itself becomes the new root.
-    mkdir -p /newroot/var/lib
-    for directory in docker containerd; do
-        if [ -e "/newroot/$directory" ]; then
-            if [ -e "/newroot/var/lib/$directory" ]; then
-                die "Conflicting old/new Docker data for $directory; refusing overwrite"
-            fi
-            log "Migrating persistent /$directory -> /var/lib/$directory"
-            mv "/newroot/$directory" "/newroot/var/lib/$directory" ||
-                die "persistent data migration failed for $directory"
-        fi
-    done
-
-    # Copy the Guest's current Alpine userspace/Agent into the ext4 root.
-    # Never overwrite /var/lib, which holds Docker layers, images and volumes.
-    # Do not copy kernel pseudo-filesystems or the /newroot mount.
-    for entry in bin etc home lib lib64 media mnt opt root sbin srv usr Users Volumes init; do
-        if [ -e "/$entry" ] || [ -L "/$entry" ]; then
-            cp -a "/$entry" /newroot/ || die "copy $entry to ext4 failed"
-        fi
-    done
-    mkdir -p /newroot/var/log /newroot/var/tmp /newroot/dev/pts /newroot/dev/shm
-    # Alpine normally provides /var/run -> /run. Preserve that invariant
-    # when promoting the old data-only ext4 disk to the system root.
-    if [ ! -e /newroot/var/run ] && [ ! -L /newroot/var/run ]; then
-        ln -s /run /newroot/var/run || die "create /var/run symlink"
-    fi
-    mkdir -p /newroot/proc /newroot/sys/fs/cgroup /newroot/run /newroot/tmp /newroot/mnt/mac
-
-    # Preserve live API mounts when freeing the old rootfs.
-    mount --move /dev /newroot/dev || die "move /dev"
-    mount --move /proc /newroot/proc || die "move /proc"
-    mount --move /sys /newroot/sys || die "move /sys"
-    log "Stage 1: switch_root -> ext4 /dev/vda"
-    exec /bin/busybox switch_root -c /dev/console /newroot /init --ext4-root
-    die "switch_root failed"
-fi
+[ "$#" -eq 1 ] && [ "$1" = --ext4-root ] ||
+    die "refusing to run Docker Engine outside real ext4 root"
 
 # STAGE 2: PID 1 after switch_root. Verify it is a real ext4 mount.
 root_mount="$(awk '$5 == "/" { print; exit }' /proc/self/mountinfo)"
