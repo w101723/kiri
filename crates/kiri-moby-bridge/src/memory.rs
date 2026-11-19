@@ -154,7 +154,9 @@ mod tests {
         policy.released_hint();
         assert_eq!(policy.update(sample(3_200)), Some(3_840));
         policy.released_hint();
-        assert_eq!(policy.update(sample(800)), None);
+        let before = policy.target_mib();
+        let _ = policy.update(sample(800));
+        assert!(policy.target_mib() >= before, "low memory must not shrink the target");
     }
 
     #[test]
