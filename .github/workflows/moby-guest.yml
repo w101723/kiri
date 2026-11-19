@@ -1,0 +1,50 @@
+name: Build standard Moby ARM64 Guest
+
+on:
+  push:
+    branches: [moby-engine]
+    paths:
+      - "scripts/moby/**"
+      - "guest/kernel/**"
+      - "crates/kiri-moby-bridge/**"
+      - ".github/workflows/moby-guest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guest:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - name: Tools for ARM64 guest and ext4 image
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends musl-tools cpio e2fsprogs
+      - name: Compile native ARM64 guest vsock bridge
+        run: cargo build --release --target aarch64-unknown-linux-musl -p kiri-moby-bridge --bin kiri-moby-guest
+      - name: Export standard Docker Engine guest rootfs and sparse data disk
+        run: ./scripts/moby/build-guest.sh
+      - name: Build Kiri VM ARM64 kernel
+        run: cargo xtask kernel
+      - name: Bundle bootable guest assets and record fingerprints
+        run: |
+          cp guest/out/Image target/moby-guest/Image
+          (cd target/moby-guest && sha256sum Image >> SHA256SUMS)
+          mkdir -p target/moby-dist
+          tar -C target/moby-guest -czf target/moby-dist/kiri-moby-guest-arm64.tgz \
+            Image initramfs.cpio data.img.tgz SHA256SUMS
+          ls -lh target/moby-dist/
+      - name: Upload experimental guest boot assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: kiri-moby-guest-arm64
+          path: target/moby-dist/kiri-moby-guest-arm64.tgz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
