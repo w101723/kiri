@@ -39,8 +39,8 @@ On your Mac, derive base64 values (paste these **only** into GitHub Secrets,
 never an issue, chat, Git commit or build log):
 
 ```bash
-base64 < DeveloperID.p12 | tr -d '\\n'
-base64 < AuthKey_XXXXXXXXXX.p8 | tr -d '\\n'
+base64 < DeveloperID.p12 | tr -d '\n'
+base64 < AuthKey_XXXXXXXXXX.p8 | tr -d '\n'
 security find-identity -v -p codesigning
 ```
 
