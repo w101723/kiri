@@ -15,11 +15,13 @@ fn main() -> std::io::Result<()> {
     use std::io::{self, Read};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::net::UnixStream;
+    use std::net::TcpStream;
     use std::thread;
     use std::time::Duration;
 
     const DOCKER_VSOCK_PORT: u32 = 2375; // AF_VSOCK; never a TCP listener
     const CONTROL_VSOCK_PORT: u32 = 2376; // authenticated by guest-only vsock boundary
+    const TCP_FORWARD_VSOCK_PORT: u32 = 2377; // Docker guest TCP published ports
 
     // SAFETY: creates an AF_VSOCK stream socket and transfers ownership to
     // OwnedFd immediately; all addresses and lengths are initialized.
@@ -70,6 +72,36 @@ fn main() -> std::io::Result<()> {
             unsafe { libc::kill(1, libc::SIGTERM) };
             return;
         }
+    });
+
+    // A Mac listener sends the destination port as two network-order bytes.
+    // We connect to the *guest* published port, not directly to a container:
+    // Docker Engine remains the owner of container NAT and port semantics.
+    let forwards = listen(TCP_FORWARD_VSOCK_PORT)?;
+    thread::spawn(move || loop {
+        // SAFETY: accept4 yields an owned fd, with no user pointers.
+        let fd = unsafe {
+            libc::accept4(forwards.as_raw_fd(), std::ptr::null_mut(), std::ptr::null_mut(), libc::SOCK_CLOEXEC)
+        };
+        if fd < 0 { continue; }
+        // SAFETY: accept4 succeeded and ownership is transferred once.
+        let peer = unsafe { OwnedFd::from_raw_fd(fd) };
+        thread::spawn(move || {
+            let mut from_host = UnixStream::from(peer);
+            let mut header = [0u8; 2];
+            if from_host.read_exact(&mut header).is_err() { return; }
+            let port = u16::from_be_bytes(header);
+            if port == 0 { return; }
+            match TcpStream::connect(("127.0.0.1", port)) {
+                Ok(to_docker) => {
+                    let fd: OwnedFd = to_docker.into();
+                    if let Err(err) = kiri_moby_bridge::relay(from_host, UnixStream::from(fd)) {
+                        eprintln!("guest TCP published-port relay ended: {err}");
+                    }
+                }
+                Err(err) => eprintln!("guest published port {port} not reachable: {err}"),
+            }
+        });
     });
 
     let socket = listen(DOCKER_VSOCK_PORT)?;
