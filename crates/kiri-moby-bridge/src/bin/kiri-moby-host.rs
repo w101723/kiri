@@ -100,11 +100,55 @@ fn main() -> std::io::Result<()> {
         std::fs::remove_dir(&staging)?;
     }
 
-    // Docker guest processes must not receive writable access to all host
-    // home directories or mounted volumes by default. Opt in explicitly when
-    // testing bind mounts; this also protects existing OrbStack data.
-    let share = if std::env::var("KIRI_MOBY_SHARE_MAC").ok().as_deref() == Some("1") {
-        eprintln!("WARNING: KIRI_MOBY_SHARE_MAC=1 enables writable Mac /Users and /Volumes shares");
+    // Explicit per-directory shares preserve the same Mac path in the Guest
+    // without sharing the entirety of /Users or /Volumes. The kernel cmdline
+    // carries an ASCII-only hex-encoded mapping; no shell/path injection.
+    // Both this and the Guest apply strict path validation.
+    let share_all = std::env::var("KIRI_MOBY_SHARE_MAC").ok().as_deref() == Some("1");
+    let share_dirs = std::env::var("KIRI_MOBY_SHARE_DIRS").unwrap_or_default();
+    if share_all && !share_dirs.trim().is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "KIRI_MOBY_SHARE_MAC=1 cannot be combined with KIRI_MOBY_SHARE_DIRS"));
+    }
+    let mut share_spec = String::new();
+    let share = if !share_dirs.trim().is_empty() {
+        let mut dirs = Vec::new();
+        let mut unique_paths = std::collections::BTreeSet::new();
+        for input in share_dirs.split(',') {
+            if input.is_empty() || input.trim() != input {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                    "KIRI_MOBY_SHARE_DIRS contains an empty or whitespace-padded path"));
+            }
+            let path = std::path::Path::new(input);
+            // Docker bind paths remain identical on the Mac and Linux Guest.
+            // Restrict that mapping to native Mac user/project volumes.
+            if !path.is_absolute()
+                || !(path.starts_with("/Users/") || path.starts_with("/Volumes/"))
+                || path.components().any(|c| !matches!(c, std::path::Component::RootDir | std::path::Component::Normal(_)))
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                    format!("share must be a normalized absolute subdirectory of /Users or /Volumes: {input}")));
+            }
+            let resolved = path.canonicalize()?;
+            if !resolved.is_dir() || !unique_paths.insert(input.to_owned()) {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                    format!("share must be an existing, unique directory: {input}")));
+            }
+            let name = format!("s{}", dirs.len());
+            // Only lowercase hex digits enter the kernel command line.
+            let hex_path: String = input.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect();
+            if !share_spec.is_empty() { share_spec.push(','); }
+            share_spec.push_str(&format!("{name}@{hex_path}"));
+            dirs.push(ShareDir { name, dir: resolved });
+            if dirs.len() > 16 || share_spec.len() > 1800 {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                    "KIRI_MOBY_SHARE_DIRS exceeds 16 paths or kernel cmdline size"));
+            }
+        }
+        eprintln!("Kiri Moby: {} explicit writable Mac directories authorized", dirs.len());
+        Some(Share { tag: "kiri-mac".to_owned(), dirs })
+    } else if share_all {
+        eprintln!("WARNING: legacy KIRI_MOBY_SHARE_MAC=1 allows writable Mac /Users and /Volumes");
         Some(Share {
             tag: "kiri-mac".to_owned(),
             dirs: vec![
@@ -113,7 +157,7 @@ fn main() -> std::io::Result<()> {
             ],
         })
     } else {
-        eprintln!("Mac host directory sharing disabled (KIRI_MOBY_SHARE_MAC=1 to opt in)");
+        eprintln!("Mac directory sharing disabled (use KIRI_MOBY_SHARE_DIRS=/Users/.../Projects)");
         None
     };
 
@@ -141,7 +185,11 @@ fn main() -> std::io::Result<()> {
         memory_mib,
         kernel,
         initrd,
-        cmdline: format!("console=hvc0 rdinit=/init panic=-1 kiri.moby_boot_time={boot_epoch}"),
+        cmdline: format!(
+            "console=hvc0 rdinit=/init panic=-1 kiri.moby_boot_time={boot_epoch}{}",
+            if share_spec.is_empty() { String::new() }
+            else { format!(" kiri.moby_shares={share_spec}") }
+        ),
         console: Some(console_log.into()),
         agent_port: 5556,
         disk: Some(disk),
