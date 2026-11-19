@@ -135,6 +135,59 @@ fn main() -> std::io::Result<()> {
         std::fs::remove_dir(&staging)?;
     }
 
+    // On-disk OS seed is read-only to the Guest. Replace it only while holding
+    // exclusive ownership of the VM/data.img, and never rewrite user data.
+    // Existing Kiri installations are upgraded inside Linux only if the
+    // rootfs revision is different; normal boots perform no userspace copy.
+    let seed_archive = guest.join("system.img.tgz");
+    let seed_revision_path = guest.join("rootfs.revision");
+    let revision = std::fs::read_to_string(&seed_revision_path).map_err(|e| {
+        io::Error::new(e.kind(), format!("missing rootfs.revision (install upgraded Guest assets): {e}"))
+    })?;
+    let revision = revision.trim();
+    if revision.len() != 64 || !revision.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData,
+            "invalid rootfs.revision; refusing to start with unverified seed"));
+    }
+    if !seed_archive.is_file() {
+        return Err(io::Error::new(io::ErrorKind::NotFound,
+            format!("missing read-only system seed {}; install matching Guest bundle",
+                seed_archive.display())));
+    }
+    let seed_disk = vm_dir.join("system.img");
+    let seed_stamp = vm_dir.join("system.revision");
+    let needs_seed_update = !seed_disk.is_file()
+        || std::fs::read_to_string(&seed_stamp).ok().as_deref().map(str::trim) != Some(revision);
+    if needs_seed_update {
+        let staging = vm_dir.join("system-staging");
+        if staging.exists() {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists,
+                format!("incomplete seed upgrade at {}; inspect manually", staging.display())));
+        }
+        std::fs::create_dir_all(&staging)?;
+        let unpacked = std::process::Command::new("/usr/bin/tar")
+            .arg("-xzf").arg(&seed_archive).arg("-C").arg(&staging)
+            .arg("system.img").status()?;
+        if !unpacked.success() || !staging.join("system.img").is_file() {
+            return Err(io::Error::other("failed to extract verified system.img seed"));
+        }
+        let fsync = std::fs::OpenOptions::new().read(true)
+            .open(staging.join("system.img"))?;
+        fsync.sync_all()?;
+        drop(fsync);
+        std::fs::rename(staging.join("system.img"), &seed_disk)?;
+        std::fs::remove_dir(&staging)?;
+        let tmp = vm_dir.join("system.revision.new");
+        let mut stamp = std::fs::OpenOptions::new().write(true)
+            .create_new(true).open(&tmp)?;
+        stamp.write_all(revision.as_bytes())?;
+        stamp.write_all(b"\n")?;
+        stamp.sync_all()?;
+        drop(stamp);
+        std::fs::rename(tmp, &seed_stamp)?;
+        eprintln!("Kiri Moby: installed read-only userspace seed rev={revision}");
+    }
+
     // Explicit per-directory shares preserve the same Mac path in the Guest
     // without sharing the entirety of /Users or /Volumes. The kernel cmdline
     // carries an ASCII-only hex-encoded mapping; no shell/path injection.
@@ -216,6 +269,7 @@ fn main() -> std::io::Result<()> {
         console: Some(console_log.into()),
         agent_port: 5556,
         disk: Some(disk),
+        seed_disk: Some(seed_disk),
         share,
         rosetta_tag: Some("rosetta".into()),
         nat_mac: Some("02:4b:69:72:69:01".into()),

@@ -88,10 +88,10 @@ seed="$out/system.img"
 disk="$out/data.img"
 rm -f "$seed" "$disk"
 truncate -s "$system_mib"M "$seed"
-mkfs.ext4 -q -F -m 0 -L kiri-system -E lazy_itable_init=1,lazy_journal_init=1 \
+sudo mkfs.ext4 -q -F -m 0 -L kiri-system -E lazy_itable_init=1,lazy_journal_init=1 \
   -d "$work/root" "$seed"
 truncate -s "$size"G "$disk"
-mkfs.ext4 -q -F -m 0 -L kiri-moby -E lazy_itable_init=1,lazy_journal_init=1 \
+sudo mkfs.ext4 -q -F -m 0 -L kiri-moby -E lazy_itable_init=1,lazy_journal_init=1 \
   -d "$work/root" "$disk"
 
 # Check both filesystem stamps while the filesystem images are offline.
