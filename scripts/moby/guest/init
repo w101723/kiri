@@ -90,10 +90,25 @@ log "Guest clock: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 hostname kiri-moby
 echo kiri-moby >/etc/hostname
 mkdir -p /var/lib/docker /var/lib/containerd /run/containerd /run/docker /var/log
+# Explicit project shares use hex-coded mount mappings from the trusted
+# Mac launcher; legacy full /Users and /Volumes access requires an explicit
+# KIRI_MOBY_SHARE_MAC=1 opt-in on the Host.
+share_spec=""
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in kiri.moby_shares=*) share_spec="${arg#*=}" ;; esac
+done
 if mount -t virtiofs kiri-mac /mnt/mac; then
-    mount --bind /mnt/mac/Users /Users || log "Mac /Users not shared"
-    mount --bind /mnt/mac/Volumes /Volumes || log "Mac /Volumes not shared"
+    if [ -n "$share_spec" ]; then
+        /usr/local/sbin/kiri-moby-guest --mount-shares "$share_spec" ||
+            die "authorized Mac directory mounts failed"
+    else
+        [ ! -d /mnt/mac/Users ] ||
+            mount --bind /mnt/mac/Users /Users || die "Mac /Users bind failed"
+        [ ! -d /mnt/mac/Volumes ] ||
+            mount --bind /mnt/mac/Volumes /Volumes || die "Mac /Volumes bind failed"
+    fi
 else
+    [ -z "$share_spec" ] || die "VirtioFS required for authorized Mac directory shares"
     log "Mac host file shares disabled"
 fi
 /usr/local/sbin/kiri-rosetta || log "Rosetta not available"
