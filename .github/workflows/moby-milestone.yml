@@ -184,7 +184,9 @@ jobs:
           </plist>
           PLIST
           plutil -lint "$app/Contents/Info.plist"
-          for binary in "$res/bin/kiri-moby-host" "$res/bin/docker" \
+          test "$(lipo "$res/bin/kiri-moby-host" -archs)" = "arm64"
+          codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$res/bin/kiri-moby-host"
+          for binary in "$res/bin/docker" \
             "$res/bin/cli-plugins/docker-compose" "$res/bin/cli-plugins/docker-buildx"; do
             test "$(lipo "$binary" -archs)" = "arm64"
             codesign --force --sign - "$binary"
