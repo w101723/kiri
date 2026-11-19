@@ -30,51 +30,30 @@ fn main() -> std::io::Result<()> {
     }
     if args.get(1).map(String::as_str) == Some("--mount-shares") {
         use std::ffi::CString;
-        use std::path::{Component, Path};
-        if args.len() != 3 || args[2].len() > 1800 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid share map argument"));
+        use std::path::Path;
+        if args.len() != 3 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                "--mount-shares requires an encoded share map"));
         }
-        let mut paths = std::collections::BTreeSet::new();
-        for (index, entry) in args[2].split(',').enumerate() {
-            if index >= 16 {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "too many shares"));
-            }
-            let (name, encoded) = entry.split_once('@').ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "invalid share mapping")
-            })?;
-            if name != format!("s{index}") || encoded.is_empty() || encoded.len() % 2 != 0 {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid share label or hex path"));
-            }
-            let mut bytes = Vec::with_capacity(encoded.len() / 2);
-            for chunk in encoded.as_bytes().chunks_exact(2) {
-                let digits = std::str::from_utf8(chunk).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "share encoding"))?;
-                bytes.push(u8::from_str_radix(digits, 16).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid hex share path"))?);
-            }
-            let target = String::from_utf8(bytes).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "non-UTF8 share path"))?;
-            let target_path = Path::new(&target);
-            // Never allow a crafted kernel argument to replace /, /dev,
-            // /proc, /etc, /var, or Docker's own persistent metadata.
-            if !(target_path.starts_with("/Users/") || target_path.starts_with("/Volumes/"))
-                || target_path.components().any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
-                || !paths.insert(target.clone())
-            {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "unsafe/duplicate Guest share mount target"));
-            }
+        let shares = kiri_moby_bridge::shares::decode(&args[2])?;
+        for (name, mount_path) in shares {
             let source = format!("/mnt/mac/{name}");
             if !Path::new(&source).is_dir() {
-                return Err(io::Error::new(io::ErrorKind::NotFound, format!("VirtioFS share unavailable: {source}")));
+                return Err(io::Error::new(io::ErrorKind::NotFound,
+                    format!("VirtioFS share unavailable: {source}")));
             }
-            std::fs::create_dir_all(&target_path)?;
-            let source = CString::new(source).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in source"))?;
-            let target = CString::new(target).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in target"))?;
-            // SAFETY: source and target are validated, NUL-terminated C
-            // strings, and neither extra pointer is dereferenced (NULL).
+            std::fs::create_dir_all(&mount_path)?;
+            let from = CString::new(source).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL source"))?;
+            let to = CString::new(mount_path.to_string_lossy().as_bytes())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL target"))?;
+            // SAFETY: Validated, NUL-terminated strings remain live through
+            // this synchronous syscall. Extra pointers are null.
             if unsafe {
-                libc::mount(source.as_ptr(), target.as_ptr(), std::ptr::null(), libc::MS_BIND, std::ptr::null())
+                libc::mount(from.as_ptr(), to.as_ptr(), std::ptr::null(), libc::MS_BIND, std::ptr::null())
             } != 0 {
                 return Err(io::Error::last_os_error());
             }
-            eprintln!("kiri-moby-guest: mounted authorized directory {}", target.to_string_lossy());
+            eprintln!("kiri-moby-guest: mounted authorized directory {}", mount_path.display());
         }
         return Ok(());
     }
