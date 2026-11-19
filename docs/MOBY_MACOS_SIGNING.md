@@ -60,6 +60,15 @@ Without signing secrets, that artifact still builds but **no notarized DMG
 is published**. If only some signing secrets exist, the step fails rather
 than silently claiming that an ad-hoc app is a release.
 
+**Important for the previous command-line installation:** If you still launch
+`~/.kiri-moby/bin/kiri-moby-host` installed from an old `milestone-host`
+tarball, that binary remains ad-hoc-signed and may still prompt Gatekeeper.
+The trusted distribution includes a separately Developer ID-signed Host at
+`Kiri Moby.app/Contents/Resources/bin/kiri-moby-host`; launch the
+installed **Kiri Moby.app** so its GUI uses that signed helper. The Linux
+Guest `data.img` and `system.img` are not macOS executable code and do
+not themselves need Apple code signing.
+
 For stable updates, use the **notarized DMG**: download its GitHub artifact
 ZIP, open the DMG, and replace `Kiri Moby.app` in `/Applications` after
 stopping the Kiri VM. Keep the same Developer ID team between releases.
