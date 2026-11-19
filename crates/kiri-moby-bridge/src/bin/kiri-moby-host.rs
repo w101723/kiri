@@ -12,17 +12,19 @@ fn main() {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn main() -> std::io::Result<()> {
-    use std::io;
+    use std::io::{self, Write};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::PathBuf;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
     use std::time::Duration;
 
     use kiri_vmm::{Config, Share, ShareDir, Vm};
 
     const DOCKER_VSOCK_PORT: u32 = 2375; // AF_VSOCK, NOT TCP
+    const CONTROL_VSOCK_PORT: u32 = 2376; // graceful shutdown
 
     let data = match std::env::var_os("KIRI_MOBY_DATA_DIR") {
         Some(path) => PathBuf::from(path),
@@ -98,7 +100,7 @@ fn main() -> std::io::Result<()> {
 
     let cpus = std::env::var("KIRI_MOBY_CPUS").ok().and_then(|v| v.parse::<usize>().ok()).filter(|v| (1..=16).contains(v)).unwrap_or(4);
     let memory_mib = std::env::var("KIRI_MOBY_MEMORY_MIB").ok().and_then(|v| v.parse::<u64>().ok()).filter(|v| (1024..=65536).contains(v)).unwrap_or(4096);
-    let vm = Vm::start(Config {
+    let mut vm = Vm::start(Config {
         cpus,
         memory_mib,
         kernel,
@@ -132,13 +134,29 @@ fn main() -> std::io::Result<()> {
     eprintln!("No default Docker context or /var/run/docker.sock has been changed.");
 
     let connector = Arc::new(vm.connector());
-    for client in listener.incoming() {
-        let client = client?;
+    let stopping = Arc::new(AtomicBool::new(false));
+    ctrlc::set_handler({
+        let stopping = Arc::clone(&stopping);
+        move || stopping.store(true, Ordering::Release)
+    }).map_err(|e| io::Error::other(format!("failed to register SIGINT/SIGTERM handler: {e}")))?;
+
+    // Avoid waiting forever in accept() after Ctrl-C, so dockerd can stop
+    // cleanly and flush the ext4 data disk before VM destruction.
+    listener.set_nonblocking(true)?;
+    while !stopping.load(Ordering::Acquire) {
+        let client = match listener.accept() {
+            Ok((client, _)) => client,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
         let connector = Arc::clone(&connector);
         thread::spawn(move || {
             let mut connected = None;
-            // The guest bootstrap may still be starting dockerd.
-            for _ in 0..40 {
+            for _ in 0..120 {
                 match connector.connect(DOCKER_VSOCK_PORT) {
                     Ok(stream) => {
                         connected = Some(stream);
@@ -149,7 +167,8 @@ fn main() -> std::io::Result<()> {
             }
             match connected {
                 Some(stream) => {
-                    // Keep the VZ connection owner alive until the proxy exits.
+                    // Keep the VZ connection alive throughout HTTP Upgrade,
+                    // Docker attach and BuildKit's long-running streams.
                     match stream.fd.try_clone() {
                         Ok(fd) => {
                             if let Err(error) = kiri_moby_bridge::relay(client, UnixStream::from(fd)) {
@@ -165,7 +184,17 @@ fn main() -> std::io::Result<()> {
         });
     }
 
-    // Keep the VM alive for the lifetime of the listener.
-    drop(vm);
+    eprintln!("Stopping standard Docker Engine gracefully...");
+    if let Ok(control) = connector.connect(CONTROL_VSOCK_PORT) {
+        if let Ok(fd) = control.fd.try_clone() {
+            let mut control = UnixStream::from(fd);
+            let _ = control.write_all(b"SHUTDOWN\n");
+        }
+    }
+    // The VM must release its disk before a replacement opens it.
+    let shutdown = vm.retire(Duration::from_secs(25), Duration::from_secs(10));
+    drop(listener);
+    let _ = std::fs::remove_file(&path);
+    shutdown?;
     Ok(())
 }
