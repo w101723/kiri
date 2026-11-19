@@ -3,6 +3,10 @@ name: Moby bridge verification
 on:
   push:
     branches: [moby-engine]
+    paths:
+      - "crates/kiri-moby-bridge/**"
+      - "crates/kiri-vmm/**"
+      - ".github/workflows/moby-bridge.yml"
   pull_request:
     paths:
       - 'crates/kiri-moby-bridge/**'
@@ -10,6 +14,10 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/moby-bridge.yml'
+
+concurrency:
+  group: moby-bridge-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
