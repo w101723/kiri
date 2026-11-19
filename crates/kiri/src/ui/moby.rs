@@ -492,6 +492,19 @@ pub(super) fn engine(rx: Receiver<Cmd>, _tx: Sender<Cmd>) {
 mod tests {
     use super::*;
     #[test]
+    fn shares_must_be_explicit_normalized_user_folders() {
+        for allowed in ["/Users/alice/dev", "/Users/alice/My Projects",
+            "/Volumes/ExternalSSD/projects"] {
+            assert!(allowed_share(allowed), "unexpectedly rejected {allowed}");
+        }
+        for denied in ["/", "/Users", "/Users/", "/Users/../etc",
+            "/Users/alice/../../etc", "/Volumes", "/etc", "/var/lib/docker",
+            "/Users/a/./dev", "/Users//a/dev", "/Users/a/b,c", "Users/a/dev"] {
+            assert!(!allowed_share(denied), "unexpectedly permitted {denied}");
+        }
+    }
+
+    #[test]
     fn docker_raw_log_frames_are_decoded() {
         let mut frames = vec![1,0,0,0,0,0,0,3];
         frames.extend_from_slice(b"abc");
