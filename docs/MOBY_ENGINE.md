@@ -277,3 +277,15 @@ The VMM and UI code originate from libracoder/kiri (Apache-2.0).
 Migration code in this fork is additive until its cutover is proven. The
 target is **one** runtime: Moby. There is no intent to support the original
 custom Engine after cutover.
+
+## Single-source-revision milestone package
+
+The `Kiri Moby unified macOS ARM64 milestone bundle` workflow builds the
+Linux Guest and signed Apple Silicon Host from the **same Git revision** in
+one GitHub Actions run. It produces a single downloadable artifact named
+`kiri-moby-macos-arm64-bundle` with checksums and source revision metadata.
+
+Stop the VM before installing. The single-artifact offline installer
+`bash scripts/moby/install-milestone-macos.sh <bundle.zip>` verifies
+both Guest and Host and **preserves the existing vm/data.img**.
+The milestone bundle is not the finished native GUI application.

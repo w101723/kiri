@@ -1,0 +1,102 @@
+name: Kiri Moby unified macOS ARM64 milestone bundle
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: moby-milestone-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  guest:
+    name: Linux ARM64 Guest (Docker Engine and ext4)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - name: Guest build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends musl-tools cpio e2fsprogs
+      - name: Compile Guest agent
+        run: cargo build --release --target aarch64-unknown-linux-musl -p kiri-moby-bridge --bin kiri-moby-guest
+      - name: Build standard Docker Guest and data disk template
+        run: ./scripts/moby/build-guest.sh
+      - name: Build Linux ARM64 kernel
+        run: cargo xtask kernel
+      - name: Bundle Guest with file checksums
+        run: |
+          cp guest/out/Image target/moby-guest/Image
+          (cd target/moby-guest && sha256sum Image >> SHA256SUMS)
+          tar -C target/moby-guest -czf kiri-moby-guest-arm64.tgz Image initramfs.cpio data.img.tgz SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: milestone-guest-arm64
+          path: kiri-moby-guest-arm64.tgz
+          compression-level: 0
+          retention-days: 14
+
+  host:
+    name: Apple Silicon Host (Intel macOS cross-link and sign)
+    runs-on: macos-15-intel
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Run Host-side protocol tests
+        run: cargo test -p kiri-moby-bridge --lib --target x86_64-apple-darwin
+      - name: Cross-build, verify ARM64 and sign Host
+        run: |
+          set -euo pipefail
+          cargo build --release -p kiri-moby-bridge --bin kiri-moby-host --target aarch64-apple-darwin
+          binary="target/aarch64-apple-darwin/release/kiri-moby-host"
+          test "$(lipo "$binary" -archs)" = "arm64"
+          codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$binary"
+          codesign --verify --strict --verbose=2 "$binary"
+          tar -C target/aarch64-apple-darwin/release -czf kiri-moby-host-arm64.tgz kiri-moby-host
+      - uses: actions/upload-artifact@v4
+        with:
+          name: milestone-host-arm64
+          path: kiri-moby-host-arm64.tgz
+          retention-days: 14
+
+  bundle:
+    name: Single artifact, unified source revision
+    needs: [guest, host]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: milestone-guest-arm64
+          path: downloaded/guest
+      - uses: actions/download-artifact@v4
+        with:
+          name: milestone-host-arm64
+          path: downloaded/host
+      - name: Assemble one self-contained Kiri Moby package
+        run: |
+          set -euo pipefail
+          mkdir -p assembled/guest assembled/bin
+          tar -xzf downloaded/guest/kiri-moby-guest-arm64.tgz -C assembled/guest Image initramfs.cpio data.img.tgz SHA256SUMS
+          tar -xzf downloaded/host/kiri-moby-host-arm64.tgz -C assembled/bin kiri-moby-host
+          (cd assembled/guest && sha256sum -c SHA256SUMS)
+          printf '%s\n' "${{ github.sha }}" > assembled/SOURCE_REVISION
+          (cd assembled && sha256sum guest/Image guest/initramfs.cpio guest/data.img.tgz guest/SHA256SUMS bin/kiri-moby-host SOURCE_REVISION > BUNDLE_SHA256SUMS)
+          tar -C assembled -czf kiri-moby-macos-arm64-bundle.tgz guest bin SOURCE_REVISION BUNDLE_SHA256SUMS
+          ls -lh kiri-moby-macos-arm64-bundle.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kiri-moby-macos-arm64-bundle
+          path: kiri-moby-macos-arm64-bundle.tgz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
