@@ -1,0 +1,63 @@
+#!/bin/sh
+# Minimal Linux ARM64 PID1 for standard dockerd/containerd/runc.
+set -e
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 022
+log() { echo "[kiri-moby-init] $*" >&2; }
+die() { log "FATAL: $*"; exec /bin/sh; }
+
+mount -t proc proc /proc || die "mount /proc"
+mount -t sysfs sysfs /sys || die "mount /sys"
+mount -t devtmpfs devtmpfs /dev || die "mount /dev"
+mkdir -p /dev/pts /dev/shm /sys/fs/cgroup /run /tmp /var/lib /mnt/mac /Users /Volumes
+mount -t devpts devpts /dev/pts || die "mount /dev/pts"
+mount -t tmpfs tmpfs /dev/shm || die "mount /dev/shm"
+mount -t tmpfs tmpfs /run || die "mount /run"
+mount -t tmpfs tmpfs /tmp || die "mount /tmp"
+mount -t cgroup2 cgroup2 /sys/fs/cgroup || die "mount cgroup v2"
+hostname kiri-moby
+echo kiri-moby >/etc/hostname
+
+# Guest owns a separate ext4 disk. Never reuse the upstream Kiri data disk.
+mount -t ext4 -o noatime /dev/vda /var/lib || die "mount persistent /dev/vda"
+mkdir -p /var/lib/docker /var/lib/containerd /run/containerd /run/docker /var/log
+
+if mount -t virtiofs kiri-mac /mnt/mac; then
+    mount --bind /mnt/mac/Users /Users || log "Mac /Users share unavailable"
+    mount --bind /mnt/mac/Volumes /Volumes || log "Mac /Volumes share unavailable"
+else
+    log "macOS VirtioFS unavailable"
+fi
+/usr/local/sbin/kiri-rosetta || log "Rosetta registration failed"
+
+ip link set lo up
+ip link set eth0 up || die "guest eth0 not available"
+udhcpc -i eth0 -s /usr/local/sbin/kiri-udhcpc -n -q -t 12 || die "DHCP failed"
+
+containerd --root /var/lib/containerd --state /run/containerd >/var/log/containerd.log 2>&1 &
+containerd_pid=$!
+dockerd --host unix:///run/docker.sock --containerd /run/containerd/containerd.sock \
+  --data-root /var/lib/docker --exec-root /run/docker \
+  --storage-driver overlay2 --iptables=true --ip6tables=true \
+  >/var/log/dockerd.log 2>&1 &
+dockerd_pid=$!
+/usr/local/sbin/kiri-moby-guest >/var/log/kiri-moby-bridge.log 2>&1 &
+bridge_pid=$!
+
+shutdown() {
+    trap - TERM INT
+    log "Stopping Docker Engine and synchronizing persistent volume"
+    kill -TERM "$dockerd_pid" "$containerd_pid" "$bridge_pid" 2>/dev/null || true
+    n=0
+    while kill -0 "$dockerd_pid" 2>/dev/null && [ "$n" -lt 20 ]; do
+        sleep 1
+        n=$((n + 1))
+    done
+    sync
+    umount /var/lib 2>/dev/null || log "persistent disk busy during shutdown"
+    poweroff -f
+}
+trap shutdown TERM INT
+log "Moby guest services started"
+wait "$dockerd_pid" || log "dockerd exited unexpectedly"
+shutdown
