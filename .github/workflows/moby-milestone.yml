@@ -37,17 +37,22 @@ jobs:
         run: cargo build --release --target aarch64-unknown-linux-musl -p kiri-moby-bridge --bin kiri-moby-guest
       - name: Build standard Docker Guest and data disk template
         run: ./scripts/moby/build-guest.sh
-      - name: Confirm small boot image, sealed OS root and offline checksums
+      - name: Validate tiny early-boot archive and sealed rootfs checksums
         run: |
           set -euo pipefail
           cd target/moby-guest
           sha256sum -c SHA256SUMS
           test -s rootfs.revision
-          # Docker Engine lives on ext4, never in the memory-backed initramfs.
-          bytes="$(stat -c '%s' initramfs.cpio)"
-          test "$bytes" -lt 16777216
-          cpio -it --quiet < initramfs.cpio > /tmp/kiri-early-boot-files
-          grep -q '^init
+          test "$(stat -c '%s' initramfs.cpio)" -lt 16777216
+          cpio -it --quiet < initramfs.cpio > /tmp/kiri-boot-contents
+          grep -Fxq init /tmp/kiri-boot-contents
+          grep -Fxq bin/busybox /tmp/kiri-boot-contents
+          if grep -Eq 'dockerd|containerd|runc' /tmp/kiri-boot-contents; then
+            echo "The Docker Engine unexpectedly resides in initramfs" >&2
+            exit 1
+          fi
+          echo "Tiny ARM64 boot image verified" >> "$GITHUB_STEP_SUMMARY"
+      - name: Reuse exact-kernel verified ARM64 artifact if sources match
         id: reuse_kernel
         if: github.ref_name == 'memory-reclaim'
         env:
