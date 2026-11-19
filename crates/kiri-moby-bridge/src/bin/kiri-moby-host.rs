@@ -212,6 +212,44 @@ fn main() -> std::io::Result<()> {
         move || stopping.store(true, Ordering::Release)
     }).map_err(|e| io::Error::other(format!("failed to register SIGINT/SIGTERM handler: {e}")))?;
 
+    // Private local lifecycle channel for the native Kiri GUI. This is
+    // separate from Docker Engine and never forwarded into the Guest.
+    // Same-user access is already root-equivalent through docker.sock.
+    let control_path = run_dir.join("host-control.sock");
+    if std::fs::symlink_metadata(&control_path).is_ok() {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists,
+            format!("control socket exists; refusing to replace {}", control_path.display())));
+    }
+    let control_listener = UnixListener::bind(&control_path)?;
+    std::fs::set_permissions(&control_path, std::fs::Permissions::from_mode(0o600))?;
+    control_listener.set_nonblocking(true)?;
+    let control_stop = Arc::clone(&stopping);
+    let control_worker = thread::spawn(move || {
+        while !control_stop.load(Ordering::Acquire) {
+            match control_listener.accept() {
+                Ok((mut client, _)) => {
+                    use std::io::Read;
+                    let _ = client.set_read_timeout(Some(Duration::from_secs(2)));
+                    let mut request = [0_u8; 5];
+                    if client.read_exact(&mut request).is_ok() && &request == b"STOP\n" {
+                        let _ = client.write_all(b"OK\n");
+                        control_stop.store(true, Ordering::Release);
+                    } else {
+                        let _ = client.write_all(b"ERR\n");
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => {
+                    eprintln!("Kiri Moby local lifecycle listener stopped: {error}");
+                    return;
+                }
+            }
+        }
+    });
+
     // Experimental explicit localhost-only TCP port forwarding:
     // KIRI_MOBY_TCP_PORTS="8080:8080,5432:5432" means
     // Mac localhost:8080 -> Guest published TCP port 8080 (created by Docker).
@@ -344,6 +382,10 @@ fn main() -> std::io::Result<()> {
     }
 
     eprintln!("Stopping standard Docker Engine gracefully...");
+    if control_worker.join().is_err() {
+        eprintln!("Kiri Moby local lifecycle worker panicked");
+    }
+    let _ = std::fs::remove_file(&control_path);
     // Ensure /events curl is killed and reaped, and Mac TCP listeners have
     // closed, before releasing the guest or reusing their localhost ports.
     if let Some(worker) = port_watcher {
