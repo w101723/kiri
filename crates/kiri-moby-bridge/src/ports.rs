@@ -207,12 +207,13 @@ fn watch_events(
             .stderr(Stdio::null())
             .spawn();
 
-        let Ok(mut process) = spawned else {
-            if let Err(error) = spawned {
+        let mut process = match spawned {
+            Ok(process) => process,
+            Err(error) => {
                 eprintln!("Kiri/Moby: cannot subscribe to Docker /events: {error}");
+                sleep_until_retry(&stop);
+                continue;
             }
-            sleep_until_retry(&stop);
-            continue;
         };
         let Some(stdout) = process.stdout.take() else {
             let _ = process.kill();
@@ -279,7 +280,8 @@ pub fn start(socket: PathBuf, connector: Arc<Connector>, stop: Arc<AtomicBool>) 
         let child = Arc::new(Mutex::new(None));
         let event_child = Arc::clone(&child);
         let event_stop = Arc::clone(&stop);
-        let watcher = thread::spawn(move || watch_events(socket.clone(), sender, event_stop, event_child));
+        let event_socket = socket.clone();
+        let watcher = thread::spawn(move || watch_events(event_socket, sender, event_stop, event_child));
 
         // Baseline scan catches already-running containers after VM restart.
         // Events trigger immediate additional scans; periodic polling remains
