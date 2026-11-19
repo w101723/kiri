@@ -93,12 +93,21 @@ fn main() -> std::io::Result<()> {
         std::fs::remove_dir(&staging)?;
     }
 
-    let share = Share {
-        tag: "kiri-mac".to_owned(),
-        dirs: vec![
-            ShareDir { name: "Users".to_owned(), dir: PathBuf::from("/Users") },
-            ShareDir { name: "Volumes".to_owned(), dir: PathBuf::from("/Volumes") },
-        ],
+    // Docker guest processes must not receive writable access to all host
+    // home directories or mounted volumes by default. Opt in explicitly when
+    // testing bind mounts; this also protects existing OrbStack data.
+    let share = if std::env::var("KIRI_MOBY_SHARE_MAC").ok().as_deref() == Some("1") {
+        eprintln!("WARNING: KIRI_MOBY_SHARE_MAC=1 enables writable Mac /Users and /Volumes shares");
+        Some(Share {
+            tag: "kiri-mac".to_owned(),
+            dirs: vec![
+                ShareDir { name: "Users".to_owned(), dir: PathBuf::from("/Users") },
+                ShareDir { name: "Volumes".to_owned(), dir: PathBuf::from("/Volumes") },
+            ],
+        })
+    } else {
+        eprintln!("Mac host directory sharing disabled (KIRI_MOBY_SHARE_MAC=1 to opt in)");
+        None
     };
 
     let log_dir = data.join("logs");
@@ -123,7 +132,7 @@ fn main() -> std::io::Result<()> {
         console: Some(console_log.into()),
         agent_port: 5556,
         disk: Some(disk),
-        share: Some(share),
+        share,
         rosetta_tag: Some("rosetta".into()),
         nat_mac: Some("02:4b:69:72:69:01".into()),
     })?;
@@ -162,12 +171,15 @@ fn main() -> std::io::Result<()> {
     // The automatic watcher uses bounded Docker API polling for now;
     // an event-stream implementation and UDP are follow-up work.
     let manual_ports = std::env::var("KIRI_MOBY_TCP_PORTS").unwrap_or_default();
-    if manual_ports.trim().is_empty() {
+    // During initial VM/Engine smoke tests, avoid automatic Docker API
+    // probes and any Mac TCP port listeners.
+    let disable_ports = std::env::var("KIRI_MOBY_DISABLE_PORT_FORWARD").ok().as_deref() == Some("1");
+    if !disable_ports && manual_ports.trim().is_empty() {
         // Standard Docker API is the source of truth: running containers'
         // published guest ports are mirrored onto Mac localhost on demand.
         kiri_moby_bridge::ports::start(path.clone(), Arc::clone(&connector), Arc::clone(&stopping));
     }
-    for rule in manual_ports.split(',').filter(|s| !s.is_empty()) {
+    for rule in manual_ports.split(',').filter(|s| !s.is_empty() && !disable_ports) {
         let (host, guest) = rule.split_once(':')
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("invalid KIRI_MOBY_TCP_PORTS entry: {rule}")))?;
         let parse = |v: &str| -> io::Result<u16> {
