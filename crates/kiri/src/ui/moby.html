@@ -27,7 +27,7 @@ button,input{font-family:inherit}button{cursor:pointer}input{color:var(--text);b
 <script>
 "use strict";
 const d=id=>document.getElementById(id);
-const s={online:false,containers:[],images:[],volumes:[],networks:[],info:{},version:{},page:"dashboard",search:""};
+const s={online:false,containers:[],images:[],volumes:[],networks:[],shares:[],info:{},version:{},page:"dashboard",search:""};
 const pageNames={dashboard:"总览",containers:"容器",images:"镜像",volumes:"Volume",networks:"网络",compose:"Compose",build:"Build",settings:"设置"};
 function send(x){window.webkit?.messageHandlers?.kiri?.postMessage(JSON.stringify(x))}
 function el(tag,cls,txt){const o=document.createElement(tag);if(cls)o.className=cls;if(txt!==undefined)o.textContent=String(txt);return o}
@@ -93,7 +93,21 @@ function settings(root){const card=el("div","card");card.append(el("h2","","Kiri
   card.append(el("p","","使用独立标准 Docker Engine、ext4 数据盘和私有 Docker Socket。不会覆盖 OrbStack。"));
   const row=el("div","row");row.append(btn("启动 VM",()=>send({cmd:"connect"}),"primary"),btn("停止 VM",()=>{if(confirmDelete("停止 VM 和正在运行的容器？"))send({cmd:"stop"})},"danger"));
   card.append(row);root.append(card);
-  const shares=el("div","card");shares.append(el("h2","","Mac 目录共享"));shares.append(el("p","","由启动参数 KIRI_MOBY_SHARE_DIRS 精确授权 VirtioFS 项目目录。默认不会向 Guest 开放整个 /Users 或 /Volumes。"));root.append(shares)}
+  const shares=el("div","card");shares.append(el("h2","","Mac 目录共享"));
+  shares.append(el("p","","选择允许 Docker 容器访问的 Mac 项目目录；未经授权不会共享整个 /Users 或 /Volumes。更改后需要重启 VM 才能生效。"));
+  const authorized=s.shares||[];
+  if(!authorized.length)shares.append(el("p","","尚未授权目录"));
+  authorized.forEach(path=>{
+    const row=el("div","row");row.style.marginBottom="9px";
+    const name=el("span","mono",path);name.style.flex="1";name.style.overflowWrap="anywhere";
+    row.append(name,btn("移除",()=>{if(confirmDelete("移除对 "+path+" 的共享授权？"))send({cmd:"moby",action:"remove_share",path})},"danger small"));shares.append(row);
+  });
+  const buttons=el("div","row");
+  buttons.append(btn("选择共享目录…",()=>send({cmd:"moby",action:"choose_share"}),"primary"));
+  buttons.append(btn("应用更改并重启 VM",()=>{
+    if(confirmDelete("重启 Moby VM 以应用目录授权？运行中的容器会被中断。"))send({cmd:"moby",action:"apply_shares"})
+  }));
+  shares.append(buttons);root.append(shares)}
 const pages={dashboard,containers,images,volumes,networks,compose,build,settings};
 function render(){d("title").textContent=pageNames[s.page];["containers","images","volumes","networks"].forEach(k=>d("count-"+k).textContent=s[k].length);
   d("status").textContent=s.online?"Moby Docker Engine 已连接":"Moby VM 未连接";d("dot").classList.toggle("on",s.online);
@@ -110,7 +124,7 @@ d("power").onclick=()=>{if(s.online&&!confirmDelete("停止 Moby VM？"))return;
 d("modalClose").onclick=()=>d("overlay").style.display="none";
 d("overlay").onclick=e=>{if(e.target===d("overlay"))d("overlay").style.display="none"};
 window.kiri={on(e){if(!e||typeof e!=="object")return;
- if(e.type==="snapshot"){Object.assign(s,{online:!!e.online,containers:e.containers||[],images:e.images||[],volumes:e.volumes||[],networks:e.networks||[],info:e.info||{},version:e.version||{},error:e.error});render()}
+ if(e.type==="snapshot"){Object.assign(s,{online:!!e.online,containers:e.containers||[],images:e.images||[],volumes:e.volumes||[],networks:e.networks||[],shares:e.shares||[],info:e.info||{},version:e.version||{},error:e.error});render()}
  else if(e.type==="operation"){if(e.ok&&["inspect","logs","compose_ps","compose_up","compose_down","build"].includes(e.label)){d("modalTitle").textContent=e.label;d("modalText").textContent=e.message||"完成";d("overlay").style.display="flex"}else toast(e.label+": "+(e.message||"完成"),!e.ok)}
  else if(e.type==="vm"){d("subtitle").textContent=e.state==="starting"?"正在启动 VM…":e.state==="stopping"?"正在停止 VM…":"标准 Docker Engine"}
  else if(e.type==="selected_compose"){composePath=e.path||"";if(s.page==="compose")render()}
