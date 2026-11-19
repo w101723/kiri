@@ -13,6 +13,8 @@ fn main() {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn main() -> std::io::Result<()> {
     use std::io::{self, Write};
+    use std::net::TcpListener;
+    use std::os::fd::OwnedFd;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::PathBuf;
@@ -25,6 +27,7 @@ fn main() -> std::io::Result<()> {
 
     const DOCKER_VSOCK_PORT: u32 = 2375; // AF_VSOCK, NOT TCP
     const CONTROL_VSOCK_PORT: u32 = 2376; // graceful shutdown
+    const TCP_FORWARD_VSOCK_PORT: u32 = 2377; // published port transport
 
     let data = match std::env::var_os("KIRI_MOBY_DATA_DIR") {
         Some(path) => PathBuf::from(path),
@@ -139,6 +142,55 @@ fn main() -> std::io::Result<()> {
         let stopping = Arc::clone(&stopping);
         move || stopping.store(true, Ordering::Release)
     }).map_err(|e| io::Error::other(format!("failed to register SIGINT/SIGTERM handler: {e}")))?;
+
+    // Experimental explicit localhost-only TCP port forwarding:
+    // KIRI_MOBY_TCP_PORTS="8080:8080,5432:5432" means
+    // Mac localhost:8080 -> Guest published TCP port 8080 (created by Docker).
+    // Docker still owns DNAT and container networking inside the VM.
+    // This is NOT yet automatic /events reconciliation and does not expose
+    // the port to the LAN or handle UDP.
+    for rule in std::env::var("KIRI_MOBY_TCP_PORTS").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
+        let (host, guest) = rule.split_once(':')
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("invalid KIRI_MOBY_TCP_PORTS entry: {rule}")))?;
+        let parse = |v: &str| -> io::Result<u16> {
+            v.parse::<u16>().ok().filter(|p| *p > 0)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("invalid port: {v}")))
+        };
+        let host_port = parse(host)?;
+        let guest_port = parse(guest)?;
+        let tcp_listener = TcpListener::bind(("127.0.0.1", host_port))?;
+        tcp_listener.set_nonblocking(true)?;
+        eprintln!("Moby port forwarding: 127.0.0.1:{host_port} -> guest:{guest_port}/tcp");
+        let connector = Arc::clone(&connector);
+        let stopping = Arc::clone(&stopping);
+        thread::spawn(move || {
+            while !stopping.load(Ordering::Acquire) {
+                let client = match tcp_listener.accept() {
+                    Ok((client, _)) => client,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) => {
+                        eprintln!("Moby TCP listener stopped ({host_port}): {e}");
+                        return;
+                    }
+                };
+                let connector = Arc::clone(&connector);
+                thread::spawn(move || {
+                    let Ok(stream) = connector.connect(TCP_FORWARD_VSOCK_PORT) else { return };
+                    let Ok(fd) = stream.fd.try_clone() else { return };
+                    let mut to_guest = UnixStream::from(fd);
+                    if to_guest.write_all(&guest_port.to_be_bytes()).is_ok() {
+                        let client: OwnedFd = client.into();
+                        let _ = kiri_moby_bridge::relay(UnixStream::from(client), to_guest);
+                    }
+                    drop(stream);
+                });
+            }
+        });
+    }
 
     // Avoid waiting forever in accept() after Ctrl-C, so dockerd can stop
     // cleanly and flush the ext4 data disk before VM destruction.
