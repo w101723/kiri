@@ -129,10 +129,15 @@ under that directory's `guest/`. Do not place the data disk on exFAT.
 The VM memory defaults to 4 GiB and CPU to 4; override with
 `KIRI_MOBY_MEMORY_MIB` and `KIRI_MOBY_CPUS`.
 
-### Experimental TCP publish forwarding
+### TCP publish forwarding
 
-Until the host-side Docker event watcher is implemented, TCP forwarding
-is **explicit**. For example:
+The host now queries **standard dockerd's container list API** and mirrors
+running containers' published TCP ports to Mac `127.0.0.1` automatically.
+It polls the Docker API every 2 seconds (rather than rewriting Docker's
+API or maintaining an alternative container DB). An event-stream watcher
+and UDP forwarding remain outstanding.
+
+For manual override, set `KIRI_MOBY_TCP_PORTS`:
 
 ```sh
 KIRI_MOBY_TCP_PORTS="8080:8080,5432:5432" \
@@ -147,12 +152,12 @@ The mapping format is `MAC_PORT:GUEST_PUBLISHED_PORT`. It deliberately binds
 only 127.0.0.1 on the Mac, and currently supports TCP only. Inside the
 guest **dockerd** controls the container port publish and network/NAT rules;
 the host relay never bypasses Docker to reach a container IP directly.
-**Automatic Docker /events-based port reconciliation and UDP are pending**.
+**Docker /events streaming and UDP are pending**; TCP auto-discovery is already implemented.
 A port must be free on the Mac, or host startup fails.
 Press Ctrl-C to request a graceful guest shutdown and disk sync.
 
-**Not yet implemented:** automatic host port publishing, standard Docker API
-integration into Kiri's existing GUI, automatic VM sleep/balloon policy,
+**Not yet implemented:** UDP publishing and Docker event streaming, standard
+Docker API integration into Kiri's existing GUI, automatic VM sleep/balloon policy,
 full regression tests and signed/notarized single-app distribution.
 
 It intentionally does not replace the current Docker context or
