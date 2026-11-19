@@ -13,6 +13,10 @@ use std::time::Duration;
 use serde_json::Value;
 
 pub fn socket() -> io::Result<PathBuf> {
+    // macOS Kiri is now a Moby-only Docker client. Ignore the legacy
+    // KIRI_SOCKET override so neither the GUI nor "kiri ..." CLI commands
+    // can silently target the old Kiri engine or OrbStack.
+    #[cfg(not(target_os = "macos"))]
     if let Some(s) = std::env::var_os("KIRI_SOCKET") {
         return Ok(PathBuf::from(s));
     }
