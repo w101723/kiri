@@ -147,9 +147,16 @@ fn main() -> std::io::Result<()> {
     // KIRI_MOBY_TCP_PORTS="8080:8080,5432:5432" means
     // Mac localhost:8080 -> Guest published TCP port 8080 (created by Docker).
     // Docker still owns DNAT and container networking inside the VM.
-    // This is NOT yet automatic /events reconciliation and does not expose
-    // the port to the LAN or handle UDP.
-    for rule in std::env::var("KIRI_MOBY_TCP_PORTS").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
+    // Explicit rules override Docker API auto-discovery for TCP ports.
+    // The automatic watcher uses bounded Docker API polling for now;
+    // an event-stream implementation and UDP are follow-up work.
+    let manual_ports = std::env::var("KIRI_MOBY_TCP_PORTS").unwrap_or_default();
+    if manual_ports.trim().is_empty() {
+        // Standard Docker API is the source of truth: running containers'
+        // published guest ports are mirrored onto Mac localhost on demand.
+        kiri_moby_bridge::ports::start(path.clone(), Arc::clone(&connector), Arc::clone(&stopping));
+    }
+    for rule in manual_ports.split(',').filter(|s| !s.is_empty()) {
         let (host, guest) = rule.split_once(':')
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("invalid KIRI_MOBY_TCP_PORTS entry: {rule}")))?;
         let parse = |v: &str| -> io::Result<u16> {
