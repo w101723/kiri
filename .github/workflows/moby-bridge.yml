@@ -6,6 +6,12 @@ on:
     paths:
       - "crates/kiri-moby-bridge/**"
       - "crates/kiri-vmm/**"
+      - "crates/kiri/src/ui/moby*"
+      - "crates/kiri/src/ui/mac.rs"
+      - "crates/kiri/src/ui/mod.rs"
+      - "crates/kiri/src/client.rs"
+      - "crates/kiri/src/main.rs"
+      - "crates/kiri/Cargo.toml"
       - ".github/workflows/moby-bridge.yml"
   pull_request:
     paths:
@@ -57,6 +63,8 @@ jobs:
           xcrun --sdk macosx --show-sdk-path
       - name: Exercise native macOS Docker event parser and socket relay
         run: cargo test -p kiri-moby-bridge --lib --target x86_64-apple-darwin
+      - name: Compile complete macOS Kiri GUI against upstream Moby
+        run: cargo check -p kiri --target aarch64-apple-darwin
       - name: Compile macOS ARM64 host (not run on Intel)
         run: cargo check -p kiri-moby-bridge --bin kiri-moby-host --target aarch64-apple-darwin
       - name: Link, verify ARM64 architecture and sign launcher
