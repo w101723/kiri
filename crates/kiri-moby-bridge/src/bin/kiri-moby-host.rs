@@ -49,6 +49,36 @@ fn main() -> std::io::Result<()> {
     // access to the Guest); it must not be accessible to other local users.
     std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700))?;
 
+    // Exclusive VM-disk ownership before constructing the VZ VM. Two GUI
+    // processes must never mount the same writable ext4 image concurrently.
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::FileTypeExt;
+    let single_host_lock = std::fs::OpenOptions::new()
+        .create(true).read(true).write(true)
+        .open(data.join("moby-vm.lock"))?;
+    if unsafe { libc::flock(single_host_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists,
+            "another Kiri Moby Host owns this VM/data.img; refusing concurrent mount"));
+    }
+    let run_paths = data.join("run");
+    for name in ["docker.sock", "host-control.sock"] {
+        let old = run_paths.join(name);
+        if let Ok(meta) = std::fs::symlink_metadata(&old) {
+            if !meta.file_type().is_socket() {
+                return Err(io::Error::new(io::ErrorKind::AlreadyExists,
+                    format!("refusing non-socket path {}", old.display())));
+            }
+            if UnixStream::connect(&old).is_ok() {
+                return Err(io::Error::new(io::ErrorKind::AlreadyExists,
+                    format!("Kiri Moby socket is active at {}", old.display())));
+            }
+            // The exclusive lock is held and the socket has no live server.
+            // Recover a stale socket after a previous crash; never unlink a
+            // symlink, regular file or a currently connected Engine.
+            std::fs::remove_file(&old)?;
+        }
+    }
+
     let guest = data.join("guest");
     let kernel = guest.join("Image");
     let initrd = guest.join("initramfs.cpio");
