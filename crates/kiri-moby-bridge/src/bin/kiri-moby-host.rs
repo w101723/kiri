@@ -113,38 +113,26 @@ fn main() -> std::io::Result<()> {
     let mut share_spec = String::new();
     let share = if !share_dirs.trim().is_empty() {
         let mut dirs = Vec::new();
-        let mut unique_paths = std::collections::BTreeSet::new();
+        let mut selected = Vec::new();
         for input in share_dirs.split(',') {
-            if input.is_empty() || input.trim() != input {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput,
-                    "KIRI_MOBY_SHARE_DIRS contains an empty or whitespace-padded path"));
-            }
-            let path = std::path::Path::new(input);
-            // Docker bind paths remain identical on the Mac and Linux Guest.
-            // Restrict that mapping to native Mac user/project volumes.
-            if !path.is_absolute()
-                || !(path.starts_with("/Users/") || path.starts_with("/Volumes/"))
-                || path.components().any(|c| !matches!(c, std::path::Component::RootDir | std::path::Component::Normal(_)))
+            if input.is_empty() || input.trim() != input
+                || !kiri_moby_bridge::shares::allowed_target(input)
             {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput,
-                    format!("share must be a normalized absolute subdirectory of /Users or /Volumes: {input}")));
+                    format!("share must be a normalized absolute project directory under /Users or /Volumes: {input}")));
             }
-            let resolved = path.canonicalize()?;
-            if !resolved.is_dir() || !unique_paths.insert(input.to_owned()) {
+            let resolved = std::path::Path::new(input).canonicalize()?;
+            if !resolved.is_dir() {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput,
-                    format!("share must be an existing, unique directory: {input}")));
+                    format!("Mac share is not a directory: {input}")));
             }
             let name = format!("s{}", dirs.len());
-            // Only lowercase hex digits enter the kernel command line.
-            let hex_path: String = input.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect();
-            if !share_spec.is_empty() { share_spec.push(','); }
-            share_spec.push_str(&format!("{name}@{hex_path}"));
+            selected.push(input.to_owned());
             dirs.push(ShareDir { name, dir: resolved });
-            if dirs.len() > 16 || share_spec.len() > 1800 {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput,
-                    "KIRI_MOBY_SHARE_DIRS exceeds 16 paths or kernel cmdline size"));
-            }
         }
+        // Enforce duplicate, traversal, count and size limits at the common
+        // protocol boundary, and again on the Linux side before mount().
+        share_spec = kiri_moby_bridge::shares::encode(&selected)?;
         eprintln!("Kiri Moby: {} explicit writable Mac directories authorized", dirs.len());
         Some(Share { tag: "kiri-mac".to_owned(), dirs })
     } else if share_all {
