@@ -78,7 +78,7 @@ jobs:
         run: |
           cp guest/out/Image target/moby-guest/Image
           (cd target/moby-guest && sha256sum Image >> SHA256SUMS)
-          tar -C target/moby-guest -czf kiri-moby-guest-arm64.tgz Image initramfs.cpio data.img.tgz SHA256SUMS
+          tar -C target/moby-guest -czf kiri-moby-guest-arm64.tgz Image initramfs.cpio data.img.tgz system.img.tgz rootfs.revision SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: milestone-guest-arm64
@@ -153,11 +153,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p assembled/guest assembled/bin
-          tar -xzf downloaded/guest/kiri-moby-guest-arm64.tgz -C assembled/guest Image initramfs.cpio data.img.tgz SHA256SUMS
+          tar -xzf downloaded/guest/kiri-moby-guest-arm64.tgz -C assembled/guest Image initramfs.cpio data.img.tgz system.img.tgz rootfs.revision SHA256SUMS
           tar -xzf downloaded/host/kiri-moby-host-arm64.tgz -C assembled/bin kiri-moby-host
           (cd assembled/guest && shasum -a 256 -c SHA256SUMS)
           printf '%s\n' "${{ github.sha }}" > assembled/SOURCE_REVISION
-          (cd assembled && shasum -a 256 guest/Image guest/initramfs.cpio guest/data.img.tgz guest/SHA256SUMS bin/kiri-moby-host SOURCE_REVISION > BUNDLE_SHA256SUMS)
+          (cd assembled && shasum -a 256 guest/Image guest/initramfs.cpio guest/data.img.tgz guest/system.img.tgz guest/rootfs.revision guest/SHA256SUMS bin/kiri-moby-host SOURCE_REVISION > BUNDLE_SHA256SUMS)
           tar -C assembled -czf kiri-moby-macos-arm64-bundle.tgz guest bin SOURCE_REVISION BUNDLE_SHA256SUMS
       - name: Fetch pinned official Docker CLI, Compose and Buildx
         run: |
@@ -182,7 +182,8 @@ jobs:
           tar -xzf downloaded/gui/kiri-moby-gui-arm64.tgz -C "$mac" kiri
           chmod 755 "$mac/kiri"
           cp assembled/guest/Image assembled/guest/initramfs.cpio \
-             assembled/guest/data.img.tgz assembled/guest/SHA256SUMS "$res/guest/"
+             assembled/guest/data.img.tgz assembled/guest/system.img.tgz \
+             assembled/guest/rootfs.revision assembled/guest/SHA256SUMS "$res/guest/"
           cp assembled/bin/kiri-moby-host "$res/bin/kiri-moby-host"
           cp assembled/SOURCE_REVISION "$res/SOURCE_REVISION"
           tar -xzf downloaded/cli/docker.tgz -C downloaded/cli docker/docker

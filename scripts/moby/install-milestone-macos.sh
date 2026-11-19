@@ -44,7 +44,7 @@ if [ -e "$backup" ]; then
 fi
 mkdir -m 700 "$backup"
 mkdir -m 700 "$backup/guest" "$backup/bin"
-for filename in Image initramfs.cpio data.img.tgz SHA256SUMS; do
+for filename in Image initramfs.cpio data.img.tgz system.img.tgz rootfs.revision SHA256SUMS; do
   if [ -e "$dest/guest/$filename" ]; then
     mv "$dest/guest/$filename" "$backup/guest/$filename"
   fi

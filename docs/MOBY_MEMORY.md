@@ -59,3 +59,32 @@ an untested VMM switch into the user-visible App.
    show whether physical memory really returned.
 4. Stress test Compose, multi-architecture Buildx and allocation bursts
    before calling the change production-ready.
+
+## Low-memory boot redesign (memory-reclaim branch)
+
+The old full Alpine + Docker userspace initramfs caused boot-time inflation and
+then copied the userspace into an ext4 disk **every single boot**. This is a
+plausible source of elevated Mac RSS, but remains unverified until Mac sampling.
+
+The new pipeline moves Alpine, dockerd, containerd and the guest bridge onto a
+prepopulated persistent ext4 disk. The initial RAM filesystem contains only
+BusyBox, musl and the first-stage init. The VM also attaches a second,
+read-only ext4 seed disk for one-time userspace updates on existing installs.
+
+- `/dev/vda` is the **same existing persistent data.img**. Docker images,
+  volumes and container metadata under /var/lib are preserved; never erase it.
+- `/dev/vdb` is the sealed read-only system.img seed. The stage1 init
+  compares .kiri-moby-rootfs-revision and copies only on first migration or an
+  explicit upgrade. The revision stamp is committed after a successful sync.
+- Newly provisioned data.img comes **prepopulated** with the same rootfs stamp,
+  so every normal start can switch_root directly without a userspace copy.
+- The host caches system.img by revision. Upgrades to an existing system image
+  do not touch the data.img outside the Linux guest and do not touch OrbStack.
+- The new required Guest assets are `system.img.tgz` and
+  `rootfs.revision`, plus existing `Image`, `initramfs.cpio`,
+  `data.img.tgz`, `SHA256SUMS`. Use a matching same-commit Host and Guest.
+- **First boot on an old installed disk still needs a one-time OS copy**;
+  subsequent boots should log `Userspace already current; no rootfs copying`.
+- Compare the CI initramfs size, macOS process RSS, Guest `MemAvailable`,
+  slab, and VM pressure to test the 800 MiB idle hypothesis. We have not yet
+  established 100-200 MiB as measured Kiri host RSS.

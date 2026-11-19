@@ -113,7 +113,7 @@ fn install_guest_assets(data: &Path) -> io::Result<()> {
     // Do not modify the VM's existing disk or mutate boot assets while it runs.
     // Upgrades of existing assets are handled offline by the verified
     // milestone installer, not by a running GUI.
-    for file in ["Image", "initramfs.cpio", "data.img.tgz"] {
+    for file in ["Image", "initramfs.cpio", "data.img.tgz", "system.img.tgz", "rootfs.revision", "SHA256SUMS"] {
         let target = dest.join(file);
         if !target.is_file() && assets.join(file).is_file() {
             let staging = dest.join(format!(".{file}.new"));
