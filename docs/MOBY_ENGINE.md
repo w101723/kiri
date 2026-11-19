@@ -69,6 +69,44 @@ publishing, auto-sleep/balloon integration and Buildx/Compose end-to-end
 testing are still pending. The launcher refuses to run without guest
 assets; an incomplete build must not be described as a working runtime.
 
+## Linux root filesystem and OCI pivot_root (2026-11-19 fix)
+
+The first real Apple Silicon Docker container test uncovered:
+`OCI runtime create failed: error jailing process inside rootfs: pivot_root .: invalid argument`.
+The Guest previously ran dockerd directly from the Linux initramfs rootfs.
+That special rootfs cannot be pivoted by OCI runc.
+
+**Current Guest boot uses two stages:**
+
+1. PID 1 mounts the existing independent Kiri Moby ext4 `/dev/vda` at
+   `/newroot`. If the disk was created with the old `/var/lib`-only layout,
+   it **moves** existing top-level `/docker` and `/containerd` into
+   `/var/lib/docker` and `/var/lib/containerd` on the SAME disk, without
+   replacing container metadata, images or volumes. A conflict is fatal.
+2. PID 1 copies Alpine binaries and the current Guest init/Agent to ext4,
+   moves `/dev`, `/proc` and `/sys`, and runs BusyBox `switch_root`.
+   Stage 2 verifies that `/` is ext4 **before** starting Moby Engine,
+   containerd or runc. The data disk now contains both the Linux rootfs and
+   persistent Docker state. Rootfs content is refreshed on each boot.
+
+The Host launcher, Docker socket and `vm/data.img` path are unchanged.
+On an existing test installation, stop the VM and **make an APFS clone backup**
+of `vm/data.img` before first boot with the new Guest, as the layout
+migration alters paths inside that disk:
+
+```sh
+export KIRI_MOBY_DATA_DIR="/tmp/kiri-test/.kiri-moby"
+# Run only after the old VM has fully stopped:
+cp -c "$KIRI_MOBY_DATA_DIR/vm/data.img" \
+      "$KIRI_MOBY_DATA_DIR/vm/data.img.before-ext4-root"
+```
+
+Do not delete or recreate `data.img` to fix the runc error. After updating
+the Guest artifact, the expected log includes `Stage 2: ext4 root verified`.
+Validate with `docker --host unix://.../run/docker.sock run --pull=never
+--platform linux/arm64 alpine:3.22 echo hello`. Success on a real Apple
+Silicon Mac is still an **unpassed acceptance gate** until reported.
+
 ## Experimental Guest image build and test
 
 GitHub Actions now contains two distinct build pipelines:
@@ -86,7 +124,8 @@ with:
 
 - `Image`: ARM64 kernel from Kiri's existing source/config
 - `initramfs.cpio`: minimal Alpine Linux ARM64 userspace with real Docker
-- `data.img.tgz`: 48 GiB **virtual** sparse ext4 disk (not 48 GiB physically)
+- `data.img.tgz`: 48 GiB **virtual** sparse ext4 disk; the Guest switches
+  to this disk as its real root while preserving Docker data under /var/lib
 - `SHA256SUMS`: checksums of these three files
 
 The VM uses `$KIRI_MOBY_DATA_DIR/guest` for boot assets and
