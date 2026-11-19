@@ -199,6 +199,20 @@ fn result_event(name: &str, result: io::Result<String>) {
     }
 }
 
+fn memory_status() -> Value {
+    // Host-only control endpoint; never tunnel this to Docker or the Guest.
+    let Ok(path) = data_dir() else { return Value::Null };
+    let Ok(mut stream) = UnixStream::connect(path.join("run/host-control.sock")) else { return Value::Null };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(350)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(350)));
+    if stream.write_all(b"STAT\n").is_err() { return Value::Null; }
+    let mut bytes = [0u8; 256];
+    match std::io::Read::read(&mut stream, &mut bytes) {
+        Ok(len) => serde_json::from_slice(&bytes[..len]).unwrap_or(Value::Null),
+        Err(_) => Value::Null,
+    }
+}
+
 fn refresh() {
     let snapshot = (|| -> io::Result<Value> {
         let containers = client::get("/containers/json?all=1")?;
@@ -211,7 +225,7 @@ fn refresh() {
             "type":"snapshot", "online":true,
             "containers":containers, "images":images,
             "volumes":volumes["Volumes"], "networks":networks,
-            "info":info, "version":version, "shares": read_shares().unwrap_or_default()
+            "info":info, "version":version, "memory": memory_status(), "shares": read_shares().unwrap_or_default()
         }))
     })();
     match snapshot {

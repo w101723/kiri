@@ -51,7 +51,7 @@ an untested VMM switch into the user-visible App.
 1. Build a matching Host+Guest artifact from the same commit; older Guest
    versions don't expose AF_VSOCK:2378.
 2. Run Kiri Moby. Check the Host log for "balloon target".
-3. Run scripts/moby/measure-memory-macos.sh. Compare Guest target,
+3. Run scripts/moby/measure-memory-macos.sh --stress (after pulling alpine:3.22). Compare Guest target,
    macOS Resident Set Size and macOS memory pressure; only RSS/pressure
    show whether physical memory really returned.
 4. Stress test Compose, multi-architecture Buildx and allocation bursts
