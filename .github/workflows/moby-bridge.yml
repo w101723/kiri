@@ -46,3 +46,17 @@ jobs:
           targets: aarch64-apple-darwin
       - name: Cross-check arm64 macOS host (does not boot a VM)
         run: cargo check -p kiri-moby-bridge --bin kiri-moby-host --target aarch64-apple-darwin
+      - name: Compile and ad-hoc sign the ARM64 VZ host launcher
+        run: |
+          cargo build -p kiri-moby-bridge --release --bin kiri-moby-host --target aarch64-apple-darwin
+          codesign --force --sign - --entitlements crates/kiri/kiri.entitlements target/aarch64-apple-darwin/release/kiri-moby-host
+          codesign --verify --strict -v target/aarch64-apple-darwin/release/kiri-moby-host
+          mkdir -p target/moby-dist
+          tar -C target/aarch64-apple-darwin/release -czf target/moby-dist/kiri-moby-host-arm64.tgz kiri-moby-host
+      - name: Upload standalone experimental launcher
+        uses: actions/upload-artifact@v4
+        with:
+          name: kiri-moby-host-arm64
+          path: target/moby-dist/kiri-moby-host-arm64.tgz
+          if-no-files-found: error
+          retention-days: 7
