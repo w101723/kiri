@@ -184,6 +184,14 @@ this is **lower latency than the old 2-second polling**, not a synchronous
 port-publish guarantee. UDP and LAN-exposed bind-address semantics are not
 implemented. Export `KIRI_MOBY_DEBUG=1` for detailed relay errors.
 
+To install a new event-driven **Host** without replacing Guest or ext4 data,
+stop the Kiri VM and run:
+
+```sh
+export KIRI_MOBY_DATA_DIR="/tmp/kiri-test/.kiri-moby"
+bash scripts/moby/upgrade-host-macos.sh "$HOME/Downloads/kiri-moby-host-arm64.zip"
+```
+
 Run `bash scripts/moby/test-port-events-macos.sh` for an Apple Silicon
 smoke test of automatic TCP publishing, Nginx readiness and listener
 cleanup. The VM must be running with auto-forwarding enabled. The test

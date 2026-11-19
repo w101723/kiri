@@ -187,11 +187,15 @@ fn main() -> std::io::Result<()> {
     // During initial VM/Engine smoke tests, avoid automatic Docker API
     // probes and any Mac TCP port listeners.
     let disable_ports = std::env::var("KIRI_MOBY_DISABLE_PORT_FORWARD").ok().as_deref() == Some("1");
-    if !disable_ports && manual_ports.trim().is_empty() {
-        // Standard Docker API is the source of truth: running containers'
-        // published guest ports are mirrored onto Mac localhost on demand.
-        kiri_moby_bridge::ports::start(path.clone(), Arc::clone(&connector), Arc::clone(&stopping));
-    }
+    let port_watcher = if !disable_ports && manual_ports.trim().is_empty() {
+        // Docker /events triggers fast reconciliation; a 30s snapshot
+        // recovers missed transitions. Join the worker before retiring VM.
+        Some(kiri_moby_bridge::ports::start(
+            path.clone(), Arc::clone(&connector), Arc::clone(&stopping)
+        ))
+    } else {
+        None
+    };
     for rule in manual_ports.split(',').filter(|s| !s.is_empty() && !disable_ports) {
         let (host, guest) = rule.split_once(':')
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("invalid KIRI_MOBY_TCP_PORTS entry: {rule}")))?;
@@ -304,6 +308,13 @@ fn main() -> std::io::Result<()> {
     }
 
     eprintln!("Stopping standard Docker Engine gracefully...");
+    // Ensure /events curl is killed and reaped, and Mac TCP listeners have
+    // closed, before releasing the guest or reusing their localhost ports.
+    if let Some(worker) = port_watcher {
+        if worker.join().is_err() {
+            eprintln!("Kiri/Moby: port watcher panicked during shutdown");
+        }
+    }
     if let Ok(control) = connector.connect(CONTROL_VSOCK_PORT) {
         if let Ok(fd) = control.fd.try_clone() {
             let mut control = UnixStream::from(fd);

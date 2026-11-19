@@ -274,7 +274,7 @@ fn watch_events(
 
 /// Start event-driven port reconciliation with periodic, bounded snapshots.
 /// The stop token is the same one used to gracefully retire the VM.
-pub fn start(socket: PathBuf, connector: Arc<Connector>, stop: Arc<AtomicBool>) {
+pub fn start(socket: PathBuf, connector: Arc<Connector>, stop: Arc<AtomicBool>) -> JoinHandle<()> {
     thread::spawn(move || {
         let (sender, receiver) = mpsc::sync_channel::<()>(1);
         let child = Arc::new(Mutex::new(None));
@@ -321,7 +321,7 @@ pub fn start(socket: PathBuf, connector: Arc<Connector>, stop: Arc<AtomicBool>) 
         for (host, listener) in active {
             stop_listener(host, listener);
         }
-    });
+    })
 }
 
 #[cfg(test)]
