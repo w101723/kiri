@@ -443,6 +443,26 @@ pub(super) fn pick_compose_file(title: &str, _filters: &[String; 2], done: impl 
     });
 }
 
+/// Request one explicitly authorized Mac project folder via native NSOpenPanel.
+/// No folder is shared until the user selects it and the VM is restarted.
+pub(super) fn pick_share_directory(done: impl FnOnce(Option<std::path::PathBuf>) + Send + 'static) {
+    DispatchQueue::main().exec_async(move || {
+        let selected = (|| unsafe {
+            let panel: Retained<AnyObject> = msg_send![objc2::class!(NSOpenPanel), openPanel];
+            let _: () = msg_send![&*panel, setCanChooseFiles: false];
+            let _: () = msg_send![&*panel, setCanChooseDirectories: true];
+            let _: () = msg_send![&*panel, setAllowsMultipleSelection: false];
+            let _: () = msg_send![&*panel, setMessage: &*NSString::from_str("Select a directory to share with Kiri Moby containers")];
+            let answer: isize = msg_send![&*panel, runModal];
+            if answer != 1 { return None; }
+            let url: Option<Retained<AnyObject>> = msg_send![&*panel, URL];
+            let path: Option<Retained<NSString>> = msg_send![&*url?, path];
+            Some(std::path::PathBuf::from(path?.to_string()))
+        })();
+        done(selected);
+    });
+}
+
 /// The installed font families, sorted; `mono` keeps the fixed-pitch ones.
 pub(super) fn font_families(mono: bool) -> Vec<String> {
     use objc2_core_foundation::{CFArray, CFDictionary, CFNumber, CFString, CFType};
