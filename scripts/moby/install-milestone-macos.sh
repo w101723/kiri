@@ -30,7 +30,8 @@ tgz="$(find "$stage/archive" -type f -name kiri-moby-macos-arm64-bundle.tgz -pri
 [ -n "$tgz" ] || { echo "Expected milestone .tgz not found" >&2; exit 2; }
 tar -xzf "$tgz" -C "$stage/out" \
   guest/Image guest/initramfs.cpio guest/data.img.tgz \
-  guest/SHA256SUMS bin/kiri-moby-host SOURCE_REVISION BUNDLE_SHA256SUMS
+  guest/system.img.tgz guest/rootfs.revision guest/SHA256SUMS \
+  bin/kiri-moby-host SOURCE_REVISION BUNDLE_SHA256SUMS
 (cd "$stage/out" && shasum -a 256 -c BUNDLE_SHA256SUMS)
 (cd "$stage/out/guest" && shasum -a 256 -c SHA256SUMS)
 [ "$(lipo "$stage/out/bin/kiri-moby-host" -archs)" = arm64 ] || {
