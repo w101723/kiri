@@ -142,7 +142,14 @@ fn start_vm() -> io::Result<()> {
     let stderr = stdout.try_clone()?;
     let authorized_shares = read_shares()?;
     let mut child = Command::new(binary);
-    child.env("KIRI_MOBY_DATA_DIR", &data);
+    // The GUI's explicit authorization list is the only source of Mac
+    // directory access: never inherit legacy broad share or manual-port
+    // overrides from a terminal that happened to launch the app.
+    child.env("KIRI_MOBY_DATA_DIR", &data)
+        .env_remove("KIRI_MOBY_SHARE_MAC")
+        .env_remove("KIRI_MOBY_SHARE_DIRS")
+        .env_remove("KIRI_MOBY_TCP_PORTS")
+        .env_remove("KIRI_MOBY_DISABLE_PORT_FORWARD");
     if !authorized_shares.is_empty() {
         child.env("KIRI_MOBY_SHARE_DIRS", authorized_shares.join(","));
     }
