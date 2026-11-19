@@ -55,6 +55,8 @@ jobs:
           rustc --version
           xcodebuild -version
           xcrun --sdk macosx --show-sdk-path
+      - name: Exercise native macOS Docker event parser and socket relay
+        run: cargo test -p kiri-moby-bridge --lib --target x86_64-apple-darwin
       - name: Compile macOS ARM64 host (not run on Intel)
         run: cargo check -p kiri-moby-bridge --bin kiri-moby-host --target aarch64-apple-darwin
       - name: Link, verify ARM64 architecture and sign launcher

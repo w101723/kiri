@@ -170,11 +170,19 @@ The VM memory defaults to 4 GiB and CPU to 4; override with
 
 ### TCP publish forwarding
 
-The host now queries **standard dockerd's container list API** and mirrors
-running containers' published TCP ports to Mac `127.0.0.1` automatically.
-It polls the Docker API every 2 seconds (rather than rewriting Docker's
-API or maintaining an alternative container DB). An event-stream watcher
-and UDP forwarding remain outstanding.
+The host subscribes to standard Docker `GET /events` and reconciles
+published TCP ports against `GET /containers/json`. The events stream triggers
+on container start, stop, die and related lifecycle transitions; the container
+list remains the **source of truth**. On successful event subscription the host
+performs a fresh snapshot to close the startup/reconnect gap. It performs a
+full scan every 30 seconds as recovery for missed events, and retries if the
+Docker API is not yet available. Mac listeners bind only `127.0.0.1`.
+
+Because Docker API events are delivered asynchronously, there remains a small
+race between `docker run -d` returning and the Mac listener being ready:
+this is **lower latency than the old 2-second polling**, not a synchronous
+port-publish guarantee. UDP and LAN-exposed bind-address semantics are not
+implemented. Export `KIRI_MOBY_DEBUG=1` for detailed relay errors.
 
 For manual override, set `KIRI_MOBY_TCP_PORTS`:
 
@@ -191,11 +199,11 @@ The mapping format is `MAC_PORT:GUEST_PUBLISHED_PORT`. It deliberately binds
 only 127.0.0.1 on the Mac, and currently supports TCP only. Inside the
 guest **dockerd** controls the container port publish and network/NAT rules;
 the host relay never bypasses Docker to reach a container IP directly.
-**Docker /events streaming and UDP are pending**; TCP auto-discovery is already implemented.
+**UDP remains pending**; TCP auto-discovery is event-driven with reconciliation fallback.
 A port must be free on the Mac, or host startup fails.
 Press Ctrl-C to request a graceful guest shutdown and disk sync.
 
-**Not yet implemented:** UDP publishing and Docker event streaming, standard
+**Not yet implemented:** UDP publishing, synchronous Mac port readiness, standard
 Docker API integration into Kiri's existing GUI, automatic VM sleep/balloon policy,
 full regression tests and signed/notarized single-app distribution.
 
