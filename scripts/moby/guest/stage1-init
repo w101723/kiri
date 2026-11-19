@@ -20,10 +20,12 @@ seed_dev=""
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
     for device in /dev/vda /dev/vdb /dev/vdc; do
         [ -b "$device" ] || continue
-        label="$($bb blkid -s LABEL -o value "$device" 2>/dev/null || true)"
-        case "$label" in
-            kiri-moby) data_dev="$device" ;;
-            kiri-system) seed_dev="$device" ;;
+        # BusyBox blkid does not guarantee util-linux -s/-o flags.
+        # Parse its default tagged output rather than shelling out to udev.
+        labels="$($bb blkid "$device" 2>/dev/null || true)"
+        case "$labels" in
+            *'LABEL="kiri-moby"'*) data_dev="$device" ;;
+            *'LABEL="kiri-system"'*) seed_dev="$device" ;;
         esac
     done
     [ -n "$data_dev" ] && [ -n "$seed_dev" ] && break
