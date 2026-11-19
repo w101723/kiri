@@ -3,6 +3,7 @@ FROM --platform=linux/arm64 alpine:3.22
 RUN apk add --no-cache docker containerd runc iptables ip6tables iproute2 ca-certificates tzdata e2fsprogs util-linux \
  && command -v dockerd && command -v containerd && command -v runc \
  && command -v iptables && command -v udhcpc \
+ && /bin/busybox --list | grep -qx switch_root \
  && dockerd --version && containerd --version && runc --version
 COPY init /init
 COPY udhcpc-script /usr/local/sbin/kiri-udhcpc
