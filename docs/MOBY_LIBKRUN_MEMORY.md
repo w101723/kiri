@@ -39,3 +39,14 @@ entitlements, and platform support in macOS CI.
 
 Until these gates pass, retain the working VZ backend. The adaptive governor
 is a safe partial improvement, not the same as OrbStack's host reclamation.
+
+## Experimental v2 capability probe (no VM boot)
+
+An independent, non-production C probe is included at
+`scripts/moby/libkrun2-memory-probe.c`. It compiles without new dependencies
+and requires an explicit absolute path to a locally trusted/pinned libkrun 2.x
+library at runtime. It only checks the exported API for free-page reporting
+and an external-kernel boot; it does not write a disk, boot a guest, or prove
+RAM reclamation. Use `clang -std=c11 -Wall -Wextra -Werror -arch arm64 -o
+/tmp/kiri-libkrun-probe scripts/moby/libkrun2-memory-probe.c` and run with an
+absolute dylib path. Never load unverified third-party dylibs in the GUI.
