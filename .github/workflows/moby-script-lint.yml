@@ -26,6 +26,7 @@ jobs:
           bash -n scripts/moby/install-artifacts-macos.sh
           bash -n scripts/moby/build-guest.sh
           bash -n scripts/moby/smoke-macos.sh
+          bash -n scripts/moby/test-port-events-macos.sh
           sh -n scripts/moby/guest/init
           sh -n scripts/moby/guest/udhcpc-script
           sh -n scripts/moby/guest/rosetta.sh

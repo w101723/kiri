@@ -184,6 +184,12 @@ this is **lower latency than the old 2-second polling**, not a synchronous
 port-publish guarantee. UDP and LAN-exposed bind-address semantics are not
 implemented. Export `KIRI_MOBY_DEBUG=1` for detailed relay errors.
 
+Run `bash scripts/moby/test-port-events-macos.sh` for an Apple Silicon
+smoke test of automatic TCP publishing, Nginx readiness and listener
+cleanup. The VM must be running with auto-forwarding enabled. The test
+uses localhost:18081 by default (override with
+`KIRI_MOBY_EVENT_TEST_PORT`) and never contacts OrbStack.
+
 For manual override, set `KIRI_MOBY_TCP_PORTS`:
 
 ```sh
