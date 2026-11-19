@@ -9,25 +9,39 @@ die() { log "FATAL: $*"; exec /bin/sh; }
 mount -t proc proc /proc || die "mount /proc"
 mount -t sysfs sysfs /sys || die "mount /sys"
 mount -t devtmpfs devtmpfs /dev || die "mount /dev"
+# PID 1 is not guaranteed to inherit the kernel serial console stdout.
+# Emit init/containerd/dockerd logs to the host's private console.log.
+if [ -c /dev/console ]; then
+    exec </dev/console >/dev/console 2>&1
+fi
+log "Moby guest init started"
+log "Guest build: $(/usr/local/sbin/kiri-moby-guest --version 2>&1)"
 mkdir -p /dev/pts /dev/shm /sys/fs/cgroup /run /tmp /var/lib /mnt/mac /Users /Volumes
 mount -t devpts devpts /dev/pts || die "mount /dev/pts"
 mount -t tmpfs tmpfs /dev/shm || die "mount /dev/shm"
 mount -t tmpfs tmpfs /run || die "mount /run"
 mount -t tmpfs tmpfs /tmp || die "mount /tmp"
 mount -t cgroup2 cgroup2 /sys/fs/cgroup || die "mount cgroup v2"
-# VZ guests may boot with a 1970 RTC, breaking TLS image pulls.
-# The host sends its Unix epoch through the kernel command line.
+# The VZ guest RTC can begin at 1970, which invalidates HTTPS/TLS.
+# Do not start dockerd until CLOCK_REALTIME has been set via clock_settime().
+# This is a boot-only bootstrap; future time resynchronization is separate.
+boot_epoch=""
 for argument in $(cat /proc/cmdline); do
     case "$argument" in
-        kiri.moby_boot_time=*)
-            boot_epoch="${argument#*=}"
-            case "$boot_epoch" in
-                ''|*[!0-9]*) log "Invalid boot clock from host: $boot_epoch" ;;
-                *) date -u -s "@$boot_epoch" >/dev/null || log "Could not set UTC guest clock" ;;
-            esac
-            ;;
+        kiri.moby_boot_time=*) boot_epoch="${argument#*=}" ;;
     esac
 done
+case "$boot_epoch" in
+    ''|*[!0-9]*) die "Missing/invalid host boot epoch in /proc/cmdline: $(cat /proc/cmdline)" ;;
+esac
+log "Synchronizing Guest CLOCK_REALTIME from Mac epoch=$boot_epoch"
+/usr/local/sbin/kiri-moby-guest --set-clock "$boot_epoch" || die "Failed to synchronize clock before dockerd"
+log "Guest clock initialized: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+# Reject silent failures. A stale 1970 clock must never reach registry TLS.
+current_epoch="$(date -u '+%s')"
+if [ "$current_epoch" -lt 1700000000 ]; then
+    die "Guest clock is still invalid: $current_epoch"
+fi
 hostname kiri-moby
 echo kiri-moby >/etc/hostname
 

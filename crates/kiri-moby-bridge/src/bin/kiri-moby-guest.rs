@@ -19,6 +19,48 @@ fn main() -> std::io::Result<()> {
     use std::thread;
     use std::time::Duration;
 
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--version") {
+        println!(
+            "kiri-moby-guest {} ({})",
+            env!("CARGO_PKG_VERSION"),
+            option_env!("GITHUB_SHA").unwrap_or("local-build")
+        );
+        return Ok(());
+    }
+    if args.get(1).map(String::as_str) == Some("--set-clock") {
+        if args.len() != 3 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "--set-clock requires a Unix epoch argument"));
+        }
+        let seconds: i64 = args[2].parse().map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "invalid Unix epoch")
+        })?;
+        // Reject values wildly outside modern Docker/TLS validity. A host
+        // already using a broken clock should fail visibly, not silently
+        // produce an unusable Docker engine.
+        if !(1_700_000_000..=4_102_444_800).contains(&seconds) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "host Unix epoch outside permitted range"));
+        }
+        let proposed = libc::timespec {
+            tv_sec: seconds as libc::time_t,
+            tv_nsec: 0,
+        };
+        // SAFETY: clock_settime reads one fully initialized timespec.
+        if unsafe { libc::clock_settime(libc::CLOCK_REALTIME, &proposed) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut observed = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: clock_gettime writes one valid timespec into the buffer.
+        if unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut observed) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if (observed.tv_sec as i64 - seconds).abs() > 120 {
+            return Err(io::Error::other("CLOCK_REALTIME did not match host boot time"));
+        }
+        eprintln!("kiri-moby-guest: CLOCK_REALTIME synchronized: {}", observed.tv_sec);
+        return Ok(());
+    }
+
     const DOCKER_VSOCK_PORT: u32 = 2375; // AF_VSOCK; never a TCP listener
     const CONTROL_VSOCK_PORT: u32 = 2376; // authenticated by guest-only vsock boundary
     const TCP_FORWARD_VSOCK_PORT: u32 = 2377; // Docker guest TCP published ports

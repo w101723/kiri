@@ -25,6 +25,13 @@ fn main() -> std::io::Result<()> {
 
     use kiri_vmm::{Config, Share, ShareDir, Vm};
 
+    let build_revision = option_env!("GITHUB_SHA").unwrap_or("local-build");
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("kiri-moby-host {} ({build_revision})", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    eprintln!("Kiri Moby Host: {} ({build_revision})", env!("CARGO_PKG_VERSION"));
+
     const DOCKER_VSOCK_PORT: u32 = 2375; // AF_VSOCK, NOT TCP
     const CONTROL_VSOCK_PORT: u32 = 2376; // graceful shutdown
     const TCP_FORWARD_VSOCK_PORT: u32 = 2377; // published port transport
