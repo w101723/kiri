@@ -37,23 +37,42 @@ jobs:
         run: cargo check -p kiri-moby-bridge --bin kiri-moby-guest --target aarch64-unknown-linux-musl
 
   macos:
-    name: Apple Silicon host compile check
-    runs-on: macos-15
+    name: macOS Intel runner / cross-build Apple Silicon host
+    # macos-15 (arm64) currently frequently fails BEFORE a runner is allocated.
+    # Compile for arm64 on an Intel Mac with Xcode/Apple SDK instead. This
+    # does NOT add an Intel Mac product: the sole artifact is an ARM64 Mach-O.
+    runs-on: macos-15-intel
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
-      - name: Cross-check arm64 macOS host (does not boot a VM)
-        run: cargo check -p kiri-moby-bridge --bin kiri-moby-host --target aarch64-apple-darwin
-      - name: Compile and ad-hoc sign the ARM64 VZ host launcher
+      - name: Show cross-build toolchain and SDK
         run: |
+          uname -m
+          rustc --version
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-path
+      - name: Compile macOS ARM64 host (not run on Intel)
+        run: cargo check -p kiri-moby-bridge --bin kiri-moby-host --target aarch64-apple-darwin
+      - name: Link, verify ARM64 architecture and sign launcher
+        run: |
+          set -euo pipefail
           cargo build -p kiri-moby-bridge --release --bin kiri-moby-host --target aarch64-apple-darwin
-          codesign --force --sign - --entitlements crates/kiri/kiri.entitlements target/aarch64-apple-darwin/release/kiri-moby-host
-          codesign --verify --strict -v target/aarch64-apple-darwin/release/kiri-moby-host
+          binary="target/aarch64-apple-darwin/release/kiri-moby-host"
+          file "$binary"
+          lipo -verify_arch arm64 "$binary"
+          if lipo -archs "$binary" | grep -Eq '(^| )x86_64( |$)'; then
+            echo "Unexpected Intel architecture in ARM64-only release" >&2
+            exit 1
+          fi
+          codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$binary"
+          codesign --verify --strict --verbose=2 "$binary"
           mkdir -p target/moby-dist
           tar -C target/aarch64-apple-darwin/release -czf target/moby-dist/kiri-moby-host-arm64.tgz kiri-moby-host
-      - name: Upload standalone experimental launcher
+      - name: Upload Apple Silicon launcher
         uses: actions/upload-artifact@v4
         with:
           name: kiri-moby-host-arm64
