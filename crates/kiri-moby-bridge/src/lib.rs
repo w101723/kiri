@@ -7,7 +7,8 @@
 #![cfg(unix)]
 
 use std::io::{self, Read, Write};
-use std::os::unix::net::{Shutdown, UnixStream};
+use std::net::Shutdown;
+use std::os::unix::net::UnixStream;
 use std::thread;
 
 /// Relay a connection in both directions, including independent write-side
