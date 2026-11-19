@@ -307,11 +307,16 @@ fn main() -> std::io::Result<()> {
     // During initial VM/Engine smoke tests, avoid automatic Docker API
     // probes and any Mac TCP port listeners.
     let disable_ports = std::env::var("KIRI_MOBY_DISABLE_PORT_FORWARD").ok().as_deref() == Some("1");
+    let (memory_kick_tx, memory_kick_rx) = mpsc::sync_channel::<()>(1);
+    // Keep the sender alive even when the port watcher is disabled. The
+    // receiver can then wait with a timeout without spinning on disconnect.
+    let _memory_kick_keepalive = memory_kick_tx.clone();
     let port_watcher = if !disable_ports && manual_ports.trim().is_empty() {
         // Docker /events triggers fast reconciliation; a 30s snapshot
         // recovers missed transitions. Join the worker before retiring VM.
         Some(kiri_moby_bridge::ports::start(
-            path.clone(), Arc::clone(&connector), Arc::clone(&stopping)
+            path.clone(), Arc::clone(&connector), Arc::clone(&stopping),
+            Some(memory_kick_tx)
         ))
     } else {
         None
@@ -382,10 +387,11 @@ fn main() -> std::io::Result<()> {
     // Periodic lightweight Guest samples must never hold up Docker API
     // accept, Compose, or Buildx. Missing or malformed telemetry is fail-open:
     // retain the current memory target rather than risking an OOM.
-    let (memory_tx, memory_rx) = mpsc::sync_channel::<GuestMemory>(1);
+    let (memory_tx, memory_rx) = mpsc::sync_channel::<(GuestMemory, bool)>(1);
     let memory_stop = Arc::clone(&stopping);
     let memory_connector = Arc::clone(&connector);
     let memory_worker = thread::spawn(move || {
+        let mut exited_container = false;
         while !memory_stop.load(Ordering::Acquire) {
             if let Ok(stream) = memory_connector.connect(MEMORY_VSOCK_PORT) {
                 if let Ok(fd) = stream.fd.try_clone() {
@@ -418,15 +424,17 @@ fn main() -> std::io::Result<()> {
                     if len > 0 && bytes[..len].last() == Some(&b'\n') {
                         if let Ok(line) = std::str::from_utf8(&bytes[..len]) {
                             if let Some(sample) = GuestMemory::from_wire(line) {
-                                let _ = memory_tx.try_send(sample);
+                                let _ = memory_tx.try_send((sample, exited_container));
                             }
                         }
                     }
                 }
             }
-            for _ in 0..20 {
-                if memory_stop.load(Ordering::Acquire) { break; }
-                thread::sleep(Duration::from_millis(100));
+            // Normal interval is two seconds; Docker exit/stop events cut
+            // short the wait to promptly re-sample reclaimed memory.
+            exited_container = memory_kick_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+            while memory_kick_rx.try_recv().is_ok() {
+                exited_container = true;
             }
         }
     });
@@ -440,7 +448,8 @@ fn main() -> std::io::Result<()> {
     // cleanly and flush the ext4 data disk before VM destruction.
     listener.set_nonblocking(true)?;
     while !stopping.load(Ordering::Acquire) {
-        while let Ok(sample) = memory_rx.try_recv() {
+        while let Ok((sample, exited_container)) = memory_rx.try_recv() {
+            if exited_container { memory_governor.released_hint(); }
             let old_target = memory_governor.target_mib();
             let new_target = if adaptive_memory { memory_governor.update(sample) } else { None };
             if let Some(next_mib) = new_target {

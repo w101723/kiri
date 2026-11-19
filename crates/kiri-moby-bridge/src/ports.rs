@@ -44,6 +44,18 @@ fn published_ports(doc: &serde_json::Value) -> BTreeMap<u16, u16> {
     ports
 }
 
+fn memory_relevant_event(event: &serde_json::Value) -> bool {
+    if event.get("Type").or_else(|| event.get("type"))
+        .and_then(|value| value.as_str()) != Some("container")
+    {
+        return false;
+    }
+    matches!(
+        event.get("Action").or_else(|| event.get("status")).and_then(|x| x.as_str()),
+        Some("die" | "stop" | "destroy" | "oom")
+    )
+}
+
 fn port_relevant_event(event: &serde_json::Value) -> bool {
     if event.get("Type").or_else(|| event.get("type")).and_then(|x| x.as_str()) != Some("container") {
         return false;
@@ -192,6 +204,7 @@ fn sleep_until_retry(stop: &AtomicBool) {
 fn watch_events(
     socket: PathBuf,
     notices: mpsc::SyncSender<()>,
+    memory_kick: Option<mpsc::SyncSender<()>>,
     stop: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
 ) {
@@ -254,6 +267,13 @@ fn watch_events(
                 if port_relevant_event(&event) {
                     let _ = notices.try_send(()); // coalesce event bursts
                 }
+                // No destructive cache drop: an exit merely speeds the next
+                // memory reading and cautiously re-evaluates balloon headroom.
+                if memory_relevant_event(&event) {
+                    if let Some(kick) = &memory_kick {
+                        let _ = kick.try_send(());
+                    }
+                }
             }
         }
         {
@@ -274,14 +294,17 @@ fn watch_events(
 
 /// Start event-driven port reconciliation with periodic, bounded snapshots.
 /// The stop token is the same one used to gracefully retire the VM.
-pub fn start(socket: PathBuf, connector: Arc<Connector>, stop: Arc<AtomicBool>) -> JoinHandle<()> {
+pub fn start(socket: PathBuf, connector: Arc<Connector>, stop: Arc<AtomicBool>,
+    memory_kick: Option<mpsc::SyncSender<()>>) -> JoinHandle<()> {
     thread::spawn(move || {
         let (sender, receiver) = mpsc::sync_channel::<()>(1);
         let child = Arc::new(Mutex::new(None));
         let event_child = Arc::clone(&child);
         let event_stop = Arc::clone(&stop);
         let event_socket = socket.clone();
-        let watcher = thread::spawn(move || watch_events(event_socket, sender, event_stop, event_child));
+        let watcher = thread::spawn(move || {
+            watch_events(event_socket, sender, memory_kick, event_stop, event_child)
+        });
 
         // Baseline scan catches already-running containers after VM restart.
         // Events trigger immediate additional scans; periodic polling remains
@@ -349,6 +372,17 @@ mod tests {
                   json!([{"Ports":[{"PublicPort":0,"Type":"tcp"}]}])] {
             assert!(published_ports(&v).is_empty());
         }
+    }
+
+    #[test]
+    fn memory_release_events_are_narrowly_scoped() {
+        for action in ["die", "stop", "destroy", "oom"] {
+            assert!(memory_relevant_event(&json!({"Type":"container","Action":action})));
+        }
+        for action in ["start", "create", "restart", "exec_start", "pause", "unpause"] {
+            assert!(!memory_relevant_event(&json!({"Type":"container","Action":action})));
+        }
+        assert!(!memory_relevant_event(&json!({"Type":"image","Action":"destroy"})));
     }
 
     #[test]

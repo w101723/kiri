@@ -12,6 +12,9 @@ memory may remain high after Guest pages are freed.
 - The Host polls every ~2 seconds **off the Docker API accept thread**. It
   cautiously lowers the balloon target in 256 MiB increments, after three
   stable samples, preserving at least 1 GiB of estimated headroom.
+- Docker stop/die/destroy/oom events ask for an immediate memory sample when
+  the normal event/port watcher is active; a full low-frequency scan remains
+  the fallback. The actual reduction still requires safe Guest headroom.
 - Under low Guest MemAvailable, the Host expands the target promptly. Max
   remains KIRI_MOBY_MEMORY_MIB (default 4096), floor 1024 MiB.
 - Telemetry loss never drives the balloon blindly; VM stays online and Docker

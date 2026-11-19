@@ -60,6 +60,12 @@ impl Governor {
 
     pub fn target_mib(&self) -> u64 { self.target_mib }
 
+    /// A Docker die/stop/destroy/oom event asks for an early sample. We
+    /// retain the MemAvailable safeguards before contracting the balloon.
+    pub fn released_hint(&mut self) {
+        self.quiet_samples = self.quiet_samples.max(2);
+    }
+
     /// Virtualization.framework exposes traditional ballooning. Contraction is
     /// gradual; expansion is immediate. Always leave substantial spare Guest
     /// memory for dockerd, builds, allocations and caches.
@@ -140,6 +146,15 @@ mod tests {
         assert!(before < 4_096);
         assert!(policy.update(sample(200)).is_some());
         assert!(policy.target_mib() > before);
+    }
+
+    #[test]
+    fn release_hint_requires_real_available_headroom() {
+        let mut policy = Governor::new(4_096);
+        policy.released_hint();
+        assert_eq!(policy.update(sample(3_200)), Some(3_840));
+        policy.released_hint();
+        assert_eq!(policy.update(sample(800)), None);
     }
 
     #[test]
