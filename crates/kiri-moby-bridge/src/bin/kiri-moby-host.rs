@@ -390,11 +390,33 @@ fn main() -> std::io::Result<()> {
             if let Ok(stream) = memory_connector.connect(MEMORY_VSOCK_PORT) {
                 if let Ok(fd) = stream.fd.try_clone() {
                     let mut peer = UnixStream::from(fd);
-                    let _ = peer.set_read_timeout(Some(Duration::from_millis(400)));
                     let mut bytes = [0_u8; 128];
-                    // AF_VSOCK may be nonblocking; a missing sample is safe.
-                    if let Ok(n) = std::io::Read::read(&mut peer, &mut bytes) {
-                        if let Ok(line) = std::str::from_utf8(&bytes[..n]) {
+                    let mut len = 0;
+                    // VZ AF_VSOCK can remain O_NONBLOCK after duplication.
+                    // Poll until a complete newline-terminated sample arrives,
+                    // with a strict bound so shutdown never waits on a peer.
+                    let deadline = std::time::Instant::now() + Duration::from_millis(700);
+                    while len < bytes.len() && std::time::Instant::now() < deadline {
+                        let mut pfd = libc::pollfd {
+                            fd: peer.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        };
+                        let ready = unsafe { libc::poll(&mut pfd, 1, 100) };
+                        if ready <= 0 { continue; }
+                        if pfd.revents & libc::POLLIN == 0 { break; }
+                        match std::io::Read::read(&mut peer, &mut bytes[len..]) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                len += n;
+                                if bytes[..len].contains(&b'\n') { break; }
+                            }
+                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                            Err(_) => break,
+                        }
+                    }
+                    if len > 0 && bytes[..len].last() == Some(&b'\n') {
+                        if let Ok(line) = std::str::from_utf8(&bytes[..len]) {
                             if let Some(sample) = GuestMemory::from_wire(line) {
                                 let _ = memory_tx.try_send(sample);
                             }
