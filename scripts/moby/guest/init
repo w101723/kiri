@@ -72,6 +72,9 @@ mount -t tmpfs tmpfs /dev/shm || die "mount /dev/shm"
 mount -t tmpfs tmpfs /run || die "mount /run"
 mount -t tmpfs tmpfs /tmp || die "mount /tmp"
 mount -t cgroup2 cgroup2 /sys/fs/cgroup || die "mount cgroup v2"
+# Evict cold dentry/inode caches a little more readily while leaving the
+# useful Docker image/build page cache alone. Does not promise macOS RSS drop.
+printf '%s\n' 160 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null || true
 
 # The Apple VZ guest RTC may initially be 1970. Sync BEFORE dockerd.
 boot_epoch=""

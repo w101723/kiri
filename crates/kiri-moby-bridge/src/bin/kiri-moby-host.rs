@@ -24,6 +24,9 @@ fn main() -> std::io::Result<()> {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use kiri_vmm::{Config, Share, ShareDir, Vm};
+    use kiri_moby_bridge::memory::{GuestMemory, Governor};
+    use std::sync::{mpsc, Mutex};
+
 
     let build_revision = option_env!("GITHUB_SHA").unwrap_or("local-build");
     if std::env::args().nth(1).as_deref() == Some("--version") {
@@ -35,6 +38,8 @@ fn main() -> std::io::Result<()> {
     const DOCKER_VSOCK_PORT: u32 = 2375; // AF_VSOCK, NOT TCP
     const CONTROL_VSOCK_PORT: u32 = 2376; // graceful shutdown
     const TCP_FORWARD_VSOCK_PORT: u32 = 2377; // published port transport
+    const MEMORY_VSOCK_PORT: u32 = 2378; // read-only Guest telemetry
+
 
     let data = match std::env::var_os("KIRI_MOBY_DATA_DIR") {
         Some(path) => PathBuf::from(path),
@@ -253,6 +258,10 @@ fn main() -> std::io::Result<()> {
     let control_listener = UnixListener::bind(&control_path)?;
     std::fs::set_permissions(&control_path, std::fs::Permissions::from_mode(0o600))?;
     control_listener.set_nonblocking(true)?;
+    // Human-readable, same-user-only diagnostics. Target is the guest's
+    // balloon target, NOT proven macOS physical-memory reclamation.
+    let memory_report = Arc::new(Mutex::new((memory_mib, 0_u64, 0_u64)));
+    let control_memory = Arc::clone(&memory_report);
     let control_stop = Arc::clone(&stopping);
     let control_worker = thread::spawn(move || {
         while !control_stop.load(Ordering::Acquire) {
@@ -261,7 +270,14 @@ fn main() -> std::io::Result<()> {
                     use std::io::Read;
                     let _ = client.set_read_timeout(Some(Duration::from_secs(2)));
                     let mut request = [0_u8; 5];
-                    if client.read_exact(&mut request).is_ok() && &request == b"STOP\n" {
+                    if client.read_exact(&mut request).is_ok() && &request == b"STAT\n" {
+                        let (target, total, available) = *control_memory.lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        let output = format!(
+                            "{{\"balloon_target_mib\":{target},\"guest_total_kib\":{total},\"guest_available_kib\":{available},\"host_reclaimed_bytes\":null}}\n"
+                        );
+                        let _ = client.write_all(output.as_bytes());
+                    } else if &request == b"STOP\n" {
                         let _ = client.write_all(b"OK\n");
                         control_stop.store(true, Ordering::Release);
                     } else {
@@ -363,10 +379,61 @@ fn main() -> std::io::Result<()> {
         });
     }
 
+    // Periodic lightweight Guest samples must never hold up Docker API
+    // accept, Compose, or Buildx. Missing or malformed telemetry is fail-open:
+    // retain the current memory target rather than risking an OOM.
+    let (memory_tx, memory_rx) = mpsc::sync_channel::<GuestMemory>(1);
+    let memory_stop = Arc::clone(&stopping);
+    let memory_connector = Arc::clone(&connector);
+    let memory_worker = thread::spawn(move || {
+        while !memory_stop.load(Ordering::Acquire) {
+            if let Ok(stream) = memory_connector.connect(MEMORY_VSOCK_PORT) {
+                if let Ok(fd) = stream.fd.try_clone() {
+                    let mut peer = UnixStream::from(fd);
+                    let _ = peer.set_read_timeout(Some(Duration::from_millis(400)));
+                    let mut bytes = [0_u8; 128];
+                    // AF_VSOCK may be nonblocking; a missing sample is safe.
+                    if let Ok(n) = std::io::Read::read(&mut peer, &mut bytes) {
+                        if let Ok(line) = std::str::from_utf8(&bytes[..n]) {
+                            if let Some(sample) = GuestMemory::from_wire(line) {
+                                let _ = memory_tx.try_send(sample);
+                            }
+                        }
+                    }
+                }
+            }
+            for _ in 0..20 {
+                if memory_stop.load(Ordering::Acquire) { break; }
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    });
+    let adaptive_memory = std::env::var("KIRI_MOBY_MEMORY_POLICY")
+        .ok().as_deref() != Some("off");
+    let mut memory_governor = Governor::new(memory_mib);
+    eprintln!("Kiri Moby memory: adaptive={} ceiling={}MiB (macOS RSS recovery is not guaranteed)",
+        adaptive_memory, memory_mib);
+
     // Avoid waiting forever in accept() after Ctrl-C, so dockerd can stop
     // cleanly and flush the ext4 data disk before VM destruction.
     listener.set_nonblocking(true)?;
     while !stopping.load(Ordering::Acquire) {
+        while let Ok(sample) = memory_rx.try_recv() {
+            let old_target = memory_governor.target_mib();
+            let new_target = if adaptive_memory { memory_governor.update(sample) } else { None };
+            if let Some(next_mib) = new_target {
+                if vm.set_memory_target(next_mib * 1024 * 1024).is_some() {
+                    eprintln!("Kiri Moby memory: balloon target {} -> {} MiB, Guest MemAvailable={} MiB",
+                        old_target, next_mib, sample.available_kib / 1024);
+                } else {
+                    // Disable attempted updates if Virtualization.framework did
+                    // not supply a traditional balloon device.
+                    eprintln!("Kiri Moby memory: VZ balloon device unavailable");
+                }
+            }
+            *memory_report.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                (memory_governor.target_mib(), sample.total_kib, sample.available_kib);
+        }
         let client = match listener.accept() {
             Ok((client, _)) => client,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -412,6 +479,9 @@ fn main() -> std::io::Result<()> {
     }
 
     eprintln!("Stopping standard Docker Engine gracefully...");
+    if memory_worker.join().is_err() {
+        eprintln!("Kiri Moby memory telemetry worker panicked");
+    }
     if control_worker.join().is_err() {
         eprintln!("Kiri Moby local lifecycle worker panicked");
     }

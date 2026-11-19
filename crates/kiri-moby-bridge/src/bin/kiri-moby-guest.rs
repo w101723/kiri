@@ -94,6 +94,8 @@ fn main() -> std::io::Result<()> {
     const DOCKER_VSOCK_PORT: u32 = 2375; // AF_VSOCK; never a TCP listener
     const CONTROL_VSOCK_PORT: u32 = 2376; // authenticated by guest-only vsock boundary
     const TCP_FORWARD_VSOCK_PORT: u32 = 2377; // Docker guest TCP published ports
+    const MEMORY_VSOCK_PORT: u32 = 2378; // read-only /proc/meminfo telemetry
+
 
     // SAFETY: creates an AF_VSOCK stream socket and transfers ownership to
     // OwnedFd immediately; all addresses and lengths are initialized.
@@ -143,6 +145,24 @@ fn main() -> std::io::Result<()> {
             // SAFETY: PID 1 is our init shell and has a SIGTERM trap.
             unsafe { libc::kill(1, libc::SIGTERM) };
             return;
+        }
+    });
+
+    // Read-only memory telemetry over private AF_VSOCK. No shell commands,
+    // cache clearing or host-visible Docker API extensions.
+    let mem_listener = listen(MEMORY_VSOCK_PORT)?;
+    thread::spawn(move || loop {
+        use std::io::Write;
+        let peer = unsafe {
+            libc::accept4(mem_listener.as_raw_fd(), std::ptr::null_mut(),
+                std::ptr::null_mut(), libc::SOCK_CLOEXEC)
+        };
+        if peer < 0 { continue; }
+        let mut stream = UnixStream::from(unsafe { OwnedFd::from_raw_fd(peer) });
+        if let Ok(contents) = std::fs::read_to_string("/proc/meminfo") {
+            if let Some(sample) = kiri_moby_bridge::memory::GuestMemory::from_meminfo(&contents) {
+                let _ = stream.write_all(sample.wire().as_bytes());
+            }
         }
     });
 
