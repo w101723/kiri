@@ -63,9 +63,11 @@ jobs:
           cargo build -p kiri-moby-bridge --release --bin kiri-moby-host --target aarch64-apple-darwin
           binary="target/aarch64-apple-darwin/release/kiri-moby-host"
           file "$binary"
-          lipo -verify_arch arm64 "$binary"
-          if lipo -archs "$binary" | grep -Eq '(^| )x86_64( |$)'; then
-            echo "Unexpected Intel architecture in ARM64-only release" >&2
+          # lipo expects the input file before its operation. For our
+          # single-architecture product require *exactly* ARM64.
+          archs="$(lipo "$binary" -archs)"
+          if [ "$archs" != "arm64" ]; then
+            echo "Expected an ARM64-only Mach-O; got: $archs" >&2
             exit 1
           fi
           codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$binary"
