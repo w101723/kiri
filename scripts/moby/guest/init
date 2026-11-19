@@ -1,79 +1,115 @@
 #!/bin/sh
-# Minimal Linux ARM64 PID1 for standard dockerd/containerd/runc.
-set -e
+# Switch PID 1 from Linux initramfs to a real ext4 root before starting runc.
+# Kernel rootfs cannot pivot_root (EINVAL). Preserve all Docker disk state.
+set -eu
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 umask 022
 log() { echo "[kiri-moby-init] $*" >&2; }
 die() { log "FATAL: $*"; exec /bin/sh; }
 
-mount -t proc proc /proc || die "mount /proc"
-mount -t sysfs sysfs /sys || die "mount /sys"
-mount -t devtmpfs devtmpfs /dev || die "mount /dev"
-# PID 1 is not guaranteed to inherit the kernel serial console stdout.
-# Emit init/containerd/dockerd logs to the host's private console.log.
-if [ -c /dev/console ]; then
-    exec >/dev/console 2>&1
+if [ "${1:-}" != "--ext4-root" ]; then
+    # STAGE 1: kernel rootfs. No dockerd/containerd process is started yet.
+    mount -t proc proc /proc || die "mount /proc"
+    mount -t sysfs sysfs /sys || die "mount /sys"
+    mount -t devtmpfs devtmpfs /dev || die "mount /dev"
+    if [ -c /dev/console ]; then
+        exec >/dev/console 2>&1
+    fi
+    log "Stage 1: preparing real ext4 root on /dev/vda"
+    mkdir -p /newroot
+    mount -t ext4 -o noatime /dev/vda /newroot || die "mount /dev/vda"
+
+    # Previous Kiri Moby releases mounted this ext4 disk on /var/lib.
+    # Their /docker and /containerd directory trees must be moved (not
+    # copied) to /var/lib/* when the disk itself becomes the new root.
+    mkdir -p /newroot/var/lib
+    for directory in docker containerd; do
+        if [ -e "/newroot/$directory" ]; then
+            if [ -e "/newroot/var/lib/$directory" ]; then
+                die "Conflicting old/new Docker data for $directory; refusing overwrite"
+            fi
+            log "Migrating persistent /$directory -> /var/lib/$directory"
+            mv "/newroot/$directory" "/newroot/var/lib/$directory" ||
+                die "persistent data migration failed for $directory"
+        fi
+    done
+
+    # Copy the Guest's current Alpine userspace/Agent into the ext4 root.
+    # Never overwrite /var/lib, which holds Docker layers, images and volumes.
+    # Do not copy kernel pseudo-filesystems or the /newroot mount.
+    for entry in bin etc home lib lib64 media mnt opt root sbin srv usr Users Volumes init; do
+        if [ -e "/$entry" ] || [ -L "/$entry" ]; then
+            cp -a "/$entry" /newroot/ || die "copy $entry to ext4 failed"
+        fi
+    done
+    mkdir -p /newroot/var/log /newroot/var/tmp /newroot/dev/pts /newroot/dev/shm
+    mkdir -p /newroot/proc /newroot/sys/fs/cgroup /newroot/run /newroot/tmp /newroot/mnt/mac
+
+    # Preserve live API mounts when freeing the old rootfs.
+    mount --move /dev /newroot/dev || die "move /dev"
+    mount --move /proc /newroot/proc || die "move /proc"
+    mount --move /sys /newroot/sys || die "move /sys"
+    log "Stage 1: switch_root -> ext4 /dev/vda"
+    exec /bin/busybox switch_root -c /dev/console /newroot /init --ext4-root
+    die "switch_root failed"
 fi
-log "Moby guest init started"
+
+# STAGE 2: PID 1 after switch_root. Verify it is a real ext4 mount.
+root_mount="$(awk '$5 == "/" { print; exit }' /proc/self/mountinfo)"
+case "$root_mount" in
+    *" - ext4 "*) log "Stage 2: ext4 root verified (runc pivot_root compatible)" ;;
+    *) die "Stage 2 root is not ext4: $root_mount" ;;
+esac
 log "Guest build: $(/usr/local/sbin/kiri-moby-guest --version 2>&1)"
 mkdir -p /dev/pts /dev/shm /sys/fs/cgroup /run /tmp /var/lib /mnt/mac /Users /Volumes
-mount -t devpts devpts /dev/pts || die "mount /dev/pts"
+mount -t devpts devpts /dev/pts || die "mount devpts"
 mount -t tmpfs tmpfs /dev/shm || die "mount /dev/shm"
 mount -t tmpfs tmpfs /run || die "mount /run"
 mount -t tmpfs tmpfs /tmp || die "mount /tmp"
 mount -t cgroup2 cgroup2 /sys/fs/cgroup || die "mount cgroup v2"
-# The VZ guest RTC can begin at 1970, which invalidates HTTPS/TLS.
-# Do not start dockerd until CLOCK_REALTIME has been set via clock_settime().
-# This is a boot-only bootstrap; future time resynchronization is separate.
+
+# The Apple VZ guest RTC may initially be 1970. Sync BEFORE dockerd.
 boot_epoch=""
-for argument in $(cat /proc/cmdline); do
-    case "$argument" in
-        kiri.moby_boot_time=*) boot_epoch="${argument#*=}" ;;
-    esac
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in kiri.moby_boot_time=*) boot_epoch="${arg#*=}" ;; esac
 done
 case "$boot_epoch" in
-    ''|*[!0-9]*) die "Missing/invalid host boot epoch in /proc/cmdline: $(cat /proc/cmdline)" ;;
+    ''|*[!0-9]*) die "Invalid/missing Mac boot epoch" ;;
 esac
-log "Synchronizing Guest CLOCK_REALTIME from Mac epoch=$boot_epoch"
-/usr/local/sbin/kiri-moby-guest --set-clock "$boot_epoch" || die "Failed to synchronize clock before dockerd"
-log "Guest clock initialized: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-# Reject silent failures. A stale 1970 clock must never reach registry TLS.
-current_epoch="$(date -u '+%s')"
-if [ "$current_epoch" -lt 1700000000 ]; then
-    die "Guest clock is still invalid: $current_epoch"
-fi
+log "Synchronizing CLOCK_REALTIME from Mac epoch=$boot_epoch"
+/usr/local/sbin/kiri-moby-guest --set-clock "$boot_epoch" ||
+    die "Guest time synchronization failed"
+log "Guest clock: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+[ "$(date -u '+%s')" -ge 1700000000 ] || die "Guest clock remains invalid"
+
 hostname kiri-moby
 echo kiri-moby >/etc/hostname
-
-# Guest owns a separate ext4 disk. Never reuse the upstream Kiri data disk.
-mount -t ext4 -o noatime /dev/vda /var/lib || die "mount persistent /dev/vda"
 mkdir -p /var/lib/docker /var/lib/containerd /run/containerd /run/docker /var/log
-
 if mount -t virtiofs kiri-mac /mnt/mac; then
-    mount --bind /mnt/mac/Users /Users || log "Mac /Users share unavailable"
-    mount --bind /mnt/mac/Volumes /Volumes || log "Mac /Volumes share unavailable"
+    mount --bind /mnt/mac/Users /Users || log "Mac /Users not shared"
+    mount --bind /mnt/mac/Volumes /Volumes || log "Mac /Volumes not shared"
 else
-    log "macOS VirtioFS unavailable"
+    log "Mac host file shares disabled"
 fi
-/usr/local/sbin/kiri-rosetta || log "Rosetta registration failed"
+/usr/local/sbin/kiri-rosetta || log "Rosetta not available"
 
 ip link set lo up
-ip link set eth0 up || die "guest eth0 not available"
-udhcpc -i eth0 -s /usr/local/sbin/kiri-udhcpc -n -q -t 12 || die "DHCP failed"
+ip link set eth0 up || die "guest eth0 missing"
+udhcpc -i eth0 -s /usr/local/sbin/kiri-udhcpc -n -q -t 12 || die "guest DHCP failed"
 
 containerd --root /var/lib/containerd --state /run/containerd >/dev/console 2>&1 &
 containerd_pid=$!
 dockerd --host unix:///run/docker.sock --containerd /run/containerd/containerd.sock \
-  --data-root /var/lib/docker --exec-root /run/docker \
-  --storage-driver overlay2 --iptables=true --ip6tables=true \
-  >/dev/console 2>&1 &
+    --data-root /var/lib/docker --exec-root /run/docker \
+    --storage-driver overlay2 --iptables=true --ip6tables=true \
+    >/dev/console 2>&1 &
 dockerd_pid=$!
 /usr/local/sbin/kiri-moby-guest >/dev/console 2>&1 &
 bridge_pid=$!
 
 shutdown() {
     trap - TERM INT
-    log "Stopping Docker Engine and synchronizing persistent volume"
+    log "Stopping dockerd/containerd and flushing ext4 data"
     kill -TERM "$dockerd_pid" "$containerd_pid" "$bridge_pid" 2>/dev/null || true
     n=0
     while kill -0 "$dockerd_pid" 2>/dev/null && [ "$n" -lt 20 ]; do
@@ -81,10 +117,11 @@ shutdown() {
         n=$((n + 1))
     done
     sync
-    umount /var/lib 2>/dev/null || log "persistent disk busy during shutdown"
+    # The root filesystem cannot be unmounted while PID 1 is running.
+    mount -o remount,ro / 2>/dev/null || log "ext4 root still busy; journaling handles recovery"
     poweroff -f
 }
 trap shutdown TERM INT
-log "Moby guest services started"
+log "Moby services started on ext4 root"
 wait "$dockerd_pid" || log "dockerd exited unexpectedly"
 shutdown
