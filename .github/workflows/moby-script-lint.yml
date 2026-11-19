@@ -2,7 +2,7 @@ name: Moby shell script syntax
 
 on:
   push:
-    branches: [moby-engine]
+    branches: [moby-engine, memory-reclaim]
     paths:
       - "scripts/moby/**"
       - ".github/workflows/moby-script-lint.yml"
@@ -29,6 +29,17 @@ jobs:
           bash -n scripts/moby/test-port-events-macos.sh
           bash -n scripts/moby/upgrade-host-macos.sh
           bash -n scripts/moby/install-milestone-macos.sh
+          bash -n scripts/moby/sign-notarize-macos.sh
+          # The fallback cannot claim trusted signing. Incomplete secret
+          # configuration must fail closed before touching macOS Keychain.
+          output="$RUNNER_TEMP/kiri-signing-mode"
+          GITHUB_OUTPUT="$output" bash scripts/moby/sign-notarize-macos.sh /nonexistent
+          grep -Fxq 'notarized=false' "$output"
+          if MACOS_DEVELOPER_ID_P12_BASE64=dummy bash scripts/moby/sign-notarize-macos.sh /nonexistent; then
+            echo "Partially configured signing must fail" >&2
+            exit 1
+          fi
+          sh -n scripts/moby/guest/stage1-init
           sh -n scripts/moby/guest/init
           sh -n scripts/moby/guest/udhcpc-script
           sh -n scripts/moby/guest/rosetta.sh
