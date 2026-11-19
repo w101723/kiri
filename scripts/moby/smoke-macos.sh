@@ -7,10 +7,12 @@ command -v docker >/dev/null || { echo "Docker CLI is required" >&2; exit 2; }
 [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ] || { echo "Only macOS Apple Silicon is supported" >&2; exit 2; }
 docker context inspect "$context" >/dev/null || { echo "Docker context kiri-moby is missing" >&2; exit 2; }
 scratch="$(mktemp -d "$HOME/.kiri-moby-smoke.XXXXXX")"
-vol="kiri-moby-smoke-$$"
+vol="kiri-moby-smoke-$"
+image_arm="kiri-moby-smoke-$:arm64"
+image_amd="kiri-moby-smoke-$:amd64"
 cleanup() {
   docker --context "$context" volume rm -f "$vol" >/dev/null 2>&1 || true
-  docker --context "$context" image rm -f kiri-moby-smoke:arm64 kiri-moby-smoke:amd64 >/dev/null 2>&1 || true
+  docker --context "$context" image rm -f "$image_arm" "$image_amd" >/dev/null 2>&1 || true
   rm -rf "$scratch"
 }
 trap cleanup EXIT
@@ -44,11 +46,11 @@ RUN echo built-by-standard-dockerd >/probe
 CMD ["cat", "/probe"]
 EOF
 docker --context "$context" buildx build --platform linux/arm64 --load \
-  -t kiri-moby-smoke:arm64 "$scratch"
-docker --context "$context" run --rm kiri-moby-smoke:arm64 | grep -qx built-by-standard-dockerd
+  -t "$image_arm" "$scratch"
+docker --context "$context" run --rm "$image_arm" | grep -qx built-by-standard-dockerd
 docker --context "$context" buildx build --platform linux/amd64 --load \
-  -t kiri-moby-smoke:amd64 "$scratch"
-docker --context "$context" run --rm --platform linux/amd64 kiri-moby-smoke:amd64 | grep -qx built-by-standard-dockerd
+  -t "$image_amd" "$scratch"
+docker --context "$context" run --rm --platform linux/amd64 "$image_amd" | grep -qx built-by-standard-dockerd
 
 echo "7/7: Docker Compose"
 cat > "$scratch/compose.yaml" <<'EOF'
