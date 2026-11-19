@@ -233,7 +233,8 @@ fn refresh() {
             menu.running.clear();
             drop(menu);
             emit(json!({"type":"snapshot","online":false,"error":error.to_string(),
-                "containers":[],"images":[],"volumes":[],"networks":[]}).to_string());
+                "containers":[],"images":[],"volumes":[],"networks":[],
+                "shares": read_shares().unwrap_or_default()}).to_string());
         }
     }
 }
