@@ -40,8 +40,7 @@ fn main() -> std::io::Result<()> {
     let guest = data.join("guest");
     let kernel = guest.join("Image");
     let initrd = guest.join("initramfs.cpio");
-    let disk = guest.join("data.img");
-    for required in [&kernel, &initrd, &disk] {
+    for required in [&kernel, &initrd] {
         if !required.is_file() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -52,6 +51,42 @@ fn main() -> std::io::Result<()> {
             ));
         }
     }
+    // The guest disk has a separate lifecycle from the read-only boot assets.
+    // Never modify upstream Kiri's disk, or decompress into its directories.
+    let vm_dir = data.join("vm");
+    std::fs::create_dir_all(&vm_dir)?;
+    std::fs::set_permissions(&vm_dir, std::fs::Permissions::from_mode(0o700))?;
+    let disk = vm_dir.join("data.img");
+    if !disk.is_file() {
+        let archive = guest.join("data.img.tgz");
+        if !archive.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("missing initial disk template {} (see docs/MOBY_ENGINE.md)", archive.display()),
+            ));
+        }
+        let staging = vm_dir.join("staging");
+        if staging.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("staging directory exists; inspect before retrying: {}", staging.display()),
+            ));
+        }
+        std::fs::create_dir_all(&staging)?;
+        // Extract precisely the expected member, never an arbitrary tar tree.
+        let unpacked = std::process::Command::new("/usr/bin/tar")
+            .arg("-xzf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&staging)
+            .arg("data.img")
+            .status()?;
+        if !unpacked.success() {
+            return Err(io::Error::other("failed to extract Moby guest ext4 disk template"));
+        }
+        std::fs::rename(staging.join("data.img"), &disk)?;
+        std::fs::remove_dir(&staging)?;
+    }
 
     let share = Share {
         tag: "kiri-mac".to_owned(),
@@ -61,9 +96,11 @@ fn main() -> std::io::Result<()> {
         ],
     };
 
+    let cpus = std::env::var("KIRI_MOBY_CPUS").ok().and_then(|v| v.parse::<usize>().ok()).filter(|v| (1..=16).contains(v)).unwrap_or(4);
+    let memory_mib = std::env::var("KIRI_MOBY_MEMORY_MIB").ok().and_then(|v| v.parse::<u64>().ok()).filter(|v| (1024..=65536).contains(v)).unwrap_or(4096);
     let vm = Vm::start(Config {
-        cpus: 2,
-        memory_mib: 2048,
+        cpus,
+        memory_mib,
         kernel,
         initrd,
         cmdline: "console=hvc0 rdinit=/init panic=-1".into(),
