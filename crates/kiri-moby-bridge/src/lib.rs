@@ -108,3 +108,7 @@ mod tests {
         proxy.join().unwrap().unwrap();
     }
 }
+ 
+
+#[cfg(target_os = "macos")]
+pub mod ports;
