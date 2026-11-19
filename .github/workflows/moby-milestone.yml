@@ -2,6 +2,12 @@ name: Kiri Moby unified macOS ARM64 milestone bundle
 
 on:
   workflow_dispatch:
+  # Build a single integrated artifact automatically when this milestone
+  # workflow changes, without re-building the 90-minute kernel every push.
+  push:
+    branches: [moby-engine]
+    paths:
+      - ".github/workflows/moby-milestone.yml"
 
 concurrency:
   group: moby-milestone-${{ github.ref }}
