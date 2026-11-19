@@ -209,3 +209,6 @@ mod tests {
 
 #[cfg(target_os = "macos")]
 pub mod ports;
+
+/// Validated path mapping shared by the macOS launcher and Linux Guest.
+pub mod shares;
