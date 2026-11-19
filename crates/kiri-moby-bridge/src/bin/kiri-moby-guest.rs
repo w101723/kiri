@@ -12,13 +12,14 @@ fn main() {
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 fn main() -> std::io::Result<()> {
-    use std::io;
+    use std::io::{self, Read};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::net::UnixStream;
     use std::thread;
     use std::time::Duration;
 
     const DOCKER_VSOCK_PORT: u32 = 2375; // AF_VSOCK; never a TCP listener
+    const CONTROL_VSOCK_PORT: u32 = 2376; // authenticated by guest-only vsock boundary
 
     // SAFETY: creates an AF_VSOCK stream socket and transfers ownership to
     // OwnedFd immediately; all addresses and lengths are initialized.
@@ -47,6 +48,29 @@ fn main() -> std::io::Result<()> {
             Ok(socket)
         }
     }
+
+    let control = listen(CONTROL_VSOCK_PORT)?;
+    // A real guest PID 1 supervises dockerd/containerd. Ask it to stop
+    // gracefully before host VZ retires its disk (not a forced power loss).
+    thread::spawn(move || loop {
+        // SAFETY: kernel returns a newly-owned fd or -1; no pointers passed.
+        let peer = unsafe {
+            libc::accept4(control.as_raw_fd(), std::ptr::null_mut(), std::ptr::null_mut(), libc::SOCK_CLOEXEC)
+        };
+        if peer < 0 {
+            continue;
+        }
+        // SAFETY: accept4 returned an owned fd.
+        let mut stream = UnixStream::from(unsafe { OwnedFd::from_raw_fd(peer) });
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+        let mut command = [0u8; 9];
+        if stream.read_exact(&mut command).is_ok() && command == *b"SHUTDOWN\n" {
+            eprintln!("moby guest: graceful shutdown requested");
+            // SAFETY: PID 1 is our init shell and has a SIGTERM trap.
+            unsafe { libc::kill(1, libc::SIGTERM) };
+            return;
+        }
+    });
 
     let socket = listen(DOCKER_VSOCK_PORT)?;
     let engine_path = std::env::var("KIRI_MOBY_ENGINE_SOCKET")
