@@ -86,12 +86,34 @@ fn tcp_listener(
             };
             let connector = Arc::clone(&connector);
             thread::spawn(move || {
-                let Ok(stream) = connector.connect(TCP_FORWARD_VSOCK_PORT) else { return };
-                let Ok(fd) = stream.fd.try_clone() else { return };
+                let stream = match connector.connect(TCP_FORWARD_VSOCK_PORT) {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        eprintln!("Kiri/Moby: localhost:{host} -> Guest vsock:{TCP_FORWARD_VSOCK_PORT} failed: {error}");
+                        return;
+                    }
+                };
+                let fd = match stream.fd.try_clone() {
+                    Ok(fd) => fd,
+                    Err(error) => {
+                        eprintln!("Kiri/Moby: localhost:{host} Guest vsock fd clone failed: {error}");
+                        return;
+                    }
+                };
                 let mut to_guest = UnixStream::from(fd);
-                if to_guest.write_all(&guest.to_be_bytes()).is_ok() {
-                    let client: OwnedFd = client.into();
-                    let _ = crate::relay(UnixStream::from(client), to_guest);
+                if let Err(error) = to_guest.write_all(&guest.to_be_bytes()) {
+                    eprintln!("Kiri/Moby: localhost:{host} -> Guest port {guest} header failed: {error}");
+                    return;
+                }
+                let client: OwnedFd = client.into();
+                if let Err(error) = crate::relay(UnixStream::from(client), to_guest) {
+                    // Curl/client shutdown after a response may legitimately
+                    // close one half of the TCP stream before its peer.
+                    if !matches!(error.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset)
+                        || std::env::var_os("KIRI_MOBY_DEBUG").is_some()
+                    {
+                        eprintln!("Kiri/Moby: localhost:{host} -> Guest port {guest} relay failed: {error}");
+                    }
                 }
                 drop(stream);
             });
@@ -111,6 +133,7 @@ pub fn start(socket: PathBuf, connector: Arc<Connector>, stop: Arc<AtomicBool>) 
                     .filter(|p| !current.contains_key(p) || current[p] != published[p].0).collect();
                 for p in removed {
                     if let Some((_, token)) = published.remove(&p) {
+                        eprintln!("Kiri/Moby: unpublished 127.0.0.1:{p}/tcp (Docker no longer reports port)");
                         token.store(true, Ordering::Release);
                     }
                 }

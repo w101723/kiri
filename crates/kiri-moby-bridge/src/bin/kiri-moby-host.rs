@@ -222,12 +222,32 @@ fn main() -> std::io::Result<()> {
                 };
                 let connector = Arc::clone(&connector);
                 thread::spawn(move || {
-                    let Ok(stream) = connector.connect(TCP_FORWARD_VSOCK_PORT) else { return };
-                    let Ok(fd) = stream.fd.try_clone() else { return };
+                    let stream = match connector.connect(TCP_FORWARD_VSOCK_PORT) {
+                        Ok(stream) => stream,
+                        Err(error) => {
+                            eprintln!("Moby manual TCP 127.0.0.1:{host_port}: Guest vsock connect failed: {error}");
+                            return;
+                        }
+                    };
+                    let fd = match stream.fd.try_clone() {
+                        Ok(fd) => fd,
+                        Err(error) => {
+                            eprintln!("Moby manual TCP 127.0.0.1:{host_port}: Guest vsock fd clone failed: {error}");
+                            return;
+                        }
+                    };
                     let mut to_guest = UnixStream::from(fd);
-                    if to_guest.write_all(&guest_port.to_be_bytes()).is_ok() {
-                        let client: OwnedFd = client.into();
-                        let _ = kiri_moby_bridge::relay(UnixStream::from(client), to_guest);
+                    if let Err(error) = to_guest.write_all(&guest_port.to_be_bytes()) {
+                        eprintln!("Moby manual TCP 127.0.0.1:{host_port}: Guest port header failed: {error}");
+                        return;
+                    }
+                    let client: OwnedFd = client.into();
+                    if let Err(error) = kiri_moby_bridge::relay(UnixStream::from(client), to_guest) {
+                        if !matches!(error.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset)
+                            || std::env::var_os("KIRI_MOBY_DEBUG").is_some()
+                        {
+                            eprintln!("Moby manual TCP 127.0.0.1:{host_port} relay failed: {error}");
+                        }
                     }
                     drop(stream);
                 });
@@ -267,7 +287,11 @@ fn main() -> std::io::Result<()> {
                     match stream.fd.try_clone() {
                         Ok(fd) => {
                             if let Err(error) = kiri_moby_bridge::relay(client, UnixStream::from(fd)) {
-                                eprintln!("Moby API relay ended: {error}");
+                                if !matches!(error.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset)
+                                    || std::env::var_os("KIRI_MOBY_DEBUG").is_some()
+                                {
+                                    eprintln!("Moby API relay ended: {error}");
+                                }
                             }
                         }
                         Err(error) => eprintln!("Cannot clone vsock fd: {error}"),
