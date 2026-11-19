@@ -43,6 +43,11 @@ if [ "${1:-}" != "--ext4-root" ]; then
         fi
     done
     mkdir -p /newroot/var/log /newroot/var/tmp /newroot/dev/pts /newroot/dev/shm
+    # Alpine normally provides /var/run -> /run. Preserve that invariant
+    # when promoting the old data-only ext4 disk to the system root.
+    if [ ! -e /newroot/var/run ] && [ ! -L /newroot/var/run ]; then
+        ln -s /run /newroot/var/run || die "create /var/run symlink"
+    fi
     mkdir -p /newroot/proc /newroot/sys/fs/cgroup /newroot/run /newroot/tmp /newroot/mnt/mac
 
     # Preserve live API mounts when freeing the old rootfs.
@@ -104,7 +109,7 @@ dockerd --host unix:///run/docker.sock --containerd /run/containerd/containerd.s
     --storage-driver overlay2 --iptables=true --ip6tables=true \
     >/dev/console 2>&1 &
 dockerd_pid=$!
-/usr/local/sbin/kiri-moby-guest >/dev/console 2>&1 &
+KIRI_MOBY_ENGINE_SOCKET=/run/docker.sock /usr/local/sbin/kiri-moby-guest >/dev/console 2>&1 &
 bridge_pid=$!
 
 shutdown() {
