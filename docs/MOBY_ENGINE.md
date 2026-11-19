@@ -62,12 +62,12 @@ kiri-moby-guest (opaque byte bridge)
   each client to the **real** Docker Engine socket; no Docker API parsing.
 - GitHub Actions compile checks for macOS arm64 and Linux arm64.
 
-**Not yet implemented:** provisioning a bootable Moby guest (kernel,
-initramfs, persistent disk, dockerd, containerd, runc); existing Kiri GUI
-integration; port publishing; auto sleep/balloon based on Docker state;
-Buildx and Compose runtime acceptance tests. Until then the standalone
-host will report that its guest assets are missing, and is not a working
-Docker runtime.
+**Implemented as build recipes, not yet validated on a Mac:** ARM64
+guest initramfs, kernel build and ext4 data-disk template. The existing
+Kiri GUI is still connected to the original Engine, and automatic port
+publishing, auto-sleep/balloon integration and Buildx/Compose end-to-end
+testing are still pending. The launcher refuses to run without guest
+assets; an incomplete build must not be described as a working runtime.
 
 ## Experimental Guest image build and test
 
