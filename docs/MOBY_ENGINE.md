@@ -56,7 +56,8 @@ kiri-moby-guest (opaque byte bridge)
 - `crates/kiri-moby-bridge`: lossless duplex transport, binary data, EOF
   propagation, HTTP Upgrade / attach; unit tests.
 - `kiri-moby-host`: standalone Apple Silicon VZ boot and private Unix
-  Docker socket; it refuses to replace another engine's socket.
+  Docker socket; it refuses to replace another engine's socket and requests
+  Guest shutdown on Ctrl-C/SIGTERM before releasing the disk.
 - `kiri-moby-guest`: Linux/aarch64 AF_VSOCK listener which bridges
   each client to the **real** Docker Engine socket; no Docker API parsing.
 - GitHub Actions compile checks for macOS arm64 and Linux arm64.
@@ -68,32 +69,70 @@ Buildx and Compose runtime acceptance tests. Until then the standalone
 host will report that its guest assets are missing, and is not a working
 Docker runtime.
 
-## Experimental transport paths
+## Experimental Guest image build and test
 
-The experimental VM expects three matching files placed under
-`~/.kiri-moby/guest/` (or `$KIRI_MOBY_DATA_DIR/guest/`):
+GitHub Actions now contains two distinct build pipelines:
 
-- `Image`: bootable ARM64 Linux kernel supporting upstream Docker
-- `initramfs.cpio`: PID 1 that starts the Guest, `dockerd`, and
-  `kiri-moby-guest` with the correct filesystems/network/cgroups
-- `data.img`: persistent ext4 guest disk
+- [Moby bridge verification](../../actions/workflows/moby-bridge.yml):
+  Rust unit tests, ARM64 Linux guest transport check, ARM64 macOS launcher
+  build with ad-hoc virtualization entitlement and a downloadable binary.
+- [Build standard Moby ARM64 Guest](../../actions/workflows/moby-guest.yml):
+  Alpine 3.22 standard Docker Engine (dockerd, containerd, runc), minimal
+  initramfs/BusyBox PID 1, ext4 sparse disk template, and the Kiri ARM64
+  kernel with required filesystem/network capabilities.
 
-These images **are not produced by the transport milestone**. No external
-images should be trusted as drop-in replacements without checksum, provenance,
-and a compatible kernel config. Boot the existing Kiri guest with this
-module only after a guest image is explicitly built and verified.
+The build produces an artifact `kiri-moby-guest-arm64.tgz` (when CI passes)
+with:
 
-After a correctly provisioned guest is available:
+- `Image`: ARM64 kernel from Kiri's existing source/config
+- `initramfs.cpio`: minimal Alpine Linux ARM64 userspace with real Docker
+- `data.img.tgz`: 48 GiB **virtual** sparse ext4 disk (not 48 GiB physically)
+- `SHA256SUMS`: checksums of these three files
+
+The VM uses `$KIRI_MOBY_DATA_DIR/guest` for boot assets and
+`$KIRI_MOBY_DATA_DIR/vm/data.img` for the **separate writable data disk**;
+the latter is unpacked on first launch.
+
+This is an experimental build recipe, **not yet a VM smoke-test result**.
+GitHub ARM64 Actions build the Linux guest but do not prove that
+Virtualization.framework can boot it or that a Docker workload works on a
+real Apple Silicon machine. Alpine dependencies are not yet digest pinned;
+release/supply-chain hardening is another gate.
+
+### Test on an Apple Silicon Mac
+
+Get the two *artifact archives* from the successful runs of the workflows
+above. This does not install or modify OrbStack and never overwrites
+`/var/run/docker.sock`.
 
 ```sh
-cargo build -p kiri-moby-bridge --release --bin kiri-moby-host
-./target/release/kiri-moby-host
+mkdir -p "$HOME/.kiri-moby/guest"
+tar -xzf kiri-moby-guest-arm64.tgz -C "$HOME/.kiri-moby/guest"
+(cd "$HOME/.kiri-moby/guest" && shasum -a 256 -c SHA256SUMS)
 
-# A separate terminal:
-docker context create kiri-moby \
-  --docker "host=unix://$HOME/.kiri-moby/run/docker.sock"
+mkdir -p "$HOME/.local/bin"
+tar -xzf kiri-moby-host-arm64.tgz -C "$HOME/.local/bin"
+# For a local source build, sign using the upstream virtualization entitlement:
+# codesign -f -s - --entitlements crates/kiri/kiri.entitlements \
+#   target/aarch64-apple-darwin/release/kiri-moby-host
+"$HOME/.local/bin/kiri-moby-host"
+
+# In a second terminal:
+docker context create kiri-moby --docker "host=unix://$HOME/.kiri-moby/run/docker.sock"
 docker --context kiri-moby version
+docker --context kiri-moby run --rm alpine:3.22 echo hello
 ```
+
+To store all VM data on an APFS external SSD, launch with
+`KIRI_MOBY_DATA_DIR=/Volumes/ExternalSSD/kiri-moby` and extract boot assets
+under that directory's `guest/`. Do not place the data disk on exFAT.
+The VM memory defaults to 4 GiB and CPU to 4; override with
+`KIRI_MOBY_MEMORY_MIB` and `KIRI_MOBY_CPUS`.
+Press Ctrl-C to request a graceful guest shutdown and disk sync.
+
+**Not yet implemented:** automatic host port publishing, standard Docker API
+integration into Kiri's existing GUI, automatic VM sleep/balloon policy,
+full regression tests and signed/notarized single-app distribution.
 
 It intentionally does not replace the current Docker context or
 `/var/run/docker.sock`.
