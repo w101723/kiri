@@ -128,6 +128,27 @@ To store all VM data on an APFS external SSD, launch with
 under that directory's `guest/`. Do not place the data disk on exFAT.
 The VM memory defaults to 4 GiB and CPU to 4; override with
 `KIRI_MOBY_MEMORY_MIB` and `KIRI_MOBY_CPUS`.
+
+### Experimental TCP publish forwarding
+
+Until the host-side Docker event watcher is implemented, TCP forwarding
+is **explicit**. For example:
+
+```sh
+KIRI_MOBY_TCP_PORTS="8080:8080,5432:5432" \
+  "$HOME/.local/bin/kiri-moby-host"
+
+# In a second terminal:
+docker --context kiri-moby run -d --name web -p 8080:80 nginx:alpine
+curl -v http://127.0.0.1:8080/
+```
+
+The mapping format is `MAC_PORT:GUEST_PUBLISHED_PORT`. It deliberately binds
+only 127.0.0.1 on the Mac, and currently supports TCP only. Inside the
+guest **dockerd** controls the container port publish and network/NAT rules;
+the host relay never bypasses Docker to reach a container IP directly.
+**Automatic Docker /events-based port reconciliation and UDP are pending**.
+A port must be free on the Mac, or host startup fails.
 Press Ctrl-C to request a graceful guest shutdown and disk sync.
 
 **Not yet implemented:** automatic host port publishing, standard Docker API
