@@ -37,6 +37,14 @@ jobs:
         run: |
           sh -n scripts/moby/guest/stage1-init
           sh -n scripts/moby/guest/init
+          # Data and the read-only seed must be selected by LABEL, never by
+          # potentially reordered virtio device letters.
+          grep -Fq 'kiri-moby' scripts/moby/guest/stage1-init
+          grep -Fq 'kiri-system' scripts/moby/guest/stage1-init
+          if grep -Fq 'blkid -s LABEL' scripts/moby/guest/stage1-init; then
+            echo "The tiny BusyBox blkid lacks util-linux flag compatibility" >&2
+            exit 1
+          fi
       - name: Compile Guest agent
         run: cargo build --release --target aarch64-unknown-linux-musl -p kiri-moby-bridge --bin kiri-moby-guest
       - name: Build standard Docker Guest and data disk template
