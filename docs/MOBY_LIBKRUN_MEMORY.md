@@ -50,3 +50,50 @@ and an external-kernel boot; it does not write a disk, boot a guest, or prove
 RAM reclamation. Use `clang -std=c11 -Wall -Wextra -Werror -arch arm64 -o
 /tmp/kiri-libkrun-probe scripts/moby/libkrun2-memory-probe.c` and run with an
 absolute dylib path. Never load unverified third-party dylibs in the GUI.
+
+# Isolated libkrun2 RAM lab (never the production Kiri VM)
+
+The optional \`scripts/moby/libkrun2-ram-lab.c\` is a **real experimental
+libkrun 2.x VMM runner**, not just a symbol probe. It creates a 2-GiB MMIO
+guest without any persistent block disk, Docker socket, networking, host
+share, or production context. The Balloon uses
+\`KRUN_FREE_PAGE_REPORTING_MODE_REPLACE\` (value 1), as defined in pinned
+libkrun source SHA \`3d0e61d1293f39562f757cf45ae6673cf2663100\`
+(2026-11-19). It requires a locally trusted matching ARM64 library.
+
+Build on Apple Silicon (or cross-compile using Xcode SDK):
+
+\`\`\`sh
+clang -std=c11 -Wall -Wextra -Werror -arch arm64 \
+  -o /tmp/kiri-libkrun-ram-lab scripts/moby/libkrun2-ram-lab.c
+\`\`\`
+
+Run with **separately constructed throwaway kernel/initramfs** and an
+independently pinned, trusted \`libkrun.dylib\`:
+
+\`\`\`sh
+/tmp/kiri-libkrun-ram-lab \
+  /absolute/path/to/libkrun.dylib \
+  /absolute/path/to/mmio-enabled/Image \
+  /absolute/path/to/memory-lab-initramfs.cpio
+\`\`\`
+
+Important:
+- Kiri's production kernel does **not** currently enable
+  \`CONFIG_VIRTIO_MMIO\`; its \`CONFIG_VIRTIO_PCI=y\` alone is insufficient.
+  Build a separate kernel enabling \`CONFIG_VIRTIO_MMIO=y\` without modifying
+  the tested Moby kernel or existing ext4 data disk.
+- **Do not pass the Kiri Moby Guest initramfs** to this lab: its PID1 requires
+  /dev/vda and would fail. Use a dedicated RAM-only init that mounts /proc,
+  devtmpfs, sysfs, then allocates/touches/frees 256 MiB and sleeps so host RSS
+  can be measured.
+- This runner is off by default and not integrated into the GUI. Loading a
+  dylib may execute library constructors; never load arbitrary files.
+- macOS code-signing/HV entitlement requirements and physical return of
+  pages have not been verified on actual Apple Silicon.
+- Check host RSS and memory pressure, not merely the guest's MemAvailable
+  nor a VMM-configured memory target.
+- After independently validating real host reclamation, full backend parity
+  with VZ (VirtioFS, Rosetta x86_64, NAT/port publishing, vsock transport,
+  graceful shutdown, same-commit packaging) is still needed before the GUI
+  engine can switch over.
