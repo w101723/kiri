@@ -22,6 +22,74 @@ fn data_dir() -> io::Result<PathBuf> {
     }
     Ok(PathBuf::from(std::env::var_os("HOME").ok_or_else(|| io::Error::other("HOME not set"))?).join(".kiri-moby"))
 }
+fn shares_file() -> io::Result<PathBuf> {
+    Ok(data_dir()?.join("authorized-shares.json"))
+}
+fn allowed_share(value: &str) -> bool {
+    let path = Path::new(value);
+    let clean = path.is_absolute()
+        && (path.starts_with("/Users/") || path.starts_with("/Volumes/"))
+        && !value.contains("//") && !value.contains("/./") && !value.contains(',')
+        && path.components().all(|part| matches!(part,
+            std::path::Component::RootDir | std::path::Component::Normal(_)));
+    clean && path.components().count() >= 3
+}
+fn read_shares() -> io::Result<Vec<String>> {
+    let path = shares_file()?;
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+    let paths: Vec<String> = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+    if paths.len() > 16 || paths.iter().any(|p| !allowed_share(p))
+        || paths.iter().collect::<std::collections::BTreeSet<_>>().len() != paths.len()
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid authorized share config"));
+    }
+    Ok(paths)
+}
+fn save_shares(paths: &[String]) -> io::Result<()> {
+    if paths.len() > 16 || paths.iter().any(|p| !allowed_share(p)) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid directory authorization"));
+    }
+    let dir = data_dir()?;
+    fs::create_dir_all(&dir)?;
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    let path = shares_file()?;
+    let tmp = path.with_extension("json.new");
+    let payload = serde_json::to_vec(paths).map_err(io::Error::other)?;
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+    file.write_all(&payload)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(&tmp, &path)
+}
+fn add_share(path: &str) -> io::Result<String> {
+    if !allowed_share(path) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "share must be a project folder beneath /Users or /Volumes"));
+    }
+    if !Path::new(path).is_dir() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "selected share directory is missing"));
+    }
+    let mut paths = read_shares()?;
+    if paths.iter().any(|existing| existing == path) {
+        return Ok("Directory already authorized".to_owned());
+    }
+    paths.push(path.to_owned());
+    save_shares(&paths)?;
+    Ok("Directory authorized. Apply changes by restarting the Moby VM.".to_owned())
+}
+fn remove_share(path: &str) -> io::Result<String> {
+    let mut paths = read_shares()?;
+    if !paths.iter().any(|p| p == path) { return Err(io::Error::other("share not found")); }
+    paths.retain(|p| p != path);
+    save_shares(&paths)?;
+    Ok("Authorization removed. Restart the VM to revoke the current VirtioFS mapping.".to_owned())
+}
+
 fn resources() -> Option<PathBuf> {
     Some(std::env::current_exe().ok()?.parent()?.join("../Resources"))
 }
@@ -72,9 +140,13 @@ fn start_vm() -> io::Result<()> {
     let stdout = OpenOptions::new().create(true).append(true).open(&logfile)?;
     fs::set_permissions(&logfile, fs::Permissions::from_mode(0o600))?;
     let stderr = stdout.try_clone()?;
-    Command::new(binary)
-        .env("KIRI_MOBY_DATA_DIR", &data)
-        .stdin(Stdio::null())
+    let authorized_shares = read_shares()?;
+    let mut child = Command::new(binary);
+    child.env("KIRI_MOBY_DATA_DIR", &data);
+    if !authorized_shares.is_empty() {
+        child.env("KIRI_MOBY_SHARE_DIRS", authorized_shares.join(","));
+    }
+    child.stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
         .spawn()?;
@@ -132,7 +204,7 @@ fn refresh() {
             "type":"snapshot", "online":true,
             "containers":containers, "images":images,
             "volumes":volumes["Volumes"], "networks":networks,
-            "info":info, "version":version
+            "info":info, "version":version, "shares": read_shares().unwrap_or_default()
         }))
     })();
     match snapshot {
@@ -156,7 +228,10 @@ fn refresh() {
             emit(state.to_string());
         }
         Err(error) => {
-            menu_state().vm = "Stopped";
+            let mut menu = menu_state();
+            menu.vm = "Stopped";
+            menu.running.clear();
+            drop(menu);
             emit(json!({"type":"snapshot","online":false,"error":error.to_string(),
                 "containers":[],"images":[],"volumes":[],"networks":[]}).to_string());
         }
@@ -237,6 +312,17 @@ fn execute(value: &Value) -> io::Result<String> {
             if !output.ok() { return Err(io::Error::other(output.error())); }
             Ok(decode_logs(&output.body))
         }
+        "authorize_share" => {
+            add_share(value["path"].as_str().unwrap_or(""))
+        }
+        "remove_share" => {
+            remove_share(value["path"].as_str().unwrap_or(""))
+        }
+        "apply_shares" => {
+            if client::alive() { stop_vm()?; }
+            start_vm()?;
+            Ok("Shared folders applied; Moby VM restarted successfully".to_owned())
+        }
         "create_volume" => {
             let created = require_ok(client::request("POST", "/volumes/create", Some(&json!({"Name":name}))))?;
             Ok(format!("Volume created: {}", created["Name"].as_str().unwrap_or(name)))
@@ -304,6 +390,16 @@ pub(super) fn handle(message: &str, tx: &Sender<Cmd>) {
                         emit(json!({"type":"selected_compose","path":path}).to_string());
                     } }
                 );
+            } else if value["action"] == "choose_share" {
+                let tx = tx.clone();
+                super::window::pick_share_directory(move |path| {
+                    if let Some(path) = path {
+                        let _ = tx.send(Cmd::Moby(json!({
+                            "action":"authorize_share",
+                            "path":path.to_string_lossy().to_string()
+                        })));
+                    }
+                });
             } else { submit(Cmd::Moby(value)); }
         }
         _ => emit(json!({"type":"operation","ok":false,"label":"Command",
