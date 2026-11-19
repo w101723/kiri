@@ -21,8 +21,22 @@ pub fn socket() -> io::Result<PathBuf> {
     if std::path::Path::new(SERVICE_SOCKET).exists() {
         return Ok(PathBuf::from(SERVICE_SOCKET));
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| io::Error::other("HOME is not set"))?;
-    Ok(home.join(crate::flavor::STATE.get()).join("run/docker.sock"))
+    #[cfg(target_os = "macos")]
+    {
+        let dir = if let Some(override_dir) = std::env::var_os("KIRI_MOBY_DATA_DIR") {
+            PathBuf::from(override_dir)
+        } else {
+            PathBuf::from(std::env::var_os("HOME").ok_or_else(|| io::Error::other("HOME not set"))?)
+                .join(".kiri-moby")
+        };
+        return Ok(dir.join("run/docker.sock"));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let home = std::env::var_os("HOME").map(PathBuf::from)
+            .ok_or_else(|| io::Error::other("HOME is not set"))?;
+        Ok(home.join(crate::flavor::STATE.get()).join("run/docker.sock"))
+    }
 }
 
 /// Where the Linux service's engine listens, for members of the `kiri` group.

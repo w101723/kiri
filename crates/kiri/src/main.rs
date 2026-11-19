@@ -113,7 +113,9 @@ fn main() -> ExitCode {
         _ => diag::Part::Cli,
     });
     let result: std::io::Result<()> = match args.first().map(String::as_str) {
-        #[cfg(unix)]
+        #[cfg(target_os = "macos")]
+        Some("daemon") => Err(std::io::Error::other("Custom Kiri daemon is no longer the macOS engine; open Kiri Moby GUI")),
+        #[cfg(all(unix, not(target_os = "macos")))]
         Some("daemon") => daemon::run(&args[1..]),
         #[cfg(target_os = "linux")]
         Some("bridge") => bridge::run(&args[1..]),
@@ -141,7 +143,8 @@ fn main() -> ExitCode {
         #[cfg(target_os = "macos")]
         Some("boot") => boot::run(&args[1..]),
         #[cfg(target_os = "macos")]
-        Some("setup") => setup::run(&args[1..]),
+        Some("setup") => Err(std::io::Error::other(
+            "Legacy Kiri setup disabled on macOS: it could replace OrbStack's Docker context; Moby uses its own socket")),
         #[cfg(any(unix, windows))]
         Some("share") => share::run(&args[1..]),
         // `kiri 3000`: share a port straight away.
@@ -163,7 +166,7 @@ fn main() -> ExitCode {
         Some("diag") => diag::run(&args[1..]),
         // Opening Kiri.app: set up on first launch, then the window.
         #[cfg(target_os = "macos")]
-        None if setup::launched_from_app() => setup::first_launch().and_then(|()| ui::run(true, None)),
+        None if setup::launched_from_app() => ui::run(true, None),
         #[cfg(any(target_os = "macos", all(target_os = "linux", feature = "window")))]
         Some("ui") => ui::run(
             args.iter().any(|a| a == "--start"),
@@ -219,13 +222,13 @@ fn window(args: &[String]) -> std::io::Result<()> {
     Err(std::process::Command::new(WINDOW).args(args).exec())
 }
 
-#[cfg(not(unix))]
+#[cfg(any(not(unix), target_os = "macos"))]
 fn engine_version_check() {}
 
 /// Before a docker command: when the engine runs another version than this
 /// `kiri`, say so (on stderr, so output stays clean). Either an update whose
 /// engine restart was put off, or another `kiri` earlier on PATH.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn engine_version_check() {
     let me = env!("CARGO_PKG_VERSION");
     if me == "0.0.0" || !client::alive() {

@@ -35,20 +35,12 @@ thread_local! {
 /// sidebar section to open on.
 pub fn run(autostart: bool, view: Option<String>) -> io::Result<()> {
     let mtm = MainThreadMarker::new().ok_or_else(|| io::Error::other("kiri ui must run on the main thread"))?;
-    // An update Later staged that the last quit didn't install: in now, and
-    // the new app opens in this one's place.
-    if crate::update::staged().is_some() {
-        match crate::update::install_staged() {
-            Ok(_) => {
-                reopen_after_exit();
-                return Ok(());
-            }
-            Err(e) => diag::error!("the staged update did not install", error = e),
-        }
-    }
+    // The macOS application now uses the standard Moby VM, not the legacy
+    // Kiri daemon/update service. Guest upgrades are independent of this UI.
     let (tx, rx) = mpsc::channel();
     let engine_tx = tx.clone();
-    let engine = std::thread::Builder::new().name("kiri-engine".into()).spawn(move || engine(rx, engine_tx))?;
+    let engine = std::thread::Builder::new().name("kiri-moby-ui".into())
+        .spawn(move || super::moby::engine(rx, engine_tx))?;
 
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
@@ -123,7 +115,7 @@ fn make_window(mtm: MainThreadMarker, tx: Sender<Cmd>, autostart: bool, view: Op
         // Let the page paint its own background instead of white.
         let no: Retained<AnyObject> = msg_send![objc2::class!(NSNumber), numberWithBool: false];
         let _: () = msg_send![&webview, setValue: &*no, forKey: &*NSString::from_str("drawsBackground")];
-        webview.loadHTMLString_baseURL(&NSString::from_str(&super::assemble::page(PAGE, prefs()["lang"].as_str())), None);
+        webview.loadHTMLString_baseURL(&NSString::from_str(include_str!("moby.html")), None);
         webview
     };
     window.setContentView(Some(&webview));
@@ -292,8 +284,7 @@ fn main_menu(mtm: MainThreadMarker) -> Retained<NSMenu> {
         }
     };
     let app_menu = NSMenu::new(mtm);
-    app_menu.addItem(&item(&tr("Check for Updates…"), sel!(checkForUpdates:), ""));
-    app_menu.addItem(&NSMenuItem::separatorItem(mtm));
+    // Do not offer the legacy Kiri updater against a Moby-only install.
     app_menu.addItem(&item(&tr("Settings…"), sel!(openSettings:), ","));
     app_menu.addItem(&NSMenuItem::separatorItem(mtm));
     app_menu.addItem(&item(&app("Hide {app}"), sel!(hide:), "h"));
@@ -510,7 +501,7 @@ define_class!(
             let body = unsafe { message.body() };
             let Ok(text) = body.downcast::<NSString>() else { return };
             let ivars = self.ivars();
-            super::handle(&text.to_string(), &ivars.tx, ivars.autostart, ivars.view.as_deref());
+            super::moby::handle(&text.to_string(), &ivars.tx);
         }
     }
 );
@@ -564,18 +555,8 @@ define_class!(
             if let Some(engine) = self.ivars().engine.borrow_mut().take() {
                 let _ = engine.join();
             }
-            // Later: a downloaded update goes in as the window quits, and
-            // the engine moves to it now, not at the next login.
-            if crate::update::staged().is_some() {
-                match crate::update::install_staged() {
-                    Ok(version) => {
-                        if let Err(e) = crate::update::restart_engine(&version) {
-                            diag::error!("the engine did not restart on the update", version = version, error = e);
-                        }
-                    }
-                    Err(e) => diag::error!("the update did not install", error = e),
-                }
-            }
+            // Kiri Moby continues running after the GUI quits. The VM
+            // lifecycle is controlled explicitly through host-control.sock.
         }
     }
 

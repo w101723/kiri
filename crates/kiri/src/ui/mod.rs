@@ -17,6 +17,8 @@ use std::time::Duration;
 #[cfg(target_os = "macos")]
 mod mac;
 #[cfg(target_os = "macos")]
+mod moby;
+#[cfg(target_os = "macos")]
 use mac as window;
 #[cfg(target_os = "linux")]
 mod gtk;
@@ -90,6 +92,8 @@ enum Cmd {
     /// New published ports for a container: `[{container_port, host_port, proto, host_ip}]`.
     Ports { id: String, ports: serde_json::Value },
     Env { id: String, env: Vec<String> },
+    /// Standard upstream Docker Engine operation, not the old private Kiri API.
+    Moby(serde_json::Value),
 }
 
 impl Cmd {
@@ -107,6 +111,7 @@ impl Cmd {
             Cmd::Ports { id, .. } => ("ports", id.chars().take(12).collect()),
             Cmd::Env { id, .. } => ("env", id.chars().take(12).collect()),
             Cmd::Domains(on) => ("domains", on.to_string()),
+            Cmd::Moby(_) => ("moby", String::new()),
             Cmd::Quit | Cmd::Refresh | Cmd::About | Cmd::Connect => return None,
         })
     }
@@ -344,6 +349,7 @@ fn engine(rx: Receiver<Cmd>, tx: Sender<Cmd>) {
                 refresh(&mut connected);
             }
             Ok(Cmd::RemoveNetwork(id)) => act("rmnet", expect_ok(client::request("DELETE", &format!("/networks/{id}"), None))),
+            Ok(Cmd::Moby(_)) => { /* never sent to the legacy Linux UI */ }
             Ok(Cmd::Quit) | Err(RecvTimeoutError::Disconnected) => return,
             Err(RecvTimeoutError::Timeout) => {
                 vm_panel(&mut connected);
