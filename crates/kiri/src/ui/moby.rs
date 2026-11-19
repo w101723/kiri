@@ -428,7 +428,7 @@ pub(super) fn handle(message: &str, tx: &Sender<Cmd>) {
     }
 }
 
-pub(super) fn engine(rx: Receiver<Cmd>, _tx: Sender<Cmd>) {
+pub(super) fn engine(rx: Receiver<Cmd>, tx: Sender<Cmd>) {
     let mut last_update = Instant::now() - Duration::from_secs(30);
     let mut stopped = false;
     loop {
@@ -454,8 +454,12 @@ pub(super) fn engine(rx: Receiver<Cmd>, _tx: Sender<Cmd>) {
                 last_update = Instant::now();
             }
             Ok(Cmd::Pull(image)) => {
-                result_event("Pull image", docker_command(&["pull", &image]));
-                refresh(); last_update = Instant::now();
+                let tx = tx.clone();
+                emit(json!({"type":"busy","label":"Pull image"}).to_string());
+                thread::spawn(move || {
+                    result_event("Pull image", docker_command(&["pull", &image]));
+                    let _ = tx.send(Cmd::Refresh);
+                });
             }
             Ok(Cmd::Run(image, env)) => {
                 result_event("Run container", run_image(&image, &env));
@@ -490,10 +494,22 @@ pub(super) fn engine(rx: Receiver<Cmd>, _tx: Sender<Cmd>) {
                 refresh(); last_update = Instant::now();
             }
             Ok(Cmd::Moby(value)) => {
-                let label = value["action"].as_str().unwrap_or("Docker operation");
-                result_event(label, execute(&value));
-                if !["inspect", "logs", "exec", "compose_logs", "compose_ps", "open_local"].contains(&label) {
-                    refresh(); last_update = Instant::now();
+                let label = value["action"].as_str().unwrap_or("Docker operation").to_owned();
+                // Long-running docker build, Compose, pull and exec operations
+                // must never block the GUI coordinator or the VM Stop action.
+                if ["build", "compose_up", "compose_down", "compose_logs",
+                    "compose_ps", "logs", "exec"].contains(&label.as_str()) {
+                    let tx = tx.clone();
+                    emit(json!({"type":"busy","label":label}).to_string());
+                    thread::spawn(move || {
+                        result_event(&label, execute(&value));
+                        let _ = tx.send(Cmd::Refresh);
+                    });
+                } else {
+                    result_event(&label, execute(&value));
+                    if !["inspect", "open_local"].contains(&label.as_str()) {
+                        refresh(); last_update = Instant::now();
+                    }
                 }
             }
             Ok(_) => result_event("Moby", Err(io::Error::new(io::ErrorKind::Unsupported,
