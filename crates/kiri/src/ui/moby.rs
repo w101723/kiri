@@ -331,6 +331,14 @@ fn execute(value: &Value) -> io::Result<String> {
             start_vm()?;
             Ok("Shared folders applied; Moby VM restarted successfully".to_owned())
         }
+        "exec" => {
+            let command = value["command"].as_str().unwrap_or("");
+            if id.is_empty() || command.trim().is_empty() {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                    "choose a container and a nonempty command"));
+            }
+            docker_command(&["exec", id, "sh", "-c", command])
+        }
         "create_volume" => {
             let created = require_ok(client::request("POST", "/volumes/create", Some(&json!({"Name":name}))))?;
             Ok(format!("Volume created: {}", created["Name"].as_str().unwrap_or(name)))
@@ -339,7 +347,7 @@ fn execute(value: &Value) -> io::Result<String> {
             let created = require_ok(client::request("POST", "/networks/create", Some(&json!({"Name":name,"Driver":"bridge"}))))?;
             Ok(format!("Network created: {}", created["Id"].as_str().unwrap_or(name)))
         }
-        "compose_up" | "compose_down" | "compose_ps" => {
+        "compose_up" | "compose_down" | "compose_ps" | "compose_logs" => {
             let compose = value["path"].as_str().unwrap_or("");
             let path = Path::new(compose);
             if !path.is_file() || !matches!(path.extension().and_then(|e| e.to_str()), Some("yaml" | "yml")) {
@@ -349,6 +357,7 @@ fn execute(value: &Value) -> io::Result<String> {
             match action {
                 "compose_up" => docker_command(&["compose", "-f", file, "up", "-d"]),
                 "compose_down" => docker_command(&["compose", "-f", file, "down"]),
+                "compose_logs" => docker_command(&["compose", "-f", file, "logs", "--no-color", "--tail", "200"]),
                 _ => docker_command(&["compose", "-f", file, "ps"]),
             }
         }
@@ -358,7 +367,11 @@ fn execute(value: &Value) -> io::Result<String> {
             if image.is_empty() || !Path::new(context).is_dir() {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, "provide an image tag and existing build directory"));
             }
-            docker_command(&["build", "-t", image, context])
+            let platform = value["platform"].as_str().unwrap_or("linux/arm64");
+            if platform != "linux/arm64" && platform != "linux/amd64" {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "unsupported Buildx platform"));
+            }
+            docker_command(&["buildx", "build", "--platform", platform, "--load", "-t", image, context])
         }
         "open_local" => {
             let url = value["url"].as_str().unwrap_or("");
@@ -479,7 +492,7 @@ pub(super) fn engine(rx: Receiver<Cmd>, _tx: Sender<Cmd>) {
             Ok(Cmd::Moby(value)) => {
                 let label = value["action"].as_str().unwrap_or("Docker operation");
                 result_event(label, execute(&value));
-                if label != "inspect" && label != "logs" && label != "open_local" {
+                if !["inspect", "logs", "exec", "compose_logs", "compose_ps", "open_local"].contains(&label) {
                     refresh(); last_update = Instant::now();
                 }
             }

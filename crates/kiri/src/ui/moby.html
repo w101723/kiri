@@ -45,6 +45,10 @@ function containerBtns(c){const b=el("div","buttons"),id=c.Id;
   if(c.State==="running"){b.append(action("停止","container",{action:"stop",id}),action("重启","container",{action:"restart",id}),action("暂停","container",{action:"pause",id}))}
   else if(c.State==="paused")b.append(action("恢复","container",{action:"unpause",id}));
   else b.append(action("启动","container",{action:"start",id}));
+  if(c.State==="running")b.append(btn("执行",()=>{
+    const command=window.prompt("在容器中执行命令（使用 sh -c）","pwd");
+    if(command?.trim())send({cmd:"moby",action:"exec",id,command:command.trim()})
+  },"small"));
   b.append(btn("日志",()=>send({cmd:"moby",action:"logs",id}),"small"));
   b.append(btn("详情",()=>send({cmd:"moby",action:"inspect",kind:"containers",id}),"small"));
   b.append(action("删除","container",{action:"remove",id},"确定强制删除容器 "+(c.Names?.[0]||id)+"？"));return b}
@@ -77,18 +81,24 @@ function networks(root){root.append(tool("网络",[btn("创建网络",()=>{const
    if(!["bridge","host","none"].includes(n.Name))b.append(action("删除","rmnet",{id:n.Id},"确定删除网络 "+n.Name+"？"));
    return [line(n.Name,n.Id?.slice(0,12)),n.Driver||"—",n.Scope||"—",b]
  })))}
-let composePath="",buildPath="",buildName="";
+let composePath="",buildPath="",buildName="",buildPlatform="linux/arm64";
 function field(label,value,onchange,placeholder){const o=el("div","field");o.append(el("label","",label));const i=el("input");i.value=value;i.placeholder=placeholder||"";i.oninput=()=>onchange(i.value);o.append(i);return o}
 function compose(root){const card=el("div","card");card.append(el("h2","","Docker Compose"));const form=el("div","form");
   const file=field("Compose 文件路径",composePath,v=>composePath=v,"/Users/you/project/compose.yaml");file.classList.add("full");form.append(file);
   const row=el("div","row full");row.append(btn("选择 Compose 文件",()=>send({cmd:"moby",action:"choose_compose"})),
   btn("Up -d",()=>send({cmd:"moby",action:"compose_up",path:composePath}),"primary"),
   btn("查看状态",()=>send({cmd:"moby",action:"compose_ps",path:composePath})),
+  btn("查看日志",()=>send({cmd:"moby",action:"compose_logs",path:composePath})),
   btn("Down",()=>{if(confirmDelete("停止并删除 Compose 项目的容器？"))send({cmd:"moby",action:"compose_down",path:composePath})},"danger"));
   form.append(row);card.append(form);card.append(el("p","","使用标准 Docker Compose CLI，通过 Kiri Moby 独立 Socket 运行，不修改默认 Docker Context。"));root.append(card)}
 function build(root){const card=el("div","card");card.append(el("h2","","Dockerfile / BuildKit"));const form=el("div","form");
   form.append(field("构建目录",buildPath,v=>buildPath=v,"/Users/you/project"),field("镜像 Tag",buildName,v=>buildName=v,"my-app:latest"));
-  const row=el("div","row full");row.append(btn("构建镜像",()=>send({cmd:"moby",action:"build",path:buildPath,name:buildName}),"primary"));form.append(row);card.append(form);root.append(card)}
+  const platformField=el("div","field full");platformField.append(el("label","","目标架构"));
+  const selector=el("select");selector.style.cssText="background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 12px";
+  ["linux/arm64","linux/amd64"].forEach(v=>{const option=el("option","",v);option.value=v;selector.append(option)});
+  selector.value=buildPlatform;selector.onchange=()=>buildPlatform=selector.value;
+  platformField.append(selector);form.append(platformField);
+  const row=el("div","row full");row.append(btn("构建镜像",()=>send({cmd:"moby",action:"build",path:buildPath,name:buildName,platform:buildPlatform}),"primary"));form.append(row);card.append(form);root.append(card)}
 function settings(root){const card=el("div","card");card.append(el("h2","","Kiri Moby VM"));
   card.append(el("p","","使用独立标准 Docker Engine、ext4 数据盘和私有 Docker Socket。不会覆盖 OrbStack。"));
   const row=el("div","row");row.append(btn("启动 VM",()=>send({cmd:"connect"}),"primary"),btn("停止 VM",()=>{if(confirmDelete("停止 VM 和正在运行的容器？"))send({cmd:"stop"})},"danger"));
@@ -125,7 +135,7 @@ d("modalClose").onclick=()=>d("overlay").style.display="none";
 d("overlay").onclick=e=>{if(e.target===d("overlay"))d("overlay").style.display="none"};
 window.kiri={on(e){if(!e||typeof e!=="object")return;
  if(e.type==="snapshot"){Object.assign(s,{online:!!e.online,containers:e.containers||[],images:e.images||[],volumes:e.volumes||[],networks:e.networks||[],shares:e.shares||[],info:e.info||{},version:e.version||{},error:e.error});render()}
- else if(e.type==="operation"){if(e.ok&&["inspect","logs","compose_ps","compose_up","compose_down","build"].includes(e.label)){d("modalTitle").textContent=e.label;d("modalText").textContent=e.message||"完成";d("overlay").style.display="flex"}else toast(e.label+": "+(e.message||"完成"),!e.ok)}
+ else if(e.type==="operation"){if(e.ok&&["inspect","logs","exec","compose_logs","compose_ps","compose_up","compose_down","build"].includes(e.label)){d("modalTitle").textContent=e.label;d("modalText").textContent=e.message||"完成";d("overlay").style.display="flex"}else toast(e.label+": "+(e.message||"完成"),!e.ok)}
  else if(e.type==="vm"){d("subtitle").textContent=e.state==="starting"?"正在启动 VM…":e.state==="stopping"?"正在停止 VM…":"标准 Docker Engine"}
  else if(e.type==="selected_compose"){composePath=e.path||"";if(s.page==="compose")render()}
  else if(e.type==="detail")switchTo("containers");
