@@ -1,3 +1,7 @@
+> **Fork status (moby-engine branch, 2026-11-19):** This fork targets **only macOS Apple Silicon (arm64)** and is replacing Kiri's custom container runtime with **standard Moby/Docker Engine**. The original Kiri Engine shown below is being retired; its published benchmarks and compatibility claims are **not** claims about this fork's new backend. The Moby guest build and socket bridge exist, but **full macOS boot, GUI migration, port forwarding and Docker regression testing are not yet completed**. See [Moby Engine migration status](docs/MOBY_ENGINE.md).
+
+---
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="brand/logo/kiri-horizontal-dark.svg">
