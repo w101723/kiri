@@ -34,14 +34,14 @@ ip link set lo up
 ip link set eth0 up || die "guest eth0 not available"
 udhcpc -i eth0 -s /usr/local/sbin/kiri-udhcpc -n -q -t 12 || die "DHCP failed"
 
-containerd --root /var/lib/containerd --state /run/containerd >/var/log/containerd.log 2>&1 &
+containerd --root /var/lib/containerd --state /run/containerd >/dev/console 2>&1 &
 containerd_pid=$!
 dockerd --host unix:///run/docker.sock --containerd /run/containerd/containerd.sock \
   --data-root /var/lib/docker --exec-root /run/docker \
   --storage-driver overlay2 --iptables=true --ip6tables=true \
-  >/var/log/dockerd.log 2>&1 &
+  >/dev/console 2>&1 &
 dockerd_pid=$!
-/usr/local/sbin/kiri-moby-guest >/var/log/kiri-moby-bridge.log 2>&1 &
+/usr/local/sbin/kiri-moby-guest >/dev/console 2>&1 &
 bridge_pid=$!
 
 shutdown() {

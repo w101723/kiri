@@ -101,6 +101,17 @@ fn main() -> std::io::Result<()> {
         ],
     };
 
+    let log_dir = data.join("logs");
+    std::fs::create_dir_all(&log_dir)?;
+    std::fs::set_permissions(&log_dir, std::fs::Permissions::from_mode(0o700))?;
+    let console_log_path = log_dir.join("console.log");
+    let console_log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&console_log_path)?;
+    std::fs::set_permissions(&console_log_path, std::fs::Permissions::from_mode(0o600))?;
+    eprintln!("Moby VM console: {}", console_log_path.display());
+
     let cpus = std::env::var("KIRI_MOBY_CPUS").ok().and_then(|v| v.parse::<usize>().ok()).filter(|v| (1..=16).contains(v)).unwrap_or(4);
     let memory_mib = std::env::var("KIRI_MOBY_MEMORY_MIB").ok().and_then(|v| v.parse::<u64>().ok()).filter(|v| (1024..=65536).contains(v)).unwrap_or(4096);
     let mut vm = Vm::start(Config {
@@ -109,7 +120,7 @@ fn main() -> std::io::Result<()> {
         kernel,
         initrd,
         cmdline: "console=hvc0 rdinit=/init panic=-1".into(),
-        console: None,
+        console: Some(console_log.into()),
         agent_port: 5556,
         disk: Some(disk),
         share: Some(share),
