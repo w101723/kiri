@@ -789,18 +789,26 @@ pub(super) fn native_command(args: &[String]) -> io::Result<()> {
                 let modified = next != read_vm_resources()?;
                 if modified { save_vm_resources(next)?; }
                 let active = client::alive();
-                if apply && active && modified {
+                // A previously saved (but not yet applied) setting also
+                // requires a restart; comparing only the JSON file is wrong.
+                let pending = if active {
+                    let live_memory = memory_status()["vm_memory_ceiling_mib"].as_u64();
+                    let live_cpus = client::get("/info").ok()
+                        .and_then(|info| info["NCPU"].as_u64());
+                    live_memory != Some(next.memory_mib) || live_cpus != Some(next.cpus as u64)
+                } else { false };
+                if apply && active && pending {
                     stop_vm()?;
                     start_vm()?;
                 }
-                json!({"message": if !modified {
-                    "VM resource configuration unchanged"
-                } else if active && apply {
-                    "VM restarted with new CPU and memory limits"
+                json!({"message": if active && apply && pending {
+                    "VM restarted with the configured CPU and memory limits"
+                } else if active && pending {
+                    "Settings saved; VM restart is required to apply them"
                 } else if active {
-                    "Saved; restart VM to apply new CPU and memory limits"
+                    "VM CPU and memory limits are already applied"
                 } else {
-                    "Saved; new CPU and memory limits take effect on VM start"
+                    "Settings saved; limits will take effect on next VM start"
                 }})
             }
             "start" => {
