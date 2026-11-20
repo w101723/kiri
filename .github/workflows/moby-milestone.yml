@@ -34,8 +34,44 @@ permissions:
   actions: read
 
 jobs:
+  signing-preflight:
+    name: Verify stable signing identity before expensive full build
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+    env:
+      KIRI_PERSONAL_SIGN_P12_BASE64: ${{ secrets.KIRI_PERSONAL_SIGN_P12_BASE64 }}
+      KIRI_PERSONAL_SIGN_P12_PASSWORD: ${{ secrets.KIRI_PERSONAL_SIGN_P12_PASSWORD }}
+      KIRI_PERSONAL_SIGN_CERT_SHA256: ${{ secrets.KIRI_PERSONAL_SIGN_CERT_SHA256 }}
+      KIRI_PERSONAL_SIGN_CA_PEM_BASE64: ${{ secrets.KIRI_PERSONAL_SIGN_CA_PEM_BASE64 }}
+      KIRI_REQUIRE_PERSONAL_SIGNING: ${{ vars.KIRI_REQUIRE_PERSONAL_SIGNING || 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify real private certificate and full CA chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="packaged/Kiri Moby.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/bin/cli-plugins"
+          cat > "$app/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <plist version="1.0"><dict>
+          <key>CFBundleIdentifier</key><string>dev.kiri.app.moby</string>
+          <key>CFBundleExecutable</key><string>kiri</string>
+          <key>CFBundlePackageType</key><string>APPL</string>
+          <key>CFBundleVersion</key><string>1</string>
+          </dict></plist>
+          PLIST
+          printf 'int main(void){return 0;}\n' > "$RUNNER_TEMP/kiri-signing-probe.c"
+          clang -arch x86_64 -o "$app/Contents/MacOS/kiri" "$RUNNER_TEMP/kiri-signing-probe.c"
+          for bin in kiri-moby-host docker cli-plugins/docker-compose cli-plugins/docker-buildx; do
+            cp "$app/Contents/MacOS/kiri" "$app/Contents/Resources/bin/$bin"
+          done
+          bash scripts/moby/sign-personal-macos.sh "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          echo "PASS: fixed P12 identity can sign an App before building Linux Guest."
   guest:
     name: Linux ARM64 Guest (Docker Engine and ext4)
+    needs: signing-preflight
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     steps:
@@ -131,6 +167,7 @@ jobs:
 
   host:
     name: Apple Silicon Host (Intel macOS cross-link and sign)
+    needs: signing-preflight
     runs-on: macos-15-intel
     env:
       MACOSX_DEPLOYMENT_TARGET: "14.0"
