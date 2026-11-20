@@ -855,6 +855,64 @@ mod tests {
     }
 
     #[test]
+    fn docker_container_stats_normalize_cpu_memory_and_io() {
+        let raw = json!({
+            "cpu_stats": {
+                "cpu_usage": {"total_usage":1250000000_u64},
+                "system_cpu_usage":11000000000_u64, "online_cpus":4
+            },
+            "precpu_stats": {
+                "cpu_usage": {"total_usage":1000000000_u64},
+                "system_cpu_usage":10000000000_u64
+            },
+            "memory_stats": {
+                "usage":536870912_u64,
+                "limit":1073741824_u64,
+                "stats":{"inactive_file":134217728_u64}
+            },
+            "networks":{
+                "eth0":{"rx_bytes":1024_u64,"tx_bytes":2048_u64},
+                "eth1":{"rx_bytes":512_u64,"tx_bytes":256_u64}
+            },
+            "blkio_stats":{"io_service_bytes_recursive":[
+                {"op":"Read","value":2000_u64},
+                {"op":"Write","value":3000_u64},
+                {"op":"Read","value":500_u64},
+                {"op":"Total","value":5500_u64}
+            ]},
+            "pids_stats":{"current":7}
+        });
+        let result = summarize_container_resource_stats(&raw);
+        assert_eq!(result["cpu_percent"].as_f64(), Some(100.0));
+        assert_eq!(result["memory_bytes"].as_u64(), Some(402653184));
+        assert_eq!(result["memory_limit_bytes"].as_u64(), Some(1073741824));
+        assert_eq!(result["memory_percent"].as_f64(), Some(37.5));
+        assert_eq!(result["net_rx_bytes"].as_u64(), Some(1536));
+        assert_eq!(result["net_tx_bytes"].as_u64(), Some(2304));
+        assert_eq!(result["block_read_bytes"].as_u64(), Some(2500));
+        assert_eq!(result["block_write_bytes"].as_u64(), Some(3000));
+        assert_eq!(result["pids"].as_u64(), Some(7));
+    }
+
+    #[test]
+    fn docker_container_stats_missing_cpu_samples_are_not_zero_utilization() {
+        let incomplete = json!({"cpu_stats":{"cpu_usage":{"total_usage":100}},
+            "memory_stats":{"usage":500, "limit":1000},
+            "networks":{"lo":{"rx_bytes":0, "tx_bytes":0}}});
+        let parsed = summarize_container_resource_stats(&incomplete);
+        assert!(parsed["cpu_percent"].is_null());
+        assert_eq!(parsed["memory_bytes"].as_u64(), Some(500));
+        assert_eq!(parsed["memory_percent"].as_f64(), Some(50.0));
+        assert_eq!(parsed["net_rx_bytes"].as_u64(), Some(0));
+
+        let regressed = json!({
+            "cpu_stats":{"cpu_usage":{"total_usage":50},"system_cpu_usage":600},
+            "precpu_stats":{"cpu_usage":{"total_usage":100},"system_cpu_usage":500}
+        });
+        assert!(summarize_container_resource_stats(&regressed)["cpu_percent"].is_null());
+    }
+
+    #[test]
     fn docker_raw_log_frames_are_decoded() {
         let mut frames = vec![1,0,0,0,0,0,0,3];
         frames.extend_from_slice(b"abc");
