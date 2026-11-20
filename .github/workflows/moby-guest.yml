@@ -1,19 +1,9 @@
 name: Build standard Moby ARM64 Guest
 
+# The unified milestone workflow already builds the full Guest on each
+# relevant moby-engine commit. Keep this redundant Guest-only build available
+# for explicit diagnostics without automatically compiling a second kernel.
 on:
-  push:
-    branches: [moby-engine]
-    paths:
-      - "scripts/moby/build-guest.sh"
-      - "scripts/moby/guest/**"
-      - "guest/kernel/**"
-      - "xtask/src/main.rs"
-      - "crates/kiri-moby-bridge/src/lib.rs"
-      - "crates/kiri-moby-bridge/src/shares.rs"
-      - "crates/kiri-moby-bridge/src/bin/kiri-moby-guest.rs"
-      - "crates/kiri-moby-bridge/Cargo.toml"
-      - "Cargo.lock"
-      - ".github/workflows/moby-guest.yml"
   workflow_dispatch:
 
 concurrency:
