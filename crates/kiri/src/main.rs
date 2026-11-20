@@ -143,6 +143,8 @@ fn main() -> ExitCode {
         #[cfg(target_os = "macos")]
         Some("boot") => boot::run(&args[1..]),
         #[cfg(target_os = "macos")]
+        Some("moby-native") => ui::native_moby_command(&args[1..]),
+        #[cfg(target_os = "macos")]
         Some("setup") => Err(std::io::Error::other(
             "Legacy Kiri setup disabled on macOS: it could replace OrbStack's Docker context; Moby uses its own socket")),
         #[cfg(any(unix, windows))]
