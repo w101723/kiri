@@ -58,12 +58,36 @@ jobs:
             "$app/Contents/MacOS/kiri-moby-ui-preview" \
             > screenshots/preview-containers.log 2>&1 &
           table_pid="$!"
-          sleep 6
-          if kill -0 "$table_pid" 2>/dev/null; then
+          # CI macOS may need a cold-start delay before an NSWindow exists.
+          # Verify center-of-screen pixels are not the black Finder desktop:
+          # a successful screencapture exit code alone is insufficient.
+          cat > "$RUNNER_TEMP/check-visual.swift" <<'SWIFT'
+          import AppKit
+          let url = URL(fileURLWithPath: CommandLine.arguments[1])
+          guard let data = try? Data(contentsOf: url),
+                let rep = NSBitmapImageRep(data: data),
+                let color = rep.colorAt(x: rep.pixelsWide / 2,
+                                         y: rep.pixelsHigh / 2)?
+                    .usingColorSpace(.deviceRGB),
+                color.brightnessComponent > 0.15 else {
+            fputs("Screen center is black: native UI may not be ready\n", stderr)
+            exit(1)
+          }
+          SWIFT
+          swiftc "$RUNNER_TEMP/check-visual.swift" -o "$RUNNER_TEMP/check-visual"
+          table_ok=false
+          for attempt in 1 2 3 4; do
+            sleep 4
+            if ! kill -0 "$table_pid" 2>/dev/null; then break; fi
             screencapture -x -t png screenshots/native-moby-container-resources.png || true
-            kill "$table_pid" 2>/dev/null || true
-            sleep 1
-          fi
+            if "$RUNNER_TEMP/check-visual" screenshots/native-moby-container-resources.png; then
+              table_ok=true
+              break
+            fi
+          done
+          kill "$table_pid" 2>/dev/null || true
+          test "$table_ok" = true
+          sleep 1
           # Then capture the overlapping floating log and Exec windows.
           KIRI_MOBY_UI_PREVIEW=1 "$app/Contents/MacOS/kiri-moby-ui-preview" \
             > screenshots/preview-console.log 2>&1 &
