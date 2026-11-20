@@ -733,7 +733,7 @@ private struct NativeLogTextView: NSViewRepresentable {
         scroller.hasHorizontalScroller = true
         scroller.autohidesScrollers = true
         scroller.drawsBackground = true
-        scroller.backgroundColor = NSColor(calibratedWhite: 0.09, alpha: 1)
+        scroller.backgroundColor = ConsoleAppearance.canvasNS
         let view = NSTextView(frame: .zero)
         view.isEditable = false
         view.isSelectable = true
@@ -780,67 +780,54 @@ private struct NativeLogTextView: NSViewRepresentable {
     }
 }
 
+/// Consistent charcoal console across tabs, renderer and controls.
+private enum ConsoleAppearance {
+    static let canvas = Color(red: 20 / 255, green: 20 / 255, blue: 20 / 255)
+    static let toolbar = Color(red: 31 / 255, green: 31 / 255, blue: 35 / 255)
+    static let canvasNS = NSColor(calibratedRed: 20 / 255,
+                                  green: 20 / 255, blue: 20 / 255, alpha: 1)
+}
+private enum ConsoleCommand: String {
+    case copy, clear, interrupt, toggleFollow
+    case last200, last1000, last5000
+}
+private let consoleCommandNotification = Notification.Name("dev.kiri.moby.console.action")
+
 private struct ContainerLogWindow: View {
     @StateObject private var session = ContainerLogSession()
     let containerID: String
     let containerName: String
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 14) {
-                Toggle("实时跟随", isOn: $session.following)
-                    .toggleStyle(.checkbox)
-                Picker("最近日志行数", selection: $session.tailLines) {
-                    Text("最近 200 行").tag(200)
-                    Text("最近 1,000 行").tag(1000)
-                    Text("最近 5,000 行").tag(5000)
+        NativeLogTextView(content: session.content, following: session.following)
+            .frame(minHeight: 150)
+            .background(ConsoleAppearance.canvas)
+            .task(id: session.tailLines) {
+                while !Task.isCancelled {
+                    if session.following {
+                        await session.refresh(containerID: containerID)
+                    }
+                    do { try await Task.sleep(for: .seconds(2)) }
+                    catch { break }
                 }
-                .labelsHidden()
-                .frame(width: 164)
-                .onChange(of: session.tailLines) { _, _ in session.reload() }
-                Spacer()
-                Button {
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: consoleCommandNotification)) { notification in
+                guard notification.object as? String == "logs:" + containerID,
+                      let action = notification.userInfo?["action"] as? String,
+                      let command = ConsoleCommand(rawValue: action) else { return }
+                switch command {
+                case .copy:
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(session.content, forType: .string)
-                } label: {
-                    Label("复制", systemImage: "doc.on.doc")
-                }
-                Button {
-                    session.clear()
-                } label: {
-                    Label("清空", systemImage: "trash")
+                case .clear: session.clear()
+                case .toggleFollow: session.following.toggle()
+                case .last200: session.tailLines = 200
+                case .last1000: session.tailLines = 1000
+                case .last5000: session.tailLines = 5000
+                case .interrupt: break
                 }
             }
-            .font(.system(size: 12))
-            .padding(.horizontal, 13)
-            .frame(height: 50)
-            NativeLogTextView(content: session.content, following: session.following)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(session.error == nil ? Color.green : Color.red)
-                    .frame(width: 8, height: 8)
-                Text(session.error ?? (session.following ? "运行中 · 日志持续更新…" : "已暂停刷新"))
-                    .lineLimit(1)
-                Spacer()
-                Text(ByteCountFormatter.string(fromByteCount: Int64(session.content.utf8.count),
-                                               countStyle: .file))
-            }
-            .font(.system(size: 11))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 13)
-            .frame(height: 35)
-        }
-        .frame(minHeight: 180)
-        .task(id: session.tailLines) {
-            while !Task.isCancelled {
-                if session.following {
-                    await session.refresh(containerID: containerID)
-                }
-                do { try await Task.sleep(for: .seconds(2)) }
-                catch { break }
-            }
-        }
     }
 }
 
