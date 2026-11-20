@@ -65,7 +65,7 @@ checks = [
     ('ContainerDetailTab: String, CaseIterable', "Overview / Logs / Terminal segmented tabs"),
     ('.pickerStyle(.segmented)', "Native segmented detail navigation"),
     ('ForEach(loadedTerminalIDs.sorted()', "SwiftTerm views remain mounted when switching tabs"),
-    ('EmbeddedContainerLogsView(containerID:', "Searchable inline log pane"),
+    ('EmbeddedContainerLogsView(', "Searchable inline log pane"),
     ('WindowGroup("容器控制台", id: "container-console"', "Real macOS console windows"),
     ('openWindow(id: "container-console", value: ConsoleSession(', "Pop-out from detail pane"),
     ('tabbingMode = .preferred', "AppKit native window tabbing"),
