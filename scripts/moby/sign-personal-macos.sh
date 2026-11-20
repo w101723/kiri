@@ -113,7 +113,7 @@ if [[ "$leaf_subject" != "$leaf_issuer" ]]; then
     fi
     perl -e 'alarm 20; exec @ARGV' \
       sudo -n security add-trusted-cert -d -r "$trust_result" \
-        -p codeSign -k "$keychain" "$ca" || {
+        -p codeSign -k /Library/Keychains/System.keychain "$ca" || {
       echo "Could not trust issuer CA in the CI runner's administrator trust store." >&2
       exit 2
     }
