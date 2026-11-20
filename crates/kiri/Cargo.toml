@@ -25,7 +25,7 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem",
 # regex-lite: RE2 syntax like Go's regexp, without the Unicode tables' size.
 regex-lite = "0.1"
 
-[target.'cfg(any(unix, windows))'.dependencies]
+[target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
 
 [target.'cfg(unix)'.dependencies]
@@ -41,20 +41,13 @@ objc2-core-text = { version = "0.3.2", default-features = false, features = ["st
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSNotification", "NSGeometry", "NSObject", "NSAppleScript", "NSDictionary", "NSArray"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKWebView", "WKWebViewConfiguration", "WKUserContentController", "WKScriptMessage", "WKScriptMessageHandler", "WKNavigation"] }
 
-# The Linux window (`kiri ui`), only with `--features window`: the engine and
-# CLI stay one static binary with no desktop libraries; the window is a
-# separate build that links the system's GTK 3 and WebKitGTK 4.1.
-[target.'cfg(target_os = "linux")'.dependencies]
-gtk = { version = "0.18", optional = true }
-webkit2gtk = { version = "2.0", optional = true, features = ["v2_40"] }
-javascriptcore-rs = { version = "1", optional = true }
-
 # The tests read back the tar archives the managed builder writes.
 [dev-dependencies]
 tar = "0.4"
 
 [features]
-window = ["dep:gtk", "dep:webkit2gtk", "dep:javascriptcore-rs"]
+# Retained for backwards-compatible Mac tooling; no GTK/WebKitGTK dependency.
+window = []
 
 [lints]
 workspace = true
