@@ -246,6 +246,36 @@ private func request<T: Decodable>(_ args: [String], as: T.Type) throws -> T {
     }
 }
 
+// CI visual reference only. This code is excluded from release builds.
+// No live Docker access or synthetic data are ever used in a normal App.
+#if KIRI_UI_PREVIEW
+private let uiPreviewJSON = """
+{
+  "online": true,
+  "containers": [
+    {"Id":"a000000000000000","Names":["/nginx"],"Image":"nginx:1.27",
+     "State":"running","Status":"Up 20 minutes","Created":1768900440,
+     "Ports":[{"IP":"0.0.0.0","PrivatePort":80,"PublicPort":8080,"Type":"tcp"}]},
+    {"Id":"b000000000000000","Names":["/redis"],"Image":"redis:7-alpine",
+     "State":"running","Status":"Up 18 minutes","Created":1768900560,
+     "Ports":[{"IP":"0.0.0.0","PrivatePort":6379,"PublicPort":6379,"Type":"tcp"}]},
+    {"Id":"c000000000000000","Names":["/mysql"],"Image":"mysql:8.4",
+     "State":"running","Status":"Up 16 minutes","Created":1768900680,
+     "Ports":[{"IP":"0.0.0.0","PrivatePort":3306,"PublicPort":3306,"Type":"tcp"}]},
+    {"Id":"d000000000000000","Names":["/web"],"Image":"nginx:alpine",
+     "State":"exited","Status":"Exited (0)","Created":1768899300,"Ports":[]}
+  ],
+  "images": [], "volumes": [], "networks": [],
+  "info":{"NCPU":2,"MemTotal":8589934592,"Architecture":"aarch64","Driver":"overlay2"},
+  "version":{"Version":"29.0.0"},
+  "memory":{"vm_memory_ceiling_mib":8192,"balloon_target_mib":4096,
+            "guest_total_kib":8388608,"guest_available_kib":4194304},
+  "vm_config":{"cpus":2,"memory_mib":8192,"max_cpus":10,"max_memory_mib":16384},
+  "shares":[]
+}
+"""
+#endif
+
 @MainActor
 private final class MobyModel: ObservableObject {
     @Published var page: Page = .containers
@@ -310,12 +340,25 @@ private final class MobyModel: ObservableObject {
     func begin() {
         guard !bootRequested else { return }
         bootRequested = true
+        #if KIRI_UI_PREVIEW
+        if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+            snapshot = try? JSONDecoder().decode(
+                Snapshot.self, from: Data(uiPreviewJSON.utf8))
+            isLight = true
+            return
+        }
+        #endif
         refresh()
         // Idempotent: if the VM is already online, Rust start_vm() is a no-op.
         perform(["start"], title: "Start VM", showResult: false)
     }
 
     func refresh() {
+        #if KIRI_UI_PREVIEW
+        if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+            return
+        }
+        #endif
         guard !refreshing else { return }
         refreshing = true
         Task {
@@ -354,6 +397,12 @@ private final class MobyModel: ObservableObject {
     }
 
     func perform(_ args: [String], title: String, showResult: Bool = true) {
+        #if KIRI_UI_PREVIEW
+        if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+            notify("CI 布局预览，不会执行实际 Docker 操作")
+            return
+        }
+        #endif
         let operationKey = args.joined(separator: "\u{1F}")
         let vmTransition = args.first == "start" || args.first == "stop"
             || args.first == "restart" || (args.first == "configure" && args.last == "apply")
@@ -2232,7 +2281,7 @@ private struct KiriMobyNativeApp: App {
         WindowGroup("Kiri Moby") {
             RootView().environmentObject(model)
         }
-        .defaultSize(width: 1280, height: 800)
+        .defaultSize(width: 1440, height: 900)
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
