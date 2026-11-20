@@ -28,7 +28,7 @@ codesign --verify --deep --strict --verbose=2 "$app"
 
 # The mounted disk contains exactly the App, an Applications symlink and a
 # small readme. ditto preserves the signed bundle's symlinks and metadata.
-stage="$(mktemp -d "\${RUNNER_TEMP:-/tmp}/kiri-dmg.XXXXXXXX")"
+stage="$(mktemp -d "${RUNNER_TEMP:-/tmp}/kiri-dmg.XXXXXXXX")"
 trap 'rm -rf -- "$stage"' EXIT
 mkdir -p "$stage/volume"
 ditto "$app" "$stage/volume/Kiri Moby.app"
