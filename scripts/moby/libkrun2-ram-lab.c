@@ -34,7 +34,6 @@ typedef struct {
 
 #define KRUN_STR(s) ((KrunStr){ (s), strlen(s) })
 #define RAW_ARM64_IMAGE 1u
-#define MACOS_FREE_PAGE_REPLACE 1u
 
 static void *required_symbol(void *lib, const char *name) {
     (void)dlerror();
@@ -75,6 +74,15 @@ int main(int argc, char **argv) {
             argv[0]);
         return 2;
     }
+    // Baseline and Replace use identical Guest/payload/allocator conditions.
+    // This is an experimental knob, never exposed in Kiri's production UI.
+    const char *mode_name = getenv("KIRI_LIBKRUN_REPORTING_MODE");
+    if (mode_name == NULL || mode_name[0] == '\0') { mode_name = "replace"; }
+    if (strcmp(mode_name, "replace") != 0 && strcmp(mode_name, "default") != 0) {
+        fprintf(stderr, "KIRI_LIBKRUN_REPORTING_MODE must be default or replace\n");
+        return 2;
+    }
+    const uint32_t mode = strcmp(mode_name, "replace") == 0 ? 1u : 0u;
     // Never permit a "convenience" path to the user's existing writable
     // Kiri VM data disk. This runner has NO block-device API at all.
     void *lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
@@ -137,7 +145,7 @@ int main(int argc, char **argv) {
     Handle balloon = krun_balloon_device_new(&error);
     if (failed(error, "balloon create") || balloon == NULL) { return 1; }
     krun_balloon_device_set_free_page_reporting_mode(
-        balloon, MACOS_FREE_PAGE_REPLACE);
+        balloon, mode);
     krun_mmio_device_manager_add(devices, balloon); // takes ownership
 
     Handle rng = krun_rng_device_new(&error);
@@ -165,10 +173,10 @@ int main(int argc, char **argv) {
     if (failed(error, "VMM build") || vmm == NULL) { return 1; }
 
     fprintf(stderr,
-        "Experimental isolated libkrun2 VM: pid=%ld, 2048MiB max, free-page mode=Replace.\n"
-        "Compare macOS process RSS before, during and after Guest allocation.\n"
+        "Experimental isolated libkrun2 VM: pid=%ld, 2048MiB max, free-page mode=%s.\n"
+        "Compare macOS Physical footprint before, during and after Guest allocation.\n"
         "No Kiri Docker VM disk or container state is mounted.\n",
-        (long)getpid());
+        (long)getpid(), mode_name);
     fflush(stderr);
     krun_vmm_run(vmm);
     fprintf(stderr, "libkrun2 VM exited without a memory reclamation result.\n");
