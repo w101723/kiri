@@ -71,7 +71,11 @@ impl Governor {
     /// memory for dockerd, builds, allocations and caches.
     pub fn update(&mut self, sample: GuestMemory) -> Option<u64> {
         const FLOOR_MIB: u64 = 1_024;
-        const HEADROOM_MIB: u64 = 1_024;
+        // Keep a full GiB minimum VM target for Docker bursts, but avoid
+        // reserving ANOTHER GiB on top of it when the Guest is mostly idle.
+        // The reserve is still enough for short-lived daemon allocations.
+        const HEADROOM_MIB: u64 = 768;
+        const MIN_GUEST_AVAILABLE_MIB: u64 = 512;
         const STEP_MIB: u64 = 256;
         const HYSTERESIS_MIB: u64 = 128;
 
@@ -84,7 +88,7 @@ impl Governor {
         let used = total.saturating_sub(available).saturating_sub(inflated);
         let desired = used.saturating_add(HEADROOM_MIB).clamp(FLOOR_MIB, self.max_mib);
 
-        let next = if available < 512 && self.target_mib < self.max_mib {
+        let next = if available < MIN_GUEST_AVAILABLE_MIB && self.target_mib < self.max_mib {
             // Deflate promptly before a memory-starved guest OOMs. A burst can
             // still OOM before the next poll; do not promise zero OOM risk.
             self.quiet_samples = 0;
@@ -92,13 +96,25 @@ impl Governor {
         } else if desired > self.target_mib.saturating_add(HYSTERESIS_MIB) {
             self.quiet_samples = 0;
             desired
-        } else if desired.saturating_add(STEP_MIB) < self.target_mib
-            && available > HEADROOM_MIB + STEP_MIB
-        {
-            // Require three consecutive idle samples before reclaiming.
+        } else if desired.saturating_add(HYSTERESIS_MIB) < self.target_mib {
+            // Important: the old condition demanded a FULL 256 MiB margin
+            // beyond the target and >1,280 MiB MemAvailable before shrinking.
+            // Real Docker post-exit telemetry (target=1536, available=1097)
+            // then deadlocked with ~280 MiB actually used, never reclaiming.
+            //
+            // Shrink by at most one step, never below the estimated desired
+            // target, and never consume the last 512 MiB MemAvailable. This
+            // leaves the live VM online and can also take a partial step.
+            let shrink_mib = STEP_MIB
+                .min(self.target_mib - desired)
+                .min(available.saturating_sub(MIN_GUEST_AVAILABLE_MIB));
+            if shrink_mib < HYSTERESIS_MIB {
+                self.quiet_samples = 0;
+                return None;
+            }
             self.quiet_samples = self.quiet_samples.saturating_add(1);
             if self.quiet_samples < 3 { return None; }
-            self.target_mib - STEP_MIB
+            self.target_mib - shrink_mib
         } else {
             self.quiet_samples = 0;
             return None;
@@ -136,6 +152,51 @@ mod tests {
         for _ in 0..150 { policy.update(sample(3_200)); }
         assert!(policy.target_mib() >= 1_024);
         assert!(policy.target_mib() <= 4_096);
+    }
+
+    #[test]
+    fn real_mac_post_container_exit_does_not_stall_at_1536_mib() {
+        // Captured from an actual Apple Silicon Kiri Moby instance after
+        // deleting containers: target 1536 MiB, MemTotal 4030296 KiB,
+        // MemAvailable 1123264 KiB. Estimated live use is only ~279 MiB.
+        let mut policy = Governor::new(4_096);
+        policy.target_mib = 1_536;
+        let sample = GuestMemory {
+            total_kib: 4_030_296,
+            available_kib: 1_123_264,
+            cached_kib: 0,
+        };
+        assert_eq!(policy.update(sample), None);
+        assert_eq!(policy.update(sample), None);
+        assert_eq!(policy.update(sample), Some(1_280));
+        // Reflect the 256 MiB balloon inflation in MemAvailable; don't
+        // erroneously use unchanged MemAvailable as if the balloon did nothing.
+        let after_first = GuestMemory {
+            available_kib: sample.available_kib - 256 * 1024,
+            ..sample
+        };
+        assert_eq!(policy.update(after_first), Some(1_047));
+        // The 512 MiB minimum Guest headroom guard remains satisfied.
+        let after_second = GuestMemory {
+            available_kib: after_first.available_kib - 233 * 1024,
+            ..sample
+        };
+        assert!(after_second.available_kib / 1024 > 512);
+        assert_eq!(policy.update(after_second), None);
+        assert_eq!(policy.target_mib(), 1_047);
+    }
+
+    #[test]
+    fn rapid_pressure_reinflates_balloon_without_restarting_vm() {
+        let mut policy = Governor::new(4_096);
+        policy.target_mib = 1_047;
+        let low = GuestMemory {
+            total_kib: 4_030_296,
+            available_kib: 400 * 1024,
+            cached_kib: 0,
+        };
+        assert_eq!(policy.update(low), Some(2_071));
+        assert_eq!(policy.target_mib(), 2_071);
     }
 
     #[test]
