@@ -1113,7 +1113,8 @@ private struct RootView: View {
         .task {
             model.begin()
             #if KIRI_UI_PREVIEW
-            if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+            if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" &&
+               ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW_NO_FLOATING"] != "1" {
                 try? await Task.sleep(for: .seconds(1))
                 openContainerLogs("a000000000000000", name: "nginx")
                 openExecTerminal("a000000000000000", name: "nginx")
