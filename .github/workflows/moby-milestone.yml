@@ -2,19 +2,24 @@ name: Kiri Moby unified macOS ARM64 milestone bundle
 
 on:
   workflow_dispatch:
-  # Primary install artifact: Finder-mounted DMG containing Kiri Moby.app and Applications.
-  # Release validation: rebuild merged moby-engine DMG as a complete same-commit bundle.
-  # Fork Actions re-enabled: request a fresh ARM64 DMG artifact build.
-  # Build a single integrated artifact automatically when this milestone
-  # workflow changes, without re-building the 90-minute kernel every push.
+  # Build one same-commit Host+Guest+GUI artifact on milestone changes.
+  # The isolated memory lab must build its own matching Guest and Host;
+  # reusing a moby-engine Guest would silently omit its experimental flag.
   push:
-    branches: [moby-engine, memory-reclaim]
+    branches: [moby-engine, memory-reclaim, memory-200m-lab]
     paths:
       - ".github/workflows/moby-milestone.yml"
       - "scripts/moby/install-local-macos.sh"
       - "scripts/moby/package-dmg-macos.sh"
-      - "crates/kiri-moby-bridge/src/memory.rs"
-      - "crates/kiri/src/ui/moby.html"
+      - "scripts/moby/build-guest.sh"
+      - "scripts/moby/guest/**"
+      - "scripts/moby/measure-memory-macos.sh"
+      - "crates/kiri-moby-bridge/**"
+      - "crates/kiri-vmm/**"
+      - "crates/kiri/src/ui/moby*"
+      - "guest/kernel/**"
+      - "xtask/src/main.rs"
+      - "Cargo.lock"
 
 concurrency:
   group: moby-milestone-${{ github.ref }}
