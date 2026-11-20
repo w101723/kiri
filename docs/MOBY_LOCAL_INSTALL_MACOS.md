@@ -1,4 +1,12 @@
-# Kiri Moby：仅自己使用，首次授权，以后直接更新
+# Kiri Moby：macOS 原生安装与个人开发版更新
+
+**默认安装方式已经改为标准 DMG：** 下载 GitHub Actions
+`Kiri-Moby-macos-arm64-DMG`，解压 ZIP 并双击 DMG，在 Finder 中将
+`Kiri Moby.app` 拖到 `Applications` 即可。**首次安装不再需要运行 .sh。**
+具体参见 `docs/MOBY_MACOS_DMG.md`。
+
+下文是仅在你希望对未来的 Ad-hoc 开发版进行“一次明确授权、以后少弹 Gatekeeper”
+时使用的**可选旧方案**，不再是默认安装步骤。
 
 不必加入 Apple Developer Program。正式公证流程仍保留，但对于你自己的 Kiri
 开发版本，可以使用 **明确的一次性本机授权** + 专用安装脚本。
