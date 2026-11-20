@@ -103,7 +103,20 @@ if [[ "$leaf_subject" != "$leaf_issuer" ]]; then
     else
       trust_result=trustAsRoot
     fi
-    security add-trusted-cert -r "$trust_result" -p codeSign -k "$keychain" "$ca"
+    # User-domain trust on hosted macOS can block waiting for a GUI consent
+    # dialog. The disposable CI macOS runner supports passwordless sudo.
+    # Admin-domain trust is limited to the exact code-signing CA and this
+    # ephemeral runner; no trust change is performed on the owner's Mac.
+    if [[ "${GITHUB_ACTIONS:-}" != true ]]; then
+      echo "Private CA trust requires an ephemeral GitHub macOS runner; refusing to alter this Mac's trust settings." >&2
+      exit 2
+    fi
+    perl -e 'alarm 20; exec @ARGV' \
+      sudo -n security add-trusted-cert -d -r "$trust_result" \
+        -p codeSign -k "$keychain" "$ca" || {
+      echo "Could not trust issuer CA in the CI runner's administrator trust store." >&2
+      exit 2
+    }
     matched_issuer=true
     echo "Private code-signing intermediate CA trusted in ephemeral CI keychain."
     break
