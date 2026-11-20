@@ -491,8 +491,7 @@ private struct RootView: View {
                         }
                     }
                     .padding(20)
-                    .frame(maxWidth: 650, maxHeight: 420)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(idealWidth: 650, idealHeight: 420, maxWidth: 650, maxHeight: 420)
                     .padding(.horizontal, 24)
                     .padding(.vertical, 24)
                     .background(KiriPalette.panel(model.isLight))
