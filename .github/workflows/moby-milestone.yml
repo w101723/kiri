@@ -11,7 +11,7 @@ on:
     # Release branch only. Feature-branch commits run the fast native GUI
     # and bridge checks. A full signed feature bundle can still be started
     # deliberately via workflow_dispatch to avoid repeated kernel builds.
-    branches: [moby-engine]
+    branches: [moby-engine, apple-silicon-native-parity]
     paths:
       - ".github/workflows/moby-milestone.yml"
       - "scripts/moby/sign-notarize-macos.sh"
@@ -129,7 +129,7 @@ jobs:
           echo "Tiny ARM64 boot image verified" >> "$GITHUB_STEP_SUMMARY"
       - name: Reuse exact-kernel verified ARM64 artifact if sources match
         id: reuse_kernel
-        if: github.ref_name == 'moby-engine' || github.ref_name == 'native-swiftui-moby'
+        if: github.ref_name == 'moby-engine' || github.ref_name == 'apple-silicon-native-parity'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -138,7 +138,7 @@ jobs:
           # only when the guest kernel source/config/build scripts match.
           prior="6df7033fa9b5e3e21d8e423c4bafd9c18c30d36c"
           if ! git cat-file -e "$prior^{commit}" 2>/dev/null ||
-             ! git diff --quiet "$prior" HEAD -- guest/kernel xtask; then
+             ! git diff --quiet "$prior" HEAD -- guest/kernel; then
             echo 'reused=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -163,7 +163,16 @@ jobs:
           echo 'reused=true' >> "$GITHUB_OUTPUT"
       - name: Build Linux ARM64 kernel if a verified reuse is not possible
         if: steps.reuse_kernel.outputs.reused != 'true'
-        run: cargo xtask kernel
+        run: |
+          set -euo pipefail
+          mkdir -p guest/out target/kernel-build
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD/guest/kernel:/src:ro" \
+            -v "$PWD/guest/out:/out" \
+            -v "$PWD/target/kernel-build:/build" \
+            ubuntu:24.04 sh /src/build.sh
+          test -s guest/out/Image
+          echo "Linux ARM64 Guest kernel built directly without legacy xtask."
       - name: Bundle Guest with file checksums
         run: |
           cp guest/out/Image target/moby-guest/Image
