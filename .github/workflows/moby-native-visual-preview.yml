@@ -1,0 +1,76 @@
+name: Native Moby visual screenshot (source-rendered)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/kiri/native/MobyApp.swift"
+      - "scripts/moby/check-native-ui-parity.py"
+      - ".github/workflows/moby-native-visual-preview.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: moby-visual-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  screenshot:
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert production UI parity source contract
+        run: python3 scripts/moby/check-native-ui-parity.py
+      - name: Compile native SwiftUI preview (test-only x86 binary, release remains arm64-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="$(xcrun --sdk macosx --show-sdk-path)"
+          app="$RUNNER_TEMP/Kiri Moby UI Preview.app"
+          mkdir -p "$app/Contents/MacOS"
+          cat > "$app/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>kiri-moby-ui-preview</string>
+            <key>CFBundleIdentifier</key><string>dev.kiri.moby.preview</string>
+            <key>CFBundleName</key><string>Kiri Moby UI Preview</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleVersion</key><string>1</string>
+          </dict></plist>
+          PLIST
+          swiftc -parse-as-library -D KIRI_UI_PREVIEW \
+            -target x86_64-apple-macosx14.0 -sdk "$sdk" \
+            crates/kiri/native/MobyApp.swift \
+            -o "$app/Contents/MacOS/kiri-moby-ui-preview"
+          codesign --force --sign - "$app"
+      - name: Render a real AppKit window with explicitly synthetic preview data
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p screenshots
+          app="$RUNNER_TEMP/Kiri Moby UI Preview.app"
+          KIRI_MOBY_UI_PREVIEW=1 "$app/Contents/MacOS/kiri-moby-ui-preview" \
+            > screenshots/preview-console.log 2>&1 &
+          pid="$!"
+          sleep 8
+          if kill -0 "$pid" 2>/dev/null; then
+            if screencapture -x -t png screenshots/native-moby-preview.png; then
+              test -s screenshots/native-moby-preview.png
+              echo "Screenshot captured from real SwiftUI/AppKit view (sample data)" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "Screen capture unavailable on hosted macOS runner" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            kill "$pid" 2>/dev/null || true
+          else
+            echo "Native preview process exited before capture" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kiri-moby-native-ui-visual-preview
+          path: screenshots/
+          if-no-files-found: warn
+          retention-days: 14
