@@ -21,16 +21,11 @@ use serde_json::{json, Value};
 
 use crate::cli_pins;
 
-/// Grype's version and the SHA-256 of its download, and where it is.
-#[cfg(target_os = "macos")]
+/// Grype is packaged only for macOS Apple Silicon; Linux is the Docker Guest.
 const GRYPE: (&str, &str) = cli_pins::MacArch::HOST.grype();
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-const GRYPE: (&str, &str) = cli_pins::LINUX_ARM64_GRYPE;
-#[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
-const GRYPE: (&str, &str) = cli_pins::LINUX_GRYPE;
 
-fn grype_url(v: &str) -> String {
-    if cfg!(target_os = "macos") { cli_pins::MacArch::HOST.grype_url(v) } else { cli_pins::linux_grype_url(v, if cfg!(target_arch = "aarch64") { "arm64" } else { "amd64" }) }
+fn grype_url(version: &str) -> String {
+    cli_pins::MacArch::HOST.grype_url(version)
 }
 
 /// Images being scanned now, so a second click doesn't start another.
