@@ -3,14 +3,16 @@ name: Kiri libkrun2 isolated RAM lab (Guest + runner)
 on:
   workflow_dispatch:
   push:
-    branches: [memory-reclaim, memory-reporting-lab]
+    branches: [memory-reclaim, memory-reporting-lab, adaptive-memory-lab]
     paths:
       - "scripts/moby/libkrun2-ram-lab.c"
       - "scripts/moby/libkrun2-memory-probe.c"
       - "scripts/moby/libkrun2-entitlements.plist"
       - "scripts/moby/libkrun-lab-init"
+      - "scripts/moby/libkrun-lab-anon.c"
       - "scripts/moby/build-libkrun-lab-guest.sh"
       - "scripts/moby/measure-libkrun-lab-macos.sh"
+      - "scripts/moby/measure-libkrun-cold-anon-macos.sh"
       - "guest/kernel/**"
       - ".github/workflows/moby-libkrun-lab.yml"
   pull_request:
@@ -19,8 +21,10 @@ on:
       - "scripts/moby/libkrun2-memory-probe.c"
       - "scripts/moby/libkrun2-entitlements.plist"
       - "scripts/moby/libkrun-lab-init"
+      - "scripts/moby/libkrun-lab-anon.c"
       - "scripts/moby/build-libkrun-lab-guest.sh"
       - "scripts/moby/measure-libkrun-lab-macos.sh"
+      - "scripts/moby/measure-libkrun-cold-anon-macos.sh"
       - "guest/kernel/**"
       - ".github/workflows/moby-libkrun-lab.yml"
 
@@ -40,6 +44,7 @@ jobs:
         run: |
           bash -n scripts/moby/build-libkrun-lab-guest.sh
           bash -n scripts/moby/measure-libkrun-lab-macos.sh
+          bash -n scripts/moby/measure-libkrun-cold-anon-macos.sh
           sh -n scripts/moby/libkrun-lab-init
       - name: Build isolated virtio-mmio kernel and RAM-only initramfs
         run: |
@@ -48,6 +53,8 @@ jobs:
           (cd "$RUNNER_TEMP/kiri-libkrun-guest" && sha256sum -c SHA256SUMS)
           (cd "$RUNNER_TEMP/kiri-libkrun-guest" && grep -Fxq 'CONFIG_VIRTIO_MMIO=y' kernel.config)
           (cd "$RUNNER_TEMP/kiri-libkrun-guest" && grep -Fxq 'CONFIG_PAGE_REPORTING=y' kernel.config)
+          (cd "$RUNNER_TEMP/kiri-libkrun-guest" && grep -Fxq 'CONFIG_ZRAM=y' kernel.config)
+          (cd "$RUNNER_TEMP/kiri-libkrun-guest" && grep -Fxq 'CONFIG_ZRAM_DEF_COMP_LZ4=y' kernel.config)
       - name: Publish isolated Guest assets (no Docker VM disk)
         uses: actions/upload-artifact@v4
         with:
@@ -81,7 +88,9 @@ jobs:
           done
           cp docs/MOBY_LIBKRUN_MEMORY.md target/libkrun-lab/README.md
           cp scripts/moby/measure-libkrun-lab-macos.sh target/libkrun-lab/measure-libkrun-lab-macos.sh
+          cp scripts/moby/measure-libkrun-cold-anon-macos.sh target/libkrun-lab/measure-libkrun-cold-anon-macos.sh
           chmod +x target/libkrun-lab/measure-libkrun-lab-macos.sh
+          chmod +x target/libkrun-lab/measure-libkrun-cold-anon-macos.sh
           tar -C target/libkrun-lab -czf target/kiri-libkrun2-memory-lab-arm64.tgz .
           (cd target && shasum -a 256 kiri-libkrun2-memory-lab-arm64.tgz \
             > kiri-libkrun2-memory-lab-arm64.tgz.sha256)
