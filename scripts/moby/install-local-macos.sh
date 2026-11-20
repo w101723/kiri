@@ -4,6 +4,7 @@ set -euo pipefail
 umask 077
 trustdir="$HOME/Library/Application Support/Kiri Moby"
 trustfile="$trustdir/trust-local-builds-v1"
+signerfile="$trustdir/personal-signer-sha256-v1"
 trustmark="w101723/kiri: opt-in local development app updates"
 help() {
   echo "Usage: $0 --trust-local-builds | --status | --revoke-local-trust" >&2
@@ -16,11 +17,16 @@ trusted() {
 case "${1:-}" in
   --status)
     if trusted; then echo "Kiri local build consent: enabled"; else echo "Kiri local build consent: disabled"; fi
+    if [[ -f "$signerfile" && ! -L "$signerfile" ]]; then
+      echo "Pinned code signing certificate SHA256: $(cat "$signerfile")"
+    else
+      echo "Personal signing identity: not pinned yet"
+    fi
     exit 0;;
   --revoke-local-trust)
-    [[ ! -L "$trustdir" && ! -L "$trustfile" ]] || exit 2
-    rm -f "$trustfile"
-    echo "Local build consent revoked."
+    [[ ! -L "$trustdir" && ! -L "$trustfile" && ! -L "$signerfile" ]] || exit 2
+    rm -f "$trustfile" "$signerfile"
+    echo "Local build consent and personal signing pin revoked."
     exit 0;;
   --trust-local-builds)
     [[ "$(uname -s)" == Darwin ]] || { echo "macOS only" >&2; exit 2; }
@@ -84,7 +90,7 @@ import pathlib, sys, zipfile
 dest = pathlib.Path(sys.argv[2])
 allowed = {"Kiri-Moby-macos-arm64-app.tgz",
            "Kiri-Moby-macos-arm64-app.tgz.sha256",
-           "Kiri-Moby-install-local.sh", "DEV-ADHOC-ONLY.txt"}
+           "Kiri-Moby-install-local.sh", "DEV-ADHOC-ONLY.txt", "SIGNING-STATUS.txt"}
 with zipfile.ZipFile(sys.argv[1]) as bundle:
     names = set()
     for obj in bundle.infolist():
@@ -143,7 +149,38 @@ for program in "$candidate/Contents/MacOS/kiri" \
   codesign --verify --strict "$program"
 done
 codesign --verify --deep --strict "$candidate"
-if $verify; then echo "Verified: manifest checksum, bundle identity, ARM64 and app signatures"; exit 0; fi
+
+# Personal signing certificate identity must not silently rotate between
+# versions. This is separate from the initial one-time installer consent.
+[[ ! -L "$trustdir" && ! -L "$signerfile" ]] || {
+  echo "Unsafe signer pin path" >&2; exit 2;
+}
+signer_sha=""
+# Ad-hoc signatures have no leaf certificate, whereas stable signatures do.
+if codesign -d --extract-certificates="$stage/cert-" "$candidate" >/dev/null 2>&1 &&
+   [[ -s "$stage/cert-0" ]]; then
+  signer_sha="$(shasum -a 256 "$stage/cert-0" | awk '{print $1}')"
+fi
+if [[ -f "$signerfile" ]]; then
+  pinned_sha="$(cat "$signerfile")"
+  if [[ "$signer_sha" != "$pinned_sha" ]]; then
+    echo "REFUSING UPDATE: personal signing certificate differs from first trusted version" >&2
+    echo "Pinned: $pinned_sha; new: ${signer_sha:-no certificate}" >&2
+    echo "Explicitly revoke/re-authorize local trust only if YOU rotated certificates." >&2
+    exit 2
+  fi
+fi
+# Optional additional check against a SHA256 known independently from the
+# person's own P12, avoiding trust-on-first-use if set before first install.
+if [[ -n "${KIRI_PERSONAL_SIGN_CERT_SHA256:-}" &&
+      "$signer_sha" != "${KIRI_PERSONAL_SIGN_CERT_SHA256,,}" ]]; then
+  echo "REFUSING UPDATE: signer differs from expected personal certificate" >&2
+  exit 2
+fi
+if $verify; then
+  echo "Verified: checksum, bundle, ARM64 and signing identity (pin where available)"
+  exit 0
+fi
 
 # Only after one-time explicit consent, and ONLY inside the checked Kiri app.
 xattr -dr com.apple.quarantine "$candidate" 2>/dev/null || :
@@ -156,6 +193,12 @@ if [[ -d "$dest" ]]; then
   mv "$dest" "$backup"
 fi
 mv "$candidate" "$dest"
+if [[ -n "$signer_sha" && ! -e "$signerfile" ]]; then
+  mkdir -p "$trustdir"
+  (set -C; printf '%s\n' "$signer_sha" > "$signerfile")
+  chmod 600 "$signerfile"
+  echo "Pinned personal signer for future upgrades: $signer_sha"
+fi
 echo "Installed $dest"
 [[ -z "$backup" ]] || echo "Previous app backup retained: $backup"
 echo "Kiri Docker disk untouched: $HOME/.kiri-moby/vm/data.img"
