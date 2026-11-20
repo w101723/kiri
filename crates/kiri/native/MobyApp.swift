@@ -26,7 +26,7 @@ private enum Page: String, CaseIterable, Hashable, Identifiable {
         case .overview: "虚拟机 (Moby)"
         case .containers: "容器"
         case .images: "镜像"
-        case .volumes: "Volume"
+        case .volumes: "存储卷"
         case .networks: "网络"
         case .compose: "Compose"
         case .builds: "构建 (Buildx)"
@@ -1192,7 +1192,7 @@ private struct RootView: View {
             }
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 180, ideal: 218, max: 270)
-            .navigationTitle("Kiri Moby")
+            .navigationTitle("Kiri - Moby")
         } detail: {
             VSplitView {
                 Group {
@@ -1223,15 +1223,27 @@ private struct RootView: View {
         }
         .searchable(text: $model.search, placement: .toolbar, prompt: "搜索容器、镜像…")
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Label("Kiri - Moby", systemImage: "shippingbox.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.primary)
+            }
             ToolbarItem(placement: .automatic) {
                 Button { showVMPopover.toggle() } label: {
-                    Label {
-                        Text(model.online ? "VM 运行中 · \(liveMemoryLabel)" : "VM 已停止")
-                    } icon: {
-                        Image(systemName: model.online ? "checkmark.circle.fill" : "circle")
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(model.online ? Color.green : Color.secondary)
+                            .frame(width: 7, height: 7)
+                        Text(model.online ?
+                             "VM 运行中 · \(liveMemoryLabel)" : "VM 已停止")
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .lineLimit(1)
                     }
+                    .padding(.horizontal, 6)
+                    .frame(minWidth: 122, minHeight: 24)
                 }
                 .buttonStyle(.bordered)
+                .help("查看虚拟机 CPU、内存及快捷操作")
                 .popover(isPresented: $showVMPopover) { vmResourcePopover }
             }
             ToolbarItem(placement: .automatic) {
@@ -1387,10 +1399,12 @@ private struct RootView: View {
     private func nativeSidebarItem(_ page: Page) -> some View {
         if let count = navCount(page) {
             Label(page.displayName, systemImage: page.symbol)
+                .foregroundStyle(.primary)
                 .badge(count)
                 .tag(page)
         } else {
             Label(page.displayName, systemImage: page.symbol)
+                .foregroundStyle(.primary)
                 .tag(page)
         }
     }
@@ -1823,7 +1837,7 @@ private struct RootView: View {
                 }
                 let label = "\(port.IP ?? "0.0.0.0"):\(port.PublicPort ?? 0)→\(port.PrivatePort ?? 0)/\(port.Type ?? "tcp")"
                 if port.Type == "tcp", let published = port.PublicPort {
-                    Button("localhost:\(published) ↗") {
+                    Button("localhost:\(String(published)) ↗") {
                         model.action("open_local", fields: [
                             "url": "http://127.0.0.1:\(published)/"
                         ], title: "open_local")
@@ -1977,23 +1991,23 @@ private struct RootView: View {
                 containerStateBadge(item)
             }
              .width(min: 75, ideal: 85)
-            TableColumn("资源 · CPU / 内存 / I/O") { item in
+            TableColumn("CPU / 内存") { item in
                 containerResourceCell(item)
             }
-             .width(min: 220, ideal: 265)
+             .width(min: 180, ideal: 215)
             TableColumn("端口") { item in
                 portLinks(item.Ports)
             }
              .width(min: 100, ideal: 140)
-            TableColumn("操作") { item in
-                containerButtons(item)
-            }
-             .width(min: 130, ideal: 155)
             TableColumn("创建时间", value: \.creationSortDate) { item in
                 Text(dateLabel(item.Created))
                     .foregroundStyle(KiriPalette.muted(model.isLight))
             }
-             .width(min: 110, ideal: 130)
+            .width(min: 115, ideal: 135)
+            TableColumn("操作") { item in
+                containerButtons(item)
+            }
+            .width(min: 130, ideal: 150)
         }
         .contextMenu(forSelectionType: String.self) { selection in
             if !selection.isEmpty {
@@ -2315,7 +2329,7 @@ private struct RootView: View {
                                 HStack(spacing: 0) {
                                     tableTitle("服务 / 容器", width: 260)
                                     tableTitle("状态", width: 135)
-                                    tableTitle("资源 · CPU / 内存 / I/O", width: 280)
+                                    tableTitle("CPU / 内存", width: 230)
                                     tableTitle("端口", width: 165)
                                     tableTitle("操作", width: 280)
                                 }
@@ -2336,7 +2350,7 @@ private struct RootView: View {
                                         tableValue(
                                             Text(container.Status ?? container.State ?? "—"),
                                             width: 135)
-                                        tableValue(containerResourceCell(container), width: 280)
+                                        tableValue(containerResourceCell(container), width: 230)
                                         tableValue(portLinks(container.Ports), width: 165)
                                         tableValue(containerButtons(container), width: 280)
                                     }
