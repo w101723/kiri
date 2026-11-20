@@ -111,3 +111,13 @@ jobs:
           path: screenshots/
           if-no-files-found: warn
           retention-days: 14
+      # Upload the exact SwiftUI/AppKit/SwiftTerm source under test, so the
+      # complete compilable view code is available without checking out Git.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kiri-moby-complete-swiftui-source
+          path: |
+            crates/kiri/native/MobyApp.swift
+            crates/kiri/native/Package.swift
+          retention-days: 14
