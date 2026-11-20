@@ -1,34 +1,9 @@
 name: Kiri libkrun2 isolated RAM lab (Guest + runner)
 
+# Diagnostic-only: production DMG builds run via moby-milestone.yml.
+# Avoid expensive experimental Linux kernel rebuilds on normal commits.
 on:
   workflow_dispatch:
-  push:
-    branches: [memory-reclaim, memory-reporting-lab, adaptive-memory-lab]
-    paths:
-      - "scripts/moby/libkrun2-ram-lab.c"
-      - "scripts/moby/libkrun2-memory-probe.c"
-      - "scripts/moby/libkrun2-entitlements.plist"
-      - "scripts/moby/libkrun-lab-init"
-      - "scripts/moby/libkrun-lab-anon.c"
-      - "scripts/moby/build-libkrun-lab-guest.sh"
-      - "scripts/moby/measure-libkrun-lab-macos.sh"
-      - "scripts/moby/measure-libkrun-cold-anon-macos.sh"
-      - "scripts/moby/summarize-libkrun-cold-anon.py"
-      - "guest/kernel/**"
-      - ".github/workflows/moby-libkrun-lab.yml"
-  pull_request:
-    paths:
-      - "scripts/moby/libkrun2-ram-lab.c"
-      - "scripts/moby/libkrun2-memory-probe.c"
-      - "scripts/moby/libkrun2-entitlements.plist"
-      - "scripts/moby/libkrun-lab-init"
-      - "scripts/moby/libkrun-lab-anon.c"
-      - "scripts/moby/build-libkrun-lab-guest.sh"
-      - "scripts/moby/measure-libkrun-lab-macos.sh"
-      - "scripts/moby/measure-libkrun-cold-anon-macos.sh"
-      - "scripts/moby/summarize-libkrun-cold-anon.py"
-      - "guest/kernel/**"
-      - ".github/workflows/moby-libkrun-lab.yml"
 
 permissions:
   contents: read
