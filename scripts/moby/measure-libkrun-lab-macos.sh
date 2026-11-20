@@ -53,8 +53,7 @@ for phase in READY ALLOCATING ALLOCATED FREED; do
     exit 1
   fi
 done
-if grep -q ',unavailable
- "$csv"; then
+if grep -Fq ',unavailable' "$csv"; then
   echo "INVALID LAB RUN: vmmap Physical footprint unavailable in $csv" >&2
   exit 1
 fi
