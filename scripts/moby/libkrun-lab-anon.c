@@ -64,7 +64,7 @@ int main(void) {
     // Alpine's BusyBox includes mkswap but omits swapon; use Linux syscall
     // directly so the RAM-only initrd needs no additional shared libraries.
     if (swapon("/dev/zram0", 0) != 0) {
-        fprintf(stderr, "swapon /dev/zram0 failed: %s\\n", strerror(errno));
+        fprintf(stderr, "swapon /dev/zram0 failed: %s\n", strerror(errno));
         return 2;
     }
     const unsigned long initial_swap = swap_free_kib();
