@@ -489,6 +489,158 @@ private func sizeLabel(_ value: Int64?) -> String {
     return String(format: index == 0 ? "%.0f %@" : "%.1f %@", scaled, sizes[index])
 }
 
+// A separate native log window, matching the reference's floating black console.
+// This uses bounded polling over Kiri's private backend; it does not claim a
+// Docker streaming connection when the transport is actually snapshot-based.
+@MainActor
+private final class ContainerLogSession: ObservableObject {
+    @Published var content = ""
+    @Published var following = true
+    @Published var tailLines = 1000
+    @Published var error: String?
+    private var previousSnapshot = ""
+    private var refreshing = false
+
+    func clear() {
+        // Retain the previous snapshot so old lines do not reappear on poll.
+        content = ""
+    }
+
+    func reload() {
+        content = ""
+        previousSnapshot = ""
+    }
+
+    func refresh(containerID: String) async {
+        guard !refreshing, following else { return }
+        refreshing = true
+        defer { refreshing = false }
+        let input = ["action": "logs", "id": containerID,
+                     "tail": String(tailLines)]
+        guard let json = try? JSONSerialization.data(withJSONObject: input),
+              let encoded = String(data: json, encoding: .utf8) else {
+            error = "无法编码日志请求"
+            return
+        }
+        let answer = await Task.detached(priority: .utility) {
+            Result { try request(["action", encoded], as: Reply.self) }
+        }.value
+        switch answer {
+        case .success(let reply):
+            guard reply.ok else {
+                error = reply.error ?? "读取日志失败"
+                return
+            }
+            error = nil
+            let next = reply.message ?? ""
+            if next == previousSnapshot { return }
+            if next.hasPrefix(previousSnapshot) {
+                content += String(next.dropFirst(previousSnapshot.count))
+            } else {
+                content = next
+            }
+            previousSnapshot = next
+            if content.count > 240_000 {
+                content.removeFirst(content.count - 240_000)
+            }
+        case .failure(let failure):
+            error = failure.localizedDescription
+        }
+    }
+}
+
+private struct ContainerLogWindow: View {
+    @StateObject private var session = ContainerLogSession()
+    let containerID: String
+    let containerName: String
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 14) {
+                Toggle("实时跟随", isOn: $session.following)
+                    .toggleStyle(.checkbox)
+                Picker("最近日志行数", selection: $session.tailLines) {
+                    Text("最近 200 行").tag(200)
+                    Text("最近 1,000 行").tag(1000)
+                    Text("最近 5,000 行").tag(5000)
+                }
+                .labelsHidden()
+                .frame(width: 164)
+                .onChange(of: session.tailLines) { _, _ in session.reload() }
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(session.content, forType: .string)
+                } label: {
+                    Label("复制", systemImage: "doc.on.doc")
+                }
+                Button {
+                    session.clear()
+                } label: {
+                    Label("清空", systemImage: "clear")
+                }
+            }
+            .font(.system(size: 12))
+            .padding(.horizontal, 13)
+            .frame(height: 50)
+            ScrollViewReader { proxy in
+                ScrollView([.vertical, .horizontal]) {
+                    Text(session.content.isEmpty ? "等待容器日志…" : session.content)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .padding(12)
+                    Color.clear.frame(height: 1).id("log-bottom")
+                }
+                .background(Color(red: 0.07, green: 0.08, blue: 0.10))
+                .onChange(of: session.content) { _, _ in
+                    if session.following {
+                        proxy.scrollTo("log-bottom", anchor: .bottom)
+                    }
+                }
+            }
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(session.error == nil ? Color.green : Color.red)
+                    .frame(width: 8, height: 8)
+                Text(session.error ?? (session.following ? "运行中 · 日志持续更新…" : "已暂停刷新"))
+                    .lineLimit(1)
+                Spacer()
+                Text(ByteCountFormatter.string(fromByteCount: Int64(session.content.utf8.count),
+                                               countStyle: .file))
+            }
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 13)
+            .frame(height: 35)
+        }
+        .frame(minWidth: 650, minHeight: 390)
+        .task(id: session.tailLines) {
+            while !Task.isCancelled {
+                if session.following {
+                    await session.refresh(containerID: containerID)
+                }
+                do { try await Task.sleep(for: .seconds(2)) }
+                catch { break }
+            }
+        }
+    }
+}
+
+@MainActor
+private func openContainerLogs(_ containerID: String, name: String) {
+    let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 790, height: 535),
+        styleMask: [.titled, .closable, .miniaturizable, .resizable],
+        backing: .buffered, defer: false)
+    window.title = "日志: " + name
+    window.contentView = NSHostingView(rootView: ContainerLogWindow(
+        containerID: containerID, containerName: name))
+    window.center()
+    window.makeKeyAndOrderFront(nil)
+}
+
 // Dedicated macOS PTY session. The child runs the signed Kiri CLI which
 // delegates to docker exec -it over Kiri's private Docker socket.
 @MainActor
