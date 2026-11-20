@@ -83,8 +83,8 @@ jobs:
           cp scripts/moby/measure-libkrun-lab-macos.sh target/libkrun-lab/measure-libkrun-lab-macos.sh
           chmod +x target/libkrun-lab/measure-libkrun-lab-macos.sh
           tar -C target/libkrun-lab -czf target/kiri-libkrun2-memory-lab-arm64.tgz .
-          shasum -a 256 target/kiri-libkrun2-memory-lab-arm64.tgz \
-            > target/kiri-libkrun2-memory-lab-arm64.tgz.sha256
+          (cd target && shasum -a 256 kiri-libkrun2-memory-lab-arm64.tgz \
+            > kiri-libkrun2-memory-lab-arm64.tgz.sha256)
       - uses: actions/upload-artifact@v4
         with:
           name: experimental-libkrun2-ram-lab-arm64
