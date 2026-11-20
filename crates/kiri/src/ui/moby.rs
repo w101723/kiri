@@ -654,6 +654,28 @@ mod tests {
 ///
 /// Only one JSON response is written to stdout; diagnostic logs stay stderr.
 pub(super) fn native_command(args: &[String]) -> io::Result<()> {
+    // PTY transport: the native App owns the terminal and passes a real TTY
+    // through this existing signed CLI. Never route terminal bytes through JSON.
+    if args.first().map(String::as_str) == Some("terminal") {
+        let id = args.get(1).ok_or_else(|| io::Error::new(
+            io::ErrorKind::InvalidInput, "container ID required"))?;
+        if id.is_empty() || !id.bytes().all(|b| b.is_ascii_hexdigit()) || id.len() > 64 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid container ID"));
+        }
+        let docker = client::docker_cli().ok_or_else(|| io::Error::new(
+            io::ErrorKind::NotFound, "Docker CLI unavailable"))?;
+        let status = Command::new(docker)
+            .args(["exec", "-it", id, "/bin/sh"])
+            .env("DOCKER_HOST", format!("unix://{}", socket_path()?.display()))
+            .env_remove("DOCKER_CONTEXT")
+            .env("TERM", "xterm-256color")
+            .stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit())
+            .status()?;
+        if !status.success() {
+            return Err(io::Error::other(format!("terminal exited: {status}")));
+        }
+        return Ok(());
+    }
     let result: io::Result<Value> = (|| {
         let operation = args.first().map(String::as_str).unwrap_or("");
         let value = match operation {
