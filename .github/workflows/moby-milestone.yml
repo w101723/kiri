@@ -290,7 +290,10 @@ jobs:
           KIRI_PERSONAL_SIGN_P12_BASE64: ${{ secrets.KIRI_PERSONAL_SIGN_P12_BASE64 }}
           KIRI_PERSONAL_SIGN_P12_PASSWORD: ${{ secrets.KIRI_PERSONAL_SIGN_P12_PASSWORD }}
           KIRI_PERSONAL_SIGN_CERT_SHA256: ${{ secrets.KIRI_PERSONAL_SIGN_CERT_SHA256 }}
-          KIRI_REQUIRE_PERSONAL_SIGNING: ${{ vars.KIRI_REQUIRE_PERSONAL_SIGNING }}
+          # This is a private personal build: never silently fall back to
+          # per-build ad-hoc signing. Can be overridden explicitly with the
+          # repository variable KIRI_REQUIRE_PERSONAL_SIGNING=false.
+          KIRI_REQUIRE_PERSONAL_SIGNING: ${{ vars.KIRI_REQUIRE_PERSONAL_SIGNING || 'true' }}
         run: bash scripts/moby/sign-personal-macos.sh "packaged/Kiri Moby.app"
       - name: Create clearly labeled private development DMG
         id: dev_package
