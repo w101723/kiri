@@ -962,6 +962,7 @@ private final class ExecTerminalSession: ObservableObject {
 private final class SwiftTermTerminalControls: ObservableObject {
     weak var terminal: LocalProcessTerminalView?
     func interrupt() { terminal?.process.send(data: [0x03][...]) }
+    func copy() { terminal?.copy(self) }
     func clear() { terminal?.feed(byteArray: Array("\u{001B}[2J\u{001B}[H".utf8)[...]) }
 }
 
@@ -975,11 +976,13 @@ private struct NativeSwiftTermExecView: NSViewRepresentable {
     func makeNSView(context: Context) -> LocalProcessTerminalView {
         let view = LocalProcessTerminalView(frame: .zero)
         view.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        view.nativeBackgroundColor = ConsoleAppearance.canvasNS
+        view.nativeForegroundColor = NSColor.white
         controls.terminal = view
         let cli = Bundle.main.bundleURL.appendingPathComponent(
             "Contents/MacOS/kiri").path
         guard FileManager.default.isExecutableFile(atPath: cli) else {
-            view.feed(text: "Kiri CLI 不存在：\(cli)\r\n")
+            view.feed(byteArray: Array("Kiri CLI 不存在：\(cli)\r\n".utf8)[...])
             return view
         }
         var env = ProcessInfo.processInfo.environment
@@ -1006,102 +1009,80 @@ private struct ExecTerminalView: View {
     let containerName: String
 
     var body: some View {
-        #if canImport(SwiftTerm) && !KIRI_UI_PREVIEW
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Label("Exec: \(containerName)", systemImage: "terminal")
-                    .font(.system(size: 12, weight: .semibold))
-                Spacer()
-                Button("清屏", systemImage: "paintbrush") {
-                    swiftTermControls.clear()
-                }
-                Button("Ctrl+C", systemImage: "stop.fill") {
-                    swiftTermControls.interrupt()
-                }
-            }
-            .labelStyle(.titleAndIcon)
-            .font(.system(size: 11))
-            .padding(.horizontal, 14)
-            .frame(height: 36)
+        Group {
+            #if canImport(SwiftTerm) && !KIRI_UI_PREVIEW
             NativeSwiftTermExecView(containerID: containerID,
                                     controls: swiftTermControls)
-                .frame(minHeight: 145)
-        }
-        .frame(minHeight: 170)
-        .background(Color.black)
-        #else
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Spacer()
-                HStack(spacing: 6) {
-                    Circle().fill(terminal.running ? Color.green : Color.gray)
-                        .frame(width: 8, height: 8)
-                    Text(terminal.running ? "已连接" : "已断开")
-                }
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(terminal.running ? Color.green : .secondary)
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(terminal.output, forType: .string)
-                } label: {
-                    Label("复制", systemImage: "doc.on.doc")
-                }
-                Button {
-                    terminal.output = ""
-                } label: {
-                    Label("清屏", systemImage: "paintbrush")
-                }
-                Button {
-                    terminal.interrupt()
-                } label: {
-                    Label("中断 (Ctrl+C)", systemImage: "stop.fill")
-                }
-                .disabled(!terminal.running)
-                .foregroundStyle(.red)
-            }
-            .font(.system(size: 11))
-            .padding(.horizontal, 13)
-            .frame(height: 50)
-            .background(Color(NSColor.windowBackgroundColor))
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal) {
+                .frame(minHeight: 150)
+            #else
+            VStack(spacing: 0) {
+                ScrollViewReader { proxy in
                     ScrollView(.vertical) {
                         VStack(alignment: .leading, spacing: 0) {
-                            Text(terminal.output.isEmpty ? "正在连接容器…" : terminal.output)
-                                .font(.system(size: 13, design: .monospaced))
+                            Text(terminal.output.isEmpty ?
+                                 "正在连接容器…" : terminal.output)
+                                .font(.system(size: 12, design: .monospaced))
                                 .foregroundStyle(.white)
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(14)
+                                .padding(12)
                             Color.clear.frame(height: 1).id("terminal-bottom")
                         }
-                        .frame(minWidth: 660, alignment: .topLeading)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
+                    .onChange(of: terminal.output) { _, _ in
+                        proxy.scrollTo("terminal-bottom", anchor: .bottom)
                     }
                 }
-                .onChange(of: terminal.output) { _, _ in
-                    proxy.scrollTo("terminal-bottom", anchor: .bottom)
+                HStack(spacing: 6) {
+                    TextField("输入命令，Return 执行", text: $terminal.input)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .onSubmit { terminal.submit() }
+                        .disabled(!terminal.running)
+                    Button("发送") { terminal.submit() }
+                        .disabled(!terminal.running)
+                        .buttonStyle(.plain)
                 }
+                .padding(.horizontal, 14)
+                .frame(height: 30)
             }
-            HStack(spacing: 10) {
-                Text("❯").foregroundStyle(Color.green)
-                TextField("输入命令，Return 执行", text: $terminal.input)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(.white)
-                    .onSubmit { terminal.submit() }
-                    .disabled(!terminal.running)
-                Button("发送") { terminal.submit() }
-                    .disabled(!terminal.running)
-                    .buttonStyle(.borderless)
-            }
-            .padding(.horizontal, 14)
-            .frame(height: 34)
+            .onAppear { terminal.start(containerID: containerID) }
+            .onDisappear { terminal.close() }
+            #endif
         }
-        .background(Color(red: 0.055, green: 0.061, blue: 0.07))
-        .frame(minHeight: 170)
-        .onAppear { terminal.start(containerID: containerID) }
-        .onDisappear { terminal.close() }
-        #endif
+        .frame(minHeight: 155)
+        .background(ConsoleAppearance.canvas)
+        .onReceive(NotificationCenter.default.publisher(
+            for: consoleCommandNotification)) { notification in
+            guard notification.object as? String == "exec:" + containerID,
+                  let action = notification.userInfo?["action"] as? String,
+                  let command = ConsoleCommand(rawValue: action) else { return }
+            switch command {
+            case .copy:
+                #if canImport(SwiftTerm) && !KIRI_UI_PREVIEW
+                swiftTermControls.copy()
+                #else
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(terminal.output, forType: .string)
+                #endif
+            case .clear:
+                #if canImport(SwiftTerm) && !KIRI_UI_PREVIEW
+                swiftTermControls.clear()
+                #else
+                terminal.output = ""
+                #endif
+            case .interrupt:
+                #if canImport(SwiftTerm) && !KIRI_UI_PREVIEW
+                swiftTermControls.interrupt()
+                #else
+                terminal.interrupt()
+                #endif
+            case .toggleFollow, .last200, .last1000, .last5000:
+                break
+            }
+        }
     }
 }
 
