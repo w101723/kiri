@@ -369,6 +369,28 @@ private final class MobyModel: ObservableObject {
         if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
             snapshot = try? JSONDecoder().decode(
                 Snapshot.self, from: Data(uiPreviewJSON.utf8))
+            // Screenshot-only sample telemetry. Never bundled in production.
+            containerStats = [
+                "a000000000000000": ContainerResourceUsage(
+                    cpu_percent: 2.4, memory_bytes: 58 * 1024 * 1024,
+                    memory_limit_bytes: 512 * 1024 * 1024, memory_percent: 11.3,
+                    net_rx_bytes: 15 * 1024 * 1024, net_tx_bytes: 360 * 1024,
+                    block_read_bytes: 8 * 1024 * 1024,
+                    block_write_bytes: 640 * 1024, pids: 4),
+                "b000000000000000": ContainerResourceUsage(
+                    cpu_percent: 0.7, memory_bytes: 24 * 1024 * 1024,
+                    memory_limit_bytes: 256 * 1024 * 1024, memory_percent: 9.4,
+                    net_rx_bytes: 2 * 1024 * 1024, net_tx_bytes: 960 * 1024,
+                    block_read_bytes: 3 * 1024 * 1024,
+                    block_write_bytes: 512 * 1024, pids: 6),
+                "c000000000000000": ContainerResourceUsage(
+                    cpu_percent: 8.9, memory_bytes: 428 * 1024 * 1024,
+                    memory_limit_bytes: 1024 * 1024 * 1024, memory_percent: 41.8,
+                    net_rx_bytes: 18 * 1024 * 1024, net_tx_bytes: 7 * 1024 * 1024,
+                    block_read_bytes: 120 * 1024 * 1024,
+                    block_write_bytes: 31 * 1024 * 1024, pids: 28)
+            ]
+            statsUpdatedAt = .now
             isLight = true
             return
         }
@@ -2244,8 +2266,9 @@ private struct RootView: View {
             }
             .padding(.horizontal, 20)
             .frame(height: 52)
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
+            ScrollView(.horizontal) {
+                ScrollView(.vertical) {
+                    LazyVStack(alignment: .leading, spacing: 12) {
                     if composeProjects.isEmpty {
                         VStack(spacing: 9) {
                             Image(systemName: "square.3.layers.3d")
@@ -2337,8 +2360,9 @@ private struct RootView: View {
                             .stroke(KiriPalette.border(model.isLight)))
                     }
                 }
-                .padding(20)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(20)
+                    .frame(minWidth: 1180, alignment: .leading)
+                }
             }
         }
         .background(KiriPalette.bg(model.isLight))
