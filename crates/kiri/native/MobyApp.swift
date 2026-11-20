@@ -2167,6 +2167,7 @@ private struct RootView: View {
     @EnvironmentObject private var model: MobyModel
     @State private var selectedContainerIDs = Set<String>()
     @State private var selectedInspectorID: String?
+    @State private var hoveredActionRowID: String?
     @State private var showInspector = true
     @State private var activeDetailTab: ContainerDetailTab = .overview
     @State private var loadedLogIDs = Set<String>()
