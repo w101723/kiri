@@ -8,7 +8,7 @@ on:
   # The isolated memory lab must build its own matching Guest and Host;
   # reusing a moby-engine Guest would silently omit its experimental flag.
   push:
-    branches: [moby-engine]
+    branches: [moby-engine, native-swiftui-moby]
     paths:
       - ".github/workflows/moby-milestone.yml"
       - "scripts/moby/sign-notarize-macos.sh"
@@ -122,14 +122,14 @@ jobs:
           echo "Tiny ARM64 boot image verified" >> "$GITHUB_STEP_SUMMARY"
       - name: Reuse exact-kernel verified ARM64 artifact if sources match
         id: reuse_kernel
-        if: github.ref_name == 'memory-reclaim'
+        if: github.ref_name == 'moby-engine' || github.ref_name == 'native-swiftui-moby'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # Use only a kernel from the previously successful milestone, and
           # only when the guest kernel source/config/build scripts match.
-          prior="3024338cf42d0fa8efc705328b71279caf3e78b0"
+          prior="6df7033fa9b5e3e21d8e423c4bafd9c18c30d36c"
           if ! git cat-file -e "$prior^{commit}" 2>/dev/null ||
              ! git diff --quiet "$prior" HEAD -- guest/kernel xtask; then
             echo 'reused=false' >> "$GITHUB_OUTPUT"
@@ -140,7 +140,7 @@ jobs:
             exit 0
           fi
           mkdir -p /tmp/kiri-kernel-previous
-          if ! gh run download 44546791830 --repo w101723/kiri \
+          if ! gh run download 44708932735 --repo w101723/kiri \
               --name milestone-guest-arm64 --dir /tmp/kiri-kernel-previous; then
             echo 'reused=false' >> "$GITHUB_OUTPUT"
             exit 0
