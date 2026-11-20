@@ -20,6 +20,13 @@ mod mac;
 mod moby;
 #[cfg(target_os = "macos")]
 use mac as window;
+
+/// SwiftUI/AppKit frontend bridge; the original Rust Docker control code stays
+/// authoritative. The Finder app launches SwiftUI, not the WebKit window.
+#[cfg(target_os = "macos")]
+pub(crate) fn native_moby_command(args: &[String]) -> std::io::Result<()> {
+    moby::native_command(args)
+}
 #[cfg(target_os = "linux")]
 mod gtk;
 #[cfg(target_os = "linux")]
