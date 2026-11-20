@@ -3,6 +3,7 @@
 //! All Docker state lives in dockerd, in ~/.kiri-moby/vm/data.img.
 
 use std::fs::{self, OpenOptions};
+use std::os::unix::fs::OpenOptionsExt;
 use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
@@ -12,6 +13,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use crate::client;
 use super::{Cmd, emit, menu_state, path_escape};
@@ -22,6 +24,71 @@ fn data_dir() -> io::Result<PathBuf> {
     }
     Ok(PathBuf::from(std::env::var_os("HOME").ok_or_else(|| io::Error::other("HOME not set"))?).join(".kiri-moby"))
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct VmResources { cpus: usize, memory_mib: u64 }
+
+fn host_cpu_limit() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 16)
+}
+#[cfg(target_os = "macos")]
+fn host_memory_limit() -> u64 {
+    let mut bytes = 0_u64;
+    let mut length = std::mem::size_of::<u64>();
+    let rc = unsafe {
+        libc::sysctlbyname(b"hw.memsize\0".as_ptr().cast(),
+            (&mut bytes as *mut u64).cast(), &mut length, std::ptr::null_mut(), 0)
+    };
+    let host = if rc == 0 && length == std::mem::size_of::<u64>() {
+        bytes / (1024 * 1024)
+    } else { 8 * 1024 };
+    (host.saturating_sub(1024).min(65_536).max(1024) / 256) * 256
+}
+#[cfg(not(target_os = "macos"))]
+fn host_memory_limit() -> u64 { 65_536 }
+fn default_vm_resources() -> VmResources {
+    VmResources { cpus: host_cpu_limit().min(4), memory_mib: host_memory_limit().min(4096) }
+}
+fn validate_vm_resources(value: VmResources) -> io::Result<VmResources> {
+    if !(1..=host_cpu_limit()).contains(&value.cpus)
+        || !(1024..=host_memory_limit()).contains(&value.memory_mib)
+        || value.memory_mib % 256 != 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            format!("VM resources require 1-{} CPUs and 1024-{} MiB in 256 MiB steps",
+                host_cpu_limit(), host_memory_limit())));
+    }
+    Ok(value)
+}
+fn vm_resources_file() -> io::Result<PathBuf> { Ok(data_dir()?.join("vm-resources.json")) }
+fn read_vm_resources() -> io::Result<VmResources> {
+    let bytes = match fs::read(vm_resources_file()?) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(default_vm_resources()),
+        Err(e) => return Err(e),
+    };
+    let config: VmResources = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+    validate_vm_resources(config)
+}
+fn save_vm_resources(config: VmResources) -> io::Result<()> {
+    let config = validate_vm_resources(config)?;
+    let dir = data_dir()?;
+    fs::create_dir_all(&dir)?;
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    let destination = vm_resources_file()?;
+    let staging = destination.with_extension(format!("json.{}.tmp", std::process::id()));
+    let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&staging)?;
+    file.write_all(&serde_json::to_vec_pretty(&config)?)?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(&staging, &destination)
+}
+fn vm_resource_snapshot() -> io::Result<Value> {
+    let config = read_vm_resources()?;
+    Ok(json!({"cpus":config.cpus, "memory_mib":config.memory_mib,
+        "max_cpus":host_cpu_limit(), "max_memory_mib":host_memory_limit()}))
+}
+
 fn shares_file() -> io::Result<PathBuf> {
     Ok(data_dir()?.join("authorized-shares.json"))
 }
