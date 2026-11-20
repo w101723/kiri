@@ -129,21 +129,11 @@ fn parse_scutil(text: &str) -> Effective {
     Effective { http: proxy("HTTP"), https: proxy("HTTPS"), no_proxy, pac: field("ProxyAutoConfigEnable").as_deref() == Some("1") }
 }
 
-/// Windows loopback ports and the distro ports that lead to them, from
-/// kiri-win's relay (crates/kiri/src/hostrelay.rs): in WSL2, a proxy on
-/// Windows' 127.0.0.1 is reached there.
-static RELAY: Mutex<Option<HashMap<u16, u16>>> = Mutex::new(None);
+// The macOS-only product does not proxy through WSL or a Windows loopback
+// relay. Keep the method for legacy caller compatibility during migration.
+pub fn set_relay(_map: HashMap<u16, u16>) {}
 
-pub fn set_relay(map: HashMap<u16, u16>) {
-    *RELAY.lock().unwrap_or_else(|e| e.into_inner()) = Some(map);
-}
-
-/// The address a proxy is dialled at: through kiri-win's relay when it is
-/// on Windows' loopback, else as set.
-fn dialled(url: String) -> String {
-    let relay = RELAY.lock().unwrap_or_else(|e| e.into_inner());
-    relay.as_ref().and_then(|m| crate::hostrelay::relayed(&url, m)).unwrap_or(url)
-}
+fn dialled(url: String) -> String { url }
 
 /// For kiri-image: the proxy registry requests use. Registries are https.
 pub fn for_registry() -> Option<Option<(String, Vec<String>)>> {
