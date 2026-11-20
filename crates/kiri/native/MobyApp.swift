@@ -1828,6 +1828,33 @@ private struct UnifiedConsoleDrawer: View {
                                 Color.white.opacity(0.025))
                             .clipShape(RoundedRectangle(cornerRadius: 5))
                             .padding(.top, 3)
+                            .contextMenu {
+                                Button("复制选中文本") {
+                                    onCommand(.copy, session)
+                                }
+                                if session.kind == .logs {
+                                    Button(followedLogIDs.contains(session.id) ?
+                                           "暂停日志跟随" : "继续日志跟随") {
+                                        if followedLogIDs.contains(session.id) {
+                                            followedLogIDs.remove(session.id)
+                                        } else {
+                                            followedLogIDs.insert(session.id)
+                                        }
+                                        onCommand(.toggleFollow, session)
+                                    }
+                                    Menu("日志行数") {
+                                        Button("最近 200 行") {
+                                            onCommand(.last200, session)
+                                        }
+                                        Button("最近 1,000 行") {
+                                            onCommand(.last1000, session)
+                                        }
+                                        Button("最近 5,000 行") {
+                                            onCommand(.last5000, session)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     .padding(.leading, 7)
@@ -1841,51 +1868,8 @@ private struct UnifiedConsoleDrawer: View {
                                 $0.Id == selected.containerID
                             })?.State == "running" ? Color.green : Color.gray)
                             .frame(width: 6, height: 6)
-                        Text(model.containers.first(where: {
-                            $0.Id == selected.containerID
-                        })?.State == "running" ? "容器运行中" : "容器已停止")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                        Rectangle().fill(Color.white.opacity(0.15))
-                            .frame(width: 1, height: 14)
-                        if selected.kind == .logs {
-                            Button {
-                                if followedLogIDs.contains(selected.id) {
-                                    followedLogIDs.remove(selected.id)
-                                } else {
-                                    followedLogIDs.insert(selected.id)
-                                }
-                                onCommand(.toggleFollow, session: selected)
-                            } label: {
-                                Image(systemName: followedLogIDs.contains(selected.id) ?
-                                      "pause.fill" : "play.fill")
-                            }
-                            .help(followedLogIDs.contains(selected.id) ?
-                                  "暂停日志跟随" : "继续日志跟随")
-                            Menu {
-                                Button("最近 200 行") {
-                                    onCommand(.last200, session: selected)
-                                }
-                                Button("最近 1,000 行") {
-                                    onCommand(.last1000, session: selected)
-                                }
-                                Button("最近 5,000 行") {
-                                    onCommand(.last5000, session: selected)
-                                }
-                            } label: {
-                                Image(systemName: "line.3.horizontal.decrease")
-                            }
-                            .menuStyle(.borderlessButton)
-                            .frame(width: 18)
-                            .help("日志行数")
-                        }
-                        Button {
-                            onCommand(.copy, session: selected)
-                        } label: {
-                            Image(systemName: "doc.on.doc")
-                        }
-                        .help("复制\(selected.kind == .logs ? "日志" : "所选终端文本")")
+                        Rectangle().fill(Color.white.opacity(0.13))
+                            .frame(width: 1, height: 13)
                         Button {
                             onCommand(.clear, session: selected)
                         } label: {
