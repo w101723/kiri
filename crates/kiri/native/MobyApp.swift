@@ -1335,9 +1335,23 @@ private struct RootView: View {
                     TextField("搜索容器…", text: $model.search)
                         .textFieldStyle(.plain)
                         .font(.system(size: 12))
+                    Menu {
+                        ForEach(ContainerFilter.allCases) { filter in
+                            Button("\(filter.rawValue) · \(model.containers.filter { filter.includes($0) }.count)") {
+                                model.containerFilter = filter
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease")
+                            .foregroundStyle(model.containerFilter == .all ?
+                                KiriPalette.muted(model.isLight) : KiriPalette.blue)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .frame(width: 20)
+                    .help("筛选运行中、已停止或异常容器")
                 }
                 .padding(.horizontal, 13)
-                .frame(width: 272, height: 37)
+                .frame(width: 312, height: 37)
                 .background(KiriPalette.panel(model.isLight))
                 .clipShape(RoundedRectangle(cornerRadius: 9))
                 .overlay(RoundedRectangle(cornerRadius: 9)
@@ -1413,6 +1427,10 @@ private struct RootView: View {
                     metric("运行中", model.containers.filter {$0.State == "running"}.count.description, "checkmark.circle")
                     metric("镜像", model.images.count.description, "square.stack.3d.up")
                     metric("数据卷", model.volumes.count.description, "externaldrive")
+                }
+                HStack(alignment: .top) {
+                    vmCard.frame(width: 240)
+                    Spacer()
                 }
                 GroupBox("标准 Docker Engine") {
                     VStack(alignment: .leading, spacing: 12) {
