@@ -12,6 +12,7 @@ on:
       - "Cargo.toml"
       - "crates/kiri/Cargo.toml"
       - "crates/kiri-vmm/Cargo.toml"
+      - "xtask/src/main.rs"
       - ".github/workflows/moby-native-ui-check.yml"
   pull_request:
     paths:
@@ -23,6 +24,7 @@ on:
       - "Cargo.toml"
       - "crates/kiri/Cargo.toml"
       - "crates/kiri-vmm/Cargo.toml"
+      - "xtask/src/main.rs"
       - ".github/workflows/moby-native-ui-check.yml"
   workflow_dispatch:
 
@@ -59,3 +61,5 @@ jobs:
           targets: aarch64-apple-darwin
       - name: Compile existing Rust backend with native command bridge
         run: cargo check -p kiri --target aarch64-apple-darwin
+      - name: Verify Apple Silicon-only build helper
+        run: cargo check -p xtask --target aarch64-apple-darwin
