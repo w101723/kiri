@@ -12,6 +12,7 @@ on:
     paths:
       - ".github/workflows/moby-milestone.yml"
       - "scripts/moby/sign-notarize-macos.sh"
+      - "scripts/moby/sign-personal-macos.sh"
       - "scripts/moby/install-local-macos.sh"
       - "scripts/moby/package-dmg-macos.sh"
       - "scripts/moby/build-guest.sh"
@@ -283,19 +284,44 @@ jobs:
           tar -czf Kiri-Moby-macos-arm64-app.tgz -C packaged "Kiri Moby.app"
           shasum -a 256 Kiri-Moby-macos-arm64-app.tgz > Kiri-Moby-macos-arm64-app.tgz.sha256
           ls -lh Kiri-Moby-macos-arm64-app.tgz
-      - name: Create explicitly labeled Ad-hoc development DMG
+      - name: Apply persistent personal signature if configured
+        id: personal
+        env:
+          KIRI_PERSONAL_SIGN_P12_BASE64: ${{ secrets.KIRI_PERSONAL_SIGN_P12_BASE64 }}
+          KIRI_PERSONAL_SIGN_P12_PASSWORD: ${{ secrets.KIRI_PERSONAL_SIGN_P12_PASSWORD }}
+          KIRI_PERSONAL_SIGN_CERT_SHA256: ${{ secrets.KIRI_PERSONAL_SIGN_CERT_SHA256 }}
+        run: bash scripts/moby/sign-personal-macos.sh "packaged/Kiri Moby.app"
+      - name: Create clearly labeled private development DMG
+        id: dev_package
+        env:
+          PERSONAL_SIGNED: ${{ steps.personal.outputs.signed }}
         run: |
+          set -euo pipefail
+          if [[ "$PERSONAL_SIGNED" == "true" ]]; then
+            label="DEV-PERSONAL-CERT"
+          else
+            label="DEV-ADHOC"
+          fi
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+          echo "filename=Kiri-Moby-macos-arm64-$label.dmg" >> "$GITHUB_OUTPUT"
           bash scripts/moby/package-dmg-macos.sh \
-            "packaged/Kiri Moby.app" Kiri-Moby-macos-arm64-DEV-ADHOC.dmg
-          ls -lh Kiri-Moby-macos-arm64-DEV-ADHOC.dmg
+            "packaged/Kiri Moby.app" "Kiri-Moby-macos-arm64-$label.dmg"
+          ls -lh "Kiri-Moby-macos-arm64-$label.dmg"
       - name: Verify ad-hoc app package and bundle local-only installer
         run: |
           bash -n scripts/moby/install-local-macos.sh
           bash scripts/moby/install-local-macos.sh --verify Kiri-Moby-macos-arm64-app.tgz
           cp scripts/moby/install-local-macos.sh Kiri-Moby-install-local.sh
-      - name: Label ad-hoc artifact as development-only
+      - name: Record private signature class
+        env:
+          PERSONAL_SIGNED: ${{ steps.personal.outputs.signed }}
+          CERT_SHA256: ${{ steps.personal.outputs.cert_sha256 }}
         run: |
-          printf '%s\n' "Ad-hoc code-signed DEV build only: not Apple Developer ID signed/notarized. Gatekeeper may block launching. A trusted release requires six Apple signing/notary GitHub Secrets." > DEV-ADHOC-ONLY.txt
+          if [[ "$PERSONAL_SIGNED" == "true" ]]; then
+            printf 'Persistent personal certificate SHA256: %s\nNot Apple-notarized. Use the pinned one-time local installer, not direct quarantined DMG drag-and-drop.\n' "$CERT_SHA256" > SIGNING-STATUS.txt
+          else
+            printf 'Ad-hoc signing only: no persistent identity and no Apple notarization. Configure KIRI_PERSONAL_SIGN_* secrets for repeatable personal signing.\n' > SIGNING-STATUS.txt
+          fi
       - name: Developer ID sign + notarize for normal macOS updates
         id: notarize
         env:
@@ -317,17 +343,17 @@ jobs:
             xcrun stapler validate Kiri-Moby-macos-arm64-notarized.dmg
             echo "TRUSTED: Developer ID and Apple notarization verified" >> "$GITHUB_STEP_SUMMARY"
           else
-            test -s Kiri-Moby-macos-arm64-DEV-ADHOC.dmg
-            echo "DEV ONLY: Ad-hoc signing does not satisfy Gatekeeper; official artifact not published" >> "$GITHUB_STEP_SUMMARY"
+            test -s "${{ steps.dev_package.outputs.filename }}"
+            echo "PRIVATE BUILD: ${{ steps.dev_package.outputs.label }}; Apple Gatekeeper notarization not available" >> "$GITHUB_STEP_SUMMARY"
           fi
       - uses: actions/upload-artifact@v4
         if: steps.notarize.outputs.notarized != 'true'
         with:
-          name: Kiri-Moby-macos-arm64-DEV-ADHOC-DMG
+          name: Kiri-Moby-macos-arm64-${{ steps.dev_package.outputs.label }}-DMG
           path: |
-            Kiri-Moby-macos-arm64-DEV-ADHOC.dmg
-            Kiri-Moby-macos-arm64-DEV-ADHOC.dmg.sha256
-            DEV-ADHOC-ONLY.txt
+            ${{ steps.dev_package.outputs.filename }}
+            ${{ steps.dev_package.outputs.filename }}.sha256
+            SIGNING-STATUS.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
@@ -343,11 +369,11 @@ jobs:
           retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
-          name: Kiri-Moby-macos-arm64-DEV-ADHOC-app
+          name: Kiri-Moby-macos-arm64-${{ steps.dev_package.outputs.label }}-app
           path: |
             Kiri-Moby-macos-arm64-app.tgz
             Kiri-Moby-macos-arm64-app.tgz.sha256
-            DEV-ADHOC-ONLY.txt
+            SIGNING-STATUS.txt
             Kiri-Moby-install-local.sh
           if-no-files-found: error
           compression-level: 0
