@@ -425,6 +425,158 @@ private func sizeLabel(_ value: Int64?) -> String {
     return String(format: index == 0 ? "%.0f %@" : "%.1f %@", scaled, sizes[index])
 }
 
+// Dedicated macOS PTY session. The child runs the signed Kiri CLI which
+// delegates to docker exec -it over Kiri's private Docker socket.
+@MainActor
+private final class ExecTerminalSession: ObservableObject {
+    @Published var output = ""
+    @Published var input = ""
+    @Published var running = false
+    private var process: Process?
+    private var master: FileHandle?
+    private var slave: FileHandle?
+    private let maxCharacters = 100_000
+
+    func start(containerID: String) {
+        guard !running else { return }
+        guard !containerID.isEmpty, containerID.count <= 64,
+              containerID.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) || (65...70).contains($0) }) else {
+            output = "无效的容器 ID"
+            return
+        }
+        var masterFD: Int32 = -1
+        var slaveFD: Int32 = -1
+        guard openpty(&masterFD, &slaveFD, nil, nil, nil) == 0 else {
+            output = "无法创建终端 PTY"
+            return
+        }
+        let masterHandle = FileHandle(fileDescriptor: masterFD, closeOnDealloc: true)
+        let slaveHandle = FileHandle(fileDescriptor: slaveFD, closeOnDealloc: true)
+        master = masterHandle
+        slave = slaveHandle
+        let child = Process()
+        child.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/kiri")
+        child.arguments = ["moby-native", "terminal", containerID]
+        child.standardInput = slaveHandle
+        child.standardOutput = slaveHandle
+        child.standardError = slaveHandle
+        child.environment = ProcessInfo.processInfo.environment.merging(["TERM": "xterm-256color"]) { _, new in new }
+        child.terminationHandler = { [weak self] ended in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.running = false
+                self.append("\r\n[会话结束：\(ended.terminationStatus)]\r\n")
+                self.master?.closeFile()
+                self.master = nil
+                self.slave?.closeFile()
+                self.slave = nil
+            }
+        }
+        do {
+            try child.run()
+            process = child
+            running = true
+            // Parent must close its slave descriptor so EOF is observable.
+            slaveHandle.closeFile()
+            slave = nil
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                while true {
+                    let data = masterHandle.availableData
+                    if data.isEmpty { break }
+                    let text = String(decoding: data, as: UTF8.self)
+                    Task { @MainActor [weak self] in self?.append(text) }
+                }
+            }
+        } catch {
+            append("终端启动失败：\(error.localizedDescription)")
+            masterHandle.closeFile()
+            slaveHandle.closeFile()
+        }
+    }
+
+    private func append(_ text: String) {
+        output.append(text)
+        if output.count > maxCharacters {
+            output.removeFirst(output.count - maxCharacters)
+        }
+    }
+
+    func send(_ text: String) {
+        guard running, let master else { return }
+        master.write(Data(text.utf8))
+    }
+
+    func submit() {
+        send(input + "\r")
+        input = ""
+    }
+
+    func interrupt() { send("\u{03}") }
+    func close() {
+        if running { send("exit\r") }
+        process?.terminate()
+        master?.closeFile()
+        master = nil
+        slave?.closeFile()
+        slave = nil
+        running = false
+    }
+}
+
+private struct ExecTerminalView: View {
+    @StateObject private var terminal = ExecTerminalSession()
+    let containerID: String
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Label("容器终端", systemImage: "terminal")
+                    .font(.system(size: 14, weight: .semibold))
+                Text(String(containerID.prefix(12)))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(terminal.running ? "已连接" : "已断开")
+                    .foregroundStyle(terminal.running ? .green : .secondary)
+                Button("Ctrl+C") { terminal.interrupt() }
+                    .disabled(!terminal.running)
+                Button("清屏") { terminal.output = "" }
+            }
+            ScrollView {
+                Text(terminal.output)
+                    .font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black.opacity(0.85))
+            HStack {
+                TextField("输入命令，按 Return 发送", text: $terminal.input)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { terminal.submit() }
+                    .disabled(!terminal.running)
+                Button("发送") { terminal.submit() }
+                    .disabled(!terminal.running)
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 600, minHeight: 400)
+        .onAppear { terminal.start(containerID: containerID) }
+        .onDisappear { terminal.close() }
+    }
+}
+
+@MainActor
+private func openExecTerminal(_ containerID: String) {
+    let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 800, height: 550),
+        styleMask: [.titled, .closable, .miniaturizable, .resizable],
+        backing: .buffered, defer: false)
+    window.title = "Kiri Moby · Exec · " + String(containerID.prefix(12))
+    window.contentView = NSHostingView(rootView: ExecTerminalView(containerID: containerID))
+    window.center()
+    window.makeKeyAndOrderFront(nil)
+}
+
 private struct RootView: View {
     @EnvironmentObject private var model: MobyModel
     // Original Kiri Moby shell: 44pt title strip, 212pt flat sidebar,
@@ -938,14 +1090,7 @@ private struct RootView: View {
                 smallAction("停止") { containerOp("stop", container) }
                 smallAction("重启") { containerOp("restart", container) }
                 smallAction("暂停") { containerOp("pause", container) }
-                smallAction("执行") {
-                    if let command = model.ask("在容器中执行命令（使用 sh -c）",
-                                               placeholder: "pwd") {
-                        model.action("exec",
-                            fields: ["id":container.Id, "command":command],
-                            title: "exec")
-                    }
-                }
+                smallAction("执行") { openExecTerminal(container.Id) }
             } else if container.State == "paused" {
                 smallAction("恢复") { containerOp("unpause", container) }
             } else {
