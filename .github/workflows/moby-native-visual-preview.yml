@@ -52,6 +52,19 @@ jobs:
           set -euo pipefail
           mkdir -p screenshots
           app="$RUNNER_TEMP/Kiri Moby UI Preview.app"
+          # First capture the unobscured Containers table, including CPU,
+          # working-set RAM, network and block I/O columns.
+          KIRI_MOBY_UI_PREVIEW=1 KIRI_MOBY_UI_PREVIEW_NO_FLOATING=1 \
+            "$app/Contents/MacOS/kiri-moby-ui-preview" \
+            > screenshots/preview-containers.log 2>&1 &
+          table_pid="$!"
+          sleep 6
+          if kill -0 "$table_pid" 2>/dev/null; then
+            screencapture -x -t png screenshots/native-moby-container-resources.png || true
+            kill "$table_pid" 2>/dev/null || true
+            sleep 1
+          fi
+          # Then capture the overlapping floating log and Exec windows.
           KIRI_MOBY_UI_PREVIEW=1 "$app/Contents/MacOS/kiri-moby-ui-preview" \
             > screenshots/preview-console.log 2>&1 &
           pid="$!"
