@@ -1315,6 +1315,44 @@ private struct InspectorAreaChart: View {
         }.max() ?? 100)
     }
 
+    #if KIRI_UI_PREVIEW
+    // GitHub's hosted Intel CI macOS runner has no compatible Metal device.
+    // In screenshots only, draw the identical gradient trace using CoreGraphics
+    // paths. The production .app uses real Swift Charts below.
+    private func trace(in size: CGSize) -> Path {
+        var path = Path()
+        var drawing = false
+        for (index, point) in points.enumerated() {
+            guard let value = (cpu ? point.cpuPercent : point.memoryPercent) else {
+                drawing = false
+                continue
+            }
+            let x = CGFloat(index) / CGFloat(max(1, points.count - 1)) * size.width
+            let y = size.height * CGFloat(1 - min(ceiling, max(0, value)) / ceiling)
+            if drawing { path.addLine(to: CGPoint(x: x, y: y)) }
+            else { path.move(to: CGPoint(x: x, y: y)); drawing = true }
+        }
+        return path
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let line = trace(in: geometry.size)
+            ZStack {
+                line
+                    .addLine(to: CGPoint(x: geometry.size.width, y: geometry.size.height))
+                    .addLine(to: CGPoint(x: 0, y: geometry.size.height))
+                    .fill(LinearGradient(
+                        colors: [accent.opacity(0.25), accent.opacity(0)],
+                        startPoint: .top, endPoint: .bottom))
+                line.stroke(accent, style: StrokeStyle(
+                    lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+            }
+        }
+        .frame(height: 55)
+        .accessibilityLabel(cpu ? "CPU 使用历史曲线" : "内存占比历史曲线")
+    }
+    #else
     var body: some View {
         Chart(points) { point in
             if let percent = cpu ? point.cpuPercent : point.memoryPercent {
@@ -1340,6 +1378,7 @@ private struct InspectorAreaChart: View {
         .frame(height: 55)
         .accessibilityLabel(cpu ? "CPU 使用历史曲线" : "内存占比历史曲线")
     }
+    #endif
 }
 
 private struct InspectorMetricTile: View {
