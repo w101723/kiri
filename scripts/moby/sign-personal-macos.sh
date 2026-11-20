@@ -58,10 +58,11 @@ printf '%s' "$KIRI_PERSONAL_SIGN_P12_PASSWORD" > "$work/p12-password"
 openssl pkcs12 -in "$work/personal.p12" -clcerts -nokeys \
   -passin "file:$work/p12-password" -out "$work/chain.pem"
 openssl x509 -in "$work/chain.pem" -out "$work/leaf.pem"
-security add-trusted-cert -r trustAsRoot -p codeSign -k "$keychain" "$work/leaf.pem"
+# Self-signed code identities are discoverable without -v even if no
+# system-wide trust policy recognizes them. Never change the user's trust.
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_pw" "$keychain" >/dev/null
 # One dedicated personal P12 should contain exactly one code-signing identity.
-identity_list="$(security find-identity -v -p codesigning "$keychain" | awk '/^[[:space:]]*[0-9]+\)/ {print $2}')"
+identity_list="$(security find-identity -p codesigning "$keychain" | awk '/^[[:space:]]*[0-9]+\)/ {print $2}')"
 count="$(printf '%s\n' "$identity_list" | grep -Ec '^[0-9A-Fa-f]{40}$' || :)"
 if [[ "$count" != 1 ]]; then
   echo "Expected one valid personal code-signing identity in the P12, got $count." >&2
