@@ -233,6 +233,8 @@ private final class MobyModel: ObservableObject {
     private var vmTransitionInProgress = false
     @Published var error: String?
     @Published var result: TextResult?
+    @Published var liveLogContainerID: String?
+    @Published var operationMessage: String?
     @Published var toastMessage: String?
     @Published var toastIsError = false
     @Published var composeFile = ""
@@ -300,12 +302,14 @@ private final class MobyModel: ObservableObject {
             return
         }
         activeOperations.insert(operationKey)
+        operationMessage = title
         if vmTransition { vmTransitionInProgress = true }
         Task {
             let answer = await Task.detached(priority: .userInitiated) {
                 Result { try request(args, as: Reply.self) }
             }.value
             activeOperations.remove(operationKey)
+            if activeOperations.isEmpty { operationMessage = nil }
             if vmTransition { vmTransitionInProgress = false }
             switch answer {
             case .success(let reply):
@@ -326,6 +330,27 @@ private final class MobyModel: ObservableObject {
                 notify("\(title): \(failure.localizedDescription)", error: true)
             }
             refresh()
+        }
+    }
+
+    func showLiveLogs(_ id: String) {
+        liveLogContainerID = id
+        result = TextResult(title: "logs", body: "正在加载日志…")
+    }
+
+    func refreshLiveLogs(_ id: String) async {
+        let input = ["action": "logs", "id": id]
+        guard let json = try? JSONSerialization.data(withJSONObject: input),
+              let encoded = String(data: json, encoding: .utf8) else { return }
+        let answer = await Task.detached(priority: .utility) {
+            Result { try request(["action", encoded], as: Reply.self) }
+        }.value
+        guard liveLogContainerID == id, result?.title == "logs" else { return }
+        switch answer {
+        case .success(let reply):
+            result = TextResult(title: "logs", body: reply.ok ? (reply.message ?? "") : (reply.error ?? "日志读取失败"))
+        case .failure(let failure):
+            result = TextResult(title: "logs", body: failure.localizedDescription)
         }
     }
 
@@ -451,6 +476,14 @@ private struct RootView: View {
             }
         }
         .onChange(of: model.page) { _, _ in model.search = "" }
+        .task(id: model.liveLogContainerID) {
+            guard let id = model.liveLogContainerID else { return }
+            while !Task.isCancelled {
+                await model.refreshLiveLogs(id)
+                do { try await Task.sleep(for: .seconds(2)) }
+                catch { break }
+            }
+        }
         .alert("Kiri Moby", isPresented: Binding(
             get: { model.error != nil },
             set: { if !$0 { model.error = nil } }
@@ -463,10 +496,15 @@ private struct RootView: View {
             if let result = model.result {
                 ZStack {
                     Color.black.opacity(0.52).ignoresSafeArea()
-                        .onTapGesture { model.result = nil }
+                        .onTapGesture { model.result = nil; model.liveLogContainerID = nil }
                     VStack(alignment: .leading, spacing: 14) {
                         HStack(spacing: 12) {
                             Text(result.title).font(.system(size: 14, weight: .semibold))
+                            if model.liveLogContainerID != nil {
+                                Label("实时刷新", systemImage: "arrow.clockwise")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(KiriPalette.mint)
+                            }
                             Spacer()
                             Text("\(result.body.utf8.count) bytes")
                                 .font(.system(size: 10, design: .monospaced))
@@ -479,7 +517,7 @@ private struct RootView: View {
                                 Label("复制", systemImage: "doc.on.doc")
                             }
                             .keyboardShortcut("c", modifiers: [.command, .shift])
-                            Button("关闭") { model.result = nil }
+                            Button("关闭") { model.result = nil; model.liveLogContainerID = nil }
                                 .keyboardShortcut(.escape, modifiers: [])
                         }
                         Divider()
@@ -503,6 +541,18 @@ private struct RootView: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
+            if let operation = model.operationMessage {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("\(operation) 正在执行…")
+                        .font(.system(size: 11))
+                }
+                .padding(10)
+                .background(KiriPalette.panel(model.isLight))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .padding(.trailing, 16)
+                .padding(.bottom, 70)
+            }
             if let message = model.toastMessage {
                 Text(message)
                     .font(.system(size: 12))
@@ -901,9 +951,7 @@ private struct RootView: View {
             } else {
                 smallAction("启动") { containerOp("start", container) }
             }
-            smallAction("日志") {
-                model.action("logs", fields: ["id":container.Id], title: "logs")
-            }
+            smallAction("日志") { model.showLiveLogs(container.Id) }
             smallAction("详情") {
                 model.action("inspect", fields: ["kind":"containers", "id":container.Id],
                              title: "inspect")
