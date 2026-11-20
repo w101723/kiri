@@ -66,6 +66,28 @@ trap 'rm -rf -- "$stage"; rm -f -- "$tmp"' EXIT
 hdiutil create -quiet -fs HFS+ -volname "Kiri Moby" \
   -srcfolder "$stage/volume" -format UDZO -ov "$tmp"
 hdiutil verify "$tmp" >/dev/null
+# Verify the Finder experience and nested signature from the image itself.
+# Use an explicit private mountpoint so other mounted Kiri DMGs are untouched.
+mountpoint="$stage/mounted"
+mkdir -p "$mountpoint"
+mounted=false
+detach_on_exit() {
+  if $mounted; then
+    hdiutil detach -quiet "$mountpoint" || :
+  fi
+  rm -rf -- "$stage"
+  rm -f -- "$tmp"
+}
+trap detach_on_exit EXIT
+hdiutil attach -quiet -readonly -nobrowse -mountpoint "$mountpoint" "$tmp"
+mounted=true
+[[ -L "$mountpoint/Applications" ]] &&
+  [[ "$(readlink "$mountpoint/Applications")" == "/Applications" ]] &&
+  [[ -d "$mountpoint/Kiri Moby.app" ]] ||
+    { echo "Invalid Finder drag-to-Applications DMG layout" >&2; exit 2; }
+codesign --verify --deep --strict "$mountpoint/Kiri Moby.app"
+hdiutil detach -quiet "$mountpoint"
+mounted=false
 mv "$tmp" "$output"
 shasum -a 256 "$output" > "$output.sha256"
 echo "Standard macOS Finder installation image ready: $output"

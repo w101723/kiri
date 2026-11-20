@@ -88,7 +88,8 @@ sign "$app" --entitlements crates/kiri/kiri.entitlements
 codesign --verify --deep --strict --verbose=2 "$app"
 
 dmg="Kiri-Moby-macos-arm64-notarized.dmg"
-hdiutil create -quiet -volname "Kiri Moby" -srcfolder "$app" -format UDZO -ov "$dmg"
+# Use the same Finder drag-to-Applications layout for signed releases.
+bash scripts/moby/package-dmg-macos.sh "$app" "$dmg"
 xcrun notarytool submit "$dmg" \
   --key "$work/AuthKey.p8" --key-id "$APPLE_NOTARY_KEY_ID" \
   --issuer "$APPLE_NOTARY_ISSUER_ID" \

@@ -31,6 +31,7 @@ jobs:
           bash -n scripts/moby/install-milestone-macos.sh
           bash -n scripts/moby/sign-notarize-macos.sh
           bash -n scripts/moby/install-local-macos.sh
+          bash -n scripts/moby/package-dmg-macos.sh
           # On Linux the opt-in command must refuse to authorize a Mac app.
           bash scripts/moby/install-local-macos.sh --status
           if bash scripts/moby/install-local-macos.sh --trust-local-builds; then

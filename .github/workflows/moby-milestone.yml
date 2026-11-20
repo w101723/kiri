@@ -9,6 +9,7 @@ on:
     paths:
       - ".github/workflows/moby-milestone.yml"
       - "scripts/moby/install-local-macos.sh"
+      - "scripts/moby/package-dmg-macos.sh"
 
 concurrency:
   group: moby-milestone-${{ github.ref }}
@@ -269,6 +270,20 @@ jobs:
           tar -czf Kiri-Moby-macos-arm64-app.tgz -C packaged "Kiri Moby.app"
           shasum -a 256 Kiri-Moby-macos-arm64-app.tgz > Kiri-Moby-macos-arm64-app.tgz.sha256
           ls -lh Kiri-Moby-macos-arm64-app.tgz
+      - name: Create standard drag-to-Applications DMG
+        run: |
+          bash scripts/moby/package-dmg-macos.sh \
+            "packaged/Kiri Moby.app" Kiri-Moby-macos-arm64.dmg
+          ls -lh Kiri-Moby-macos-arm64.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kiri-Moby-macos-arm64-DMG
+          path: |
+            Kiri-Moby-macos-arm64.dmg
+            Kiri-Moby-macos-arm64.dmg.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
       - name: Verify ad-hoc app package and bundle local-only installer
         run: |
           bash -n scripts/moby/install-local-macos.sh
