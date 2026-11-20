@@ -2,13 +2,16 @@ name: Kiri Moby unified macOS ARM64 milestone bundle
 
 on:
   workflow_dispatch:
-  # Build one same-commit Host+Guest+GUI artifact on milestone changes.
+  # Build a same-commit Host+Guest+GUI bundle. A Gatekeeper-trusted release
+  # requires Developer ID signing + notarization; otherwise use DEV-ADHOC
+  # artifact names and do not imply regular macOS Gatekeeper acceptance.
   # The isolated memory lab must build its own matching Guest and Host;
   # reusing a moby-engine Guest would silently omit its experimental flag.
   push:
-    branches: [moby-engine, memory-reclaim, memory-200m-lab]
+    branches: [moby-engine]
     paths:
       - ".github/workflows/moby-milestone.yml"
+      - "scripts/moby/sign-notarize-macos.sh"
       - "scripts/moby/install-local-macos.sh"
       - "scripts/moby/package-dmg-macos.sh"
       - "scripts/moby/build-guest.sh"
@@ -280,28 +283,19 @@ jobs:
           tar -czf Kiri-Moby-macos-arm64-app.tgz -C packaged "Kiri Moby.app"
           shasum -a 256 Kiri-Moby-macos-arm64-app.tgz > Kiri-Moby-macos-arm64-app.tgz.sha256
           ls -lh Kiri-Moby-macos-arm64-app.tgz
-      - name: Create standard drag-to-Applications DMG
+      - name: Create explicitly labeled Ad-hoc development DMG
         run: |
           bash scripts/moby/package-dmg-macos.sh \
-            "packaged/Kiri Moby.app" Kiri-Moby-macos-arm64.dmg
-          ls -lh Kiri-Moby-macos-arm64.dmg
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Kiri-Moby-macos-arm64-DMG
-          path: |
-            Kiri-Moby-macos-arm64.dmg
-            Kiri-Moby-macos-arm64.dmg.sha256
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 30
+            "packaged/Kiri Moby.app" Kiri-Moby-macos-arm64-DEV-ADHOC.dmg
+          ls -lh Kiri-Moby-macos-arm64-DEV-ADHOC.dmg
       - name: Verify ad-hoc app package and bundle local-only installer
         run: |
           bash -n scripts/moby/install-local-macos.sh
           bash scripts/moby/install-local-macos.sh --verify Kiri-Moby-macos-arm64-app.tgz
           cp scripts/moby/install-local-macos.sh Kiri-Moby-install-local.sh
-      - name: Label unsigned/ad-hoc artifact as development-only
+      - name: Label ad-hoc artifact as development-only
         run: |
-          printf '%s\n' "Ad-hoc development build only; do not use for Gatekeeper-trusted updates." > DEV-ADHOC-ONLY.txt
+          printf '%s\n' "Ad-hoc code-signed DEV build only: not Apple Developer ID signed/notarized. Gatekeeper may block launching. A trusted release requires six Apple signing/notary GitHub Secrets." > DEV-ADHOC-ONLY.txt
       - name: Developer ID sign + notarize for normal macOS updates
         id: notarize
         env:
@@ -312,6 +306,31 @@ jobs:
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
         run: bash scripts/moby/sign-notarize-macos.sh "packaged/Kiri Moby.app"
+      - name: Verify distribution signature status
+        env:
+          NOTARIZED: ${{ steps.notarize.outputs.notarized }}
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict --verbose=2 "packaged/Kiri Moby.app"
+          if [[ "$NOTARIZED" == true ]]; then
+            test -s Kiri-Moby-macos-arm64-notarized.dmg
+            xcrun stapler validate Kiri-Moby-macos-arm64-notarized.dmg
+            echo "TRUSTED: Developer ID and Apple notarization verified" >> "$GITHUB_STEP_SUMMARY"
+          else
+            test -s Kiri-Moby-macos-arm64-DEV-ADHOC.dmg
+            echo "DEV ONLY: Ad-hoc signing does not satisfy Gatekeeper; official artifact not published" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: steps.notarize.outputs.notarized != 'true'
+        with:
+          name: Kiri-Moby-macos-arm64-DEV-ADHOC-DMG
+          path: |
+            Kiri-Moby-macos-arm64-DEV-ADHOC.dmg
+            Kiri-Moby-macos-arm64-DEV-ADHOC.dmg.sha256
+            DEV-ADHOC-ONLY.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         if: steps.notarize.outputs.notarized == 'true'
         with:
@@ -324,7 +343,7 @@ jobs:
           retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
-          name: Kiri-Moby-macos-arm64-app
+          name: Kiri-Moby-macos-arm64-DEV-ADHOC-app
           path: |
             Kiri-Moby-macos-arm64-app.tgz
             Kiri-Moby-macos-arm64-app.tgz.sha256
