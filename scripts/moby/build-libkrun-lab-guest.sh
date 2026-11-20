@@ -72,14 +72,13 @@ docker run --rm --platform linux/arm64 \
   alpine:3.22 sh -ec \
   'apk add --no-cache build-base >/dev/null && cc -static -Os -s -Wall -Wextra -Werror -o /out/kiri-lab-anon /src/libkrun-lab-anon.c'
 test -s "$work/boot/bin/kiri-lab-anon"
-# The Alpine BusyBox build must provide *real* swap tools, not just applet links.
-for applet in mkswap swapon; do
-  docker run --rm --platform linux/arm64 --entrypoint /bin/busybox \
-    alpine:3.22 --list | grep -Fxq "$applet" || {
-    echo "Alpine BusyBox lacks $applet required by the RAM-only zram lab" >&2; exit 1;
-  }
-done
-for cmd in sh mount mkdir grep sleep dd rm cat head mkswap swapon; do
+# Alpine BusyBox includes mkswap, but not swapon. The tiny static
+# kiri-lab-anon process invokes the Linux swapon(2) syscall directly.
+if ! docker run --rm --platform linux/arm64 --entrypoint /bin/busybox \
+  alpine:3.22 --list | grep -Fx 'mkswap' >/dev/null; then
+  echo "Alpine BusyBox lacks mkswap" >&2; exit 1;
+fi
+for cmd in sh mount mkdir grep sleep dd rm cat head mkswap; do
   ln -s busybox "$work/boot/bin/$cmd"
 done
 cp "$root/scripts/moby/libkrun-lab-init" "$work/boot/init"
