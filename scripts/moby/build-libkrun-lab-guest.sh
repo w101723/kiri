@@ -27,8 +27,13 @@ mkdir -p "$work/kernel/patches" "$work/kernel-build" "$work/alpine" "$work/boot/
 cp "$root/guest/kernel/build.sh" "$work/kernel/"
 cp "$root/guest/kernel/kiri.config" "$work/kernel/"
 cp "$root/guest/kernel/patches/"*.patch "$work/kernel/patches/"
-# Add virtio-mmio only to the throwaway kernel. Production PCI kernel unchanged.
-printf '\nCONFIG_VIRTIO_MMIO=y\n' >> "$work/kernel/kiri.config"
+# Only the throwaway kernel gets MMIO + zram; production kernel is untouched.
+cat >> "$work/kernel/kiri.config" <<'LAB_KCONFIG'
+CONFIG_VIRTIO_MMIO=y
+CONFIG_ZRAM=y
+CONFIG_ZRAM_BACKEND_LZ4=y
+CONFIG_ZRAM_DEF_COMP_LZ4=y
+LAB_KCONFIG
 docker run --rm --platform linux/arm64 \
   -e DEBIAN_FRONTEND=noninteractive -e KARCH=arm64 \
   -v "$work/kernel:/src:ro" -v "$work/kernel-build:/build" -v "$out:/out" \
@@ -42,6 +47,11 @@ grep -Fxq 'CONFIG_PAGE_REPORTING=y' "$out/.config" || {
 grep -Fxq 'CONFIG_VIRTIO_BALLOON=y' "$out/.config" || {
   echo "Missing virtio balloon from built kernel" >&2; exit 1;
 }
+for feature in CONFIG_ZRAM CONFIG_ZRAM_BACKEND_LZ4 CONFIG_ZRAM_DEF_COMP_LZ4; do
+  grep -Fxq "$feature=y" "$out/.config" || {
+    echo "Missing $feature from isolated kernel" >&2; exit 1;
+  }
+done
 # Only the Alpine BusyBox + musl dynamic loader enter the RAM-only initrd.
 # No rootfs, no Docker binaries, and no persistent disk are attached.
 docker pull --platform linux/arm64 alpine:3.22
@@ -56,7 +66,20 @@ for lib in ld-musl-aarch64.so.1 libc.musl-aarch64.so.1; do
   }
   cp -a "$work/alpine/lib/$lib" "$work/boot/lib/$lib"
 done
-for cmd in sh mount mkdir grep sleep dd rm cat head; do
+# Force the static build to be independent of host libraries and libkrun.
+docker run --rm --platform linux/arm64 \
+  -v "$root/scripts/moby:/src:ro" -v "$work/boot/bin:/out" \
+  alpine:3.22 sh -ec \
+  'apk add --no-cache build-base >/dev/null && cc -static -Os -s -Wall -Wextra -Werror -o /out/kiri-lab-anon /src/libkrun-lab-anon.c'
+test -s "$work/boot/bin/kiri-lab-anon"
+# The Alpine BusyBox build must provide *real* swap tools, not just applet links.
+for applet in mkswap swapon; do
+  docker run --rm --platform linux/arm64 --entrypoint /bin/busybox \
+    alpine:3.22 --list | grep -Fxq "$applet" || {
+    echo "Alpine BusyBox lacks $applet required by the RAM-only zram lab" >&2; exit 1;
+  }
+done
+for cmd in sh mount mkdir grep sleep dd rm cat head mkswap swapon; do
   ln -s busybox "$work/boot/bin/$cmd"
 done
 cp "$root/scripts/moby/libkrun-lab-init" "$work/boot/init"
@@ -73,6 +96,6 @@ test "$(stat -c '%s' "$out/initramfs.cpio")" -lt 16777216
 ! ( cpio -it --quiet < "$out/initramfs.cpio" | grep -Eq '(^|/)(dockerd|containerd|runc)$' )
 cp "$out/.config" "$out/kernel.config"
 rm -f "$out/.config"
-printf '%s\n' "RAM-only MMIO/Free Page Reporting Linux guest (no persistent storage)" > "$out/README.txt"
+printf '%s\n' "RAM-only MMIO + Free Page Reporting + optional zram compression Guest; no persistent disk" > "$out/README.txt"
 (cd "$out" && sha256sum Image initramfs.cpio kernel.config README.txt > SHA256SUMS)
 echo "Built isolated lab Guest: $out (MMIO, balloon and page reporting enabled)"
