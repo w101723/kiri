@@ -20,5 +20,6 @@ let package = Package(
             path: ".",
             sources: ["MobyApp.swift"]
         )
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )
