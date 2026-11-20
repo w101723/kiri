@@ -2343,7 +2343,7 @@ private struct RootView: View {
             Image(systemName: icon)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(destructive ? Color.red : KiriPalette.title(model.isLight))
-                .frame(width: 27, height: 26)
+                .frame(width: 24, height: 25)
         }
         .buttonStyle(.borderless)
         .help(tooltip)
@@ -2351,7 +2351,7 @@ private struct RootView: View {
     }
 
     private func containerButtons(_ container: ContainerItem) -> some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 3) {
             if container.State == "running" {
                 iconAction("停止", icon: "stop.circle") { containerOp("stop", container) }
             } else {
@@ -2386,10 +2386,10 @@ private struct RootView: View {
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .font(.system(size: 14))
-                    .frame(width: 25, height: 26)
+                    .frame(width: 24, height: 25)
             }
             .menuStyle(.borderlessButton)
-            .frame(width: 28)
+            .frame(width: 24)
             .help("更多操作")
         }
     }
@@ -2516,32 +2516,32 @@ private struct RootView: View {
                 }
                 .help(item.Id)
             }
-             .width(min: 120, ideal: 155)
+             .width(min: 110, ideal: 124)
             TableColumn("镜像", value: \.imageSortName) { item in
                 Text(item.Image ?? "—").lineLimit(1)
             }
-             .width(min: 95, ideal: 135)
+             .width(min: 85, ideal: 100)
             TableColumn("状态", value: \.stateSortName) { item in
                 containerStateBadge(item)
             }
-             .width(min: 75, ideal: 85)
+             .width(min: 70, ideal: 77)
             TableColumn("CPU / 内存") { item in
                 containerResourceCell(item)
             }
-             .width(min: 180, ideal: 215)
+             .width(min: 154, ideal: 172)
             TableColumn("端口") { item in
                 portLinks(item.Ports)
             }
-             .width(min: 100, ideal: 140)
+             .width(min: 98, ideal: 108)
             TableColumn("创建时间", value: \.creationSortDate) { item in
                 Text(dateLabel(item.Created))
                     .foregroundStyle(KiriPalette.muted(model.isLight))
             }
-            .width(min: 115, ideal: 135)
+            .width(min: 102, ideal: 111)
             TableColumn("操作") { item in
                 containerButtons(item)
             }
-            .width(min: 130, ideal: 150)
+            .width(min: 108, ideal: 118)
         }
         .contextMenu(forSelectionType: String.self) { selection in
             if !selection.isEmpty {
