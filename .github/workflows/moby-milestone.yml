@@ -21,6 +21,9 @@ on:
       - "crates/kiri-moby-bridge/**"
       - "crates/kiri-vmm/**"
       - "crates/kiri/src/ui/moby*"
+      - "crates/kiri/native/**"
+      - "crates/kiri/src/ui/mod.rs"
+      - "crates/kiri/src/main.rs"
       - "guest/kernel/**"
       - "xtask/src/main.rs"
       - "Cargo.lock"
@@ -204,7 +207,18 @@ jobs:
           test "$(lipo "$bin" -archs)" = "arm64"
           codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$bin"
           codesign --verify --strict --verbose=2 "$bin"
-          tar -C target/aarch64-apple-darwin/release -czf kiri-moby-gui-arm64.tgz kiri
+          native="target/aarch64-apple-darwin/release/kiri-moby-ui"
+          sdk="$(xcrun --sdk macosx --show-sdk-path)"
+          swiftc -parse-as-library -O -target arm64-apple-macosx14.0 \
+            -sdk "$sdk" crates/kiri/native/MobyApp.swift -o "$native"
+          test "$(lipo "$native" -archs)" = "arm64"
+          if otool -L "$native" | grep -E 'WebKit|JavaScriptCore'; then
+            echo "Native SwiftUI GUI unexpectedly links WebKit or JavaScriptCore" >&2
+            exit 1
+          fi
+          codesign --force --sign - "$native"
+          codesign --verify --strict --verbose=2 "$native"
+          tar -C target/aarch64-apple-darwin/release -czf kiri-moby-gui-arm64.tgz kiri kiri-moby-ui
       - uses: actions/upload-artifact@v4
         with:
           name: milestone-gui-arm64
@@ -259,8 +273,8 @@ jobs:
           mac="$app/Contents/MacOS"
           res="$app/Contents/Resources"
           mkdir -p "$mac" "$res/guest" "$res/bin/cli-plugins"
-          tar -xzf downloaded/gui/kiri-moby-gui-arm64.tgz -C "$mac" kiri
-          chmod 755 "$mac/kiri"
+          tar -xzf downloaded/gui/kiri-moby-gui-arm64.tgz -C "$mac" kiri kiri-moby-ui
+          chmod 755 "$mac/kiri" "$mac/kiri-moby-ui"
           cp assembled/guest/Image assembled/guest/initramfs.cpio \
              assembled/guest/data.img.tgz assembled/guest/system.img.tgz \
              assembled/guest/rootfs.revision assembled/guest/SHA256SUMS "$res/guest/"
@@ -295,7 +309,7 @@ jobs:
             <key>CFBundleName</key><string>Kiri Moby</string>
             <key>CFBundleDisplayName</key><string>Kiri Moby</string>
             <key>CFBundleIdentifier</key><string>dev.kiri.app.moby</string>
-            <key>CFBundleExecutable</key><string>kiri</string>
+            <key>CFBundleExecutable</key><string>kiri-moby-ui</string>
             <key>CFBundleIconFile</key><string>Kiri</string>
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>CFBundleShortVersionString</key><string>0.1.0</string>
@@ -315,7 +329,9 @@ jobs:
             codesign --force --sign - "$binary"
           done
           test "$(lipo "$mac/kiri" -archs)" = "arm64"
+          test "$(lipo "$mac/kiri-moby-ui" -archs)" = "arm64"
           codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$mac/kiri"
+          codesign --force --sign - "$mac/kiri-moby-ui"
           codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
           tar -czf Kiri-Moby-macos-arm64-app.tgz -C packaged "Kiri Moby.app"
