@@ -1655,6 +1655,83 @@ private struct RootView: View {
                     }
                 }
                 panelCard {
+                    HStack {
+                        Text("虚拟机资源上限")
+                            .font(.system(size: 14, weight: .semibold))
+                        Spacer()
+                        if model.resourceEditsPending {
+                            Text("未保存")
+                                .foregroundStyle(KiriPalette.red)
+                        } else if model.resourceRestartRequired {
+                            Text("等待重启生效")
+                                .foregroundStyle(.orange)
+                        } else {
+                            Text("已保存")
+                                .foregroundStyle(KiriPalette.muted(model.isLight))
+                        }
+                    }
+                    if let config = model.snapshot?.vm_config {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Stepper(value: $model.resourceCPUs,
+                                    in: 1...max(config.max_cpus, 1)) {
+                                HStack {
+                                    Text("CPU")
+                                    Spacer()
+                                    Text("\(model.resourceCPUs) 核")
+                                        .fontWeight(.semibold)
+                                        .monospacedDigit()
+                                }
+                            }
+                            HStack {
+                                Text("最大内存")
+                                Spacer()
+                                Text(String(format: "%.2f GiB", Double(model.resourceMemoryMiB) / 1024))
+                                    .fontWeight(.semibold)
+                                    .monospacedDigit()
+                            }
+                            Slider(
+                                value: Binding(
+                                    get: { Double(model.resourceMemoryMiB) },
+                                    set: { model.resourceMemoryMiB = Int($0) }),
+                                in: 1024.0...Double(max(1024, config.max_memory_mib)),
+                                step: 256)
+                            HStack {
+                                Text("1 GiB")
+                                Spacer()
+                                Text("上限 \(config.max_memory_mib / 1024) GiB")
+                            }
+                            .font(.system(size: 10))
+                            .foregroundStyle(KiriPalette.muted(model.isLight))
+                        }
+                        .font(.system(size: 12))
+                        if model.online {
+                            Text("当前运行：\(model.snapshot?.info?.NCPU.map(String.init) ?? "—") CPU · \(model.snapshot?.memory?.vm_memory_ceiling_mib.map { String(format: "%.2f GiB", Double($0) / 1024) } ?? "读取中") 内存上限")
+                                .font(.system(size: 11))
+                                .foregroundStyle(KiriPalette.muted(model.isLight))
+                        }
+                        HStack(spacing: 8) {
+                            Button("仅保存") { model.saveResources(apply: false) }
+                                .disabled(!model.resourceEditsPending)
+                            Button(model.online ? "保存并重启 VM" : "保存并应用") {
+                                if !model.online || model.confirm(
+                                    "应用新的 CPU 和内存上限？",
+                                    detail: "需要重启虚拟机。运行中的容器将被中断，容器数据卷不会删除。") {
+                                    model.saveResources(apply: true)
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!model.resourceEditsPending &&
+                                      !model.resourceRestartRequired)
+                        }
+                    } else {
+                        Text("正在读取 Mac 资源限制…")
+                            .foregroundStyle(KiriPalette.muted(model.isLight))
+                    }
+                    Text("CPU 与最大内存是 VM 启动参数，修改后需重启才能生效；运行中的内存 Balloon 仍会自动伸缩，但不会改变已启动 VM 的物理内存上限。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                }
+                panelCard {
                     Text("Mac 目录共享").font(.system(size:14,weight:.semibold))
                     Text("选择允许 Docker 容器访问的 Mac 项目目录；未经授权不会共享整个 /Users 或 /Volumes。更改后需要重启 VM 才能生效。")
                         .foregroundStyle(KiriPalette.muted(model.isLight))
