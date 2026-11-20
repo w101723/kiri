@@ -90,3 +90,13 @@ also be rejected. No automatic bypass is attempted.
 **Verification boundary:** The CI fallback (without Apple secrets) can
 be tested automatically, but the real signing/notarization workflow
 cannot be validated until valid Apple Developer credentials are configured.
+
+## Personal development-only option
+
+For the owner of `w101723/kiri`, no Apple Developer subscription is required
+if installing their own local builds. The repository includes a one-time
+interactive opt-in + narrowly-scoped Kiri app installer. It verifies checksums,
+ARM64 Mach-O and code signature integrity, then clears quarantine **only** on
+the staged Kiri app for locally trusted artifacts. It does not globally disable
+Gatekeeper, and should never be used for public releases. Read
+`docs/MOBY_LOCAL_INSTALL_MACOS.md` for setup and warnings.
