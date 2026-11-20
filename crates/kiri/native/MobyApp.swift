@@ -154,7 +154,7 @@ private struct ContainerInspectDetails: Decodable {
         let User: String?
     }
     struct Mount: Decodable, Identifiable {
-        let Type: String?
+        let `Type`: String?
         let Source: String?
         let Destination: String?
         let RW: Bool?
@@ -1627,7 +1627,10 @@ private struct RootView: View {
                 }
             }
             .navigationTitle(model.page.displayName)
-            .inspector(isPresented: $showInspector) {
+            .inspector(isPresented: Binding(
+                get: { showInspector && model.page == .containers },
+                set: { showInspector = $0 }
+            )) {
                 ContainerInspectorView(
                     item: model.containers.first(where: { $0.Id == selectedInspectorID }))
                     .environmentObject(model)
