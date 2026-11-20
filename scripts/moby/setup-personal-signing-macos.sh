@@ -70,6 +70,8 @@ if ! $upload; then
   echo "  KIRI_PERSONAL_SIGN_P12_BASE64    <- $dir/p12-base64"
   echo "  KIRI_PERSONAL_SIGN_P12_PASSWORD  <- $passfile"
   echo "  KIRI_PERSONAL_SIGN_CERT_SHA256   <- $dir/cert-sha256"
+  echo "Then create Repository variable KIRI_REQUIRE_PERSONAL_SIGNING = true."
+  echo "This makes CI REFUSE ad-hoc fallback if your P12 is unavailable."
   echo
   echo "Or run again with --upload if you already have an authenticated gh CLI."
   exit 0
@@ -82,4 +84,5 @@ gh auth status >/dev/null
 gh secret set KIRI_PERSONAL_SIGN_P12_BASE64 -R w101723/kiri < "$dir/p12-base64"
 gh secret set KIRI_PERSONAL_SIGN_P12_PASSWORD -R w101723/kiri < "$passfile"
 gh secret set KIRI_PERSONAL_SIGN_CERT_SHA256 -R w101723/kiri < "$dir/cert-sha256"
-echo "Persistent GitHub Actions signer secrets configured."
+gh variable set KIRI_REQUIRE_PERSONAL_SIGNING -R w101723/kiri --body true
+echo "Persistent signer secrets and fail-closed requirement configured."
