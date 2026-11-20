@@ -8,7 +8,10 @@ on:
   # The isolated memory lab must build its own matching Guest and Host;
   # reusing a moby-engine Guest would silently omit its experimental flag.
   push:
-    branches: [moby-engine, apple-silicon-native-parity]
+    # Release branch only. Feature-branch commits run the fast native GUI
+    # and bridge checks. A full signed feature bundle can still be started
+    # deliberately via workflow_dispatch to avoid repeated kernel builds.
+    branches: [moby-engine]
     paths:
       - ".github/workflows/moby-milestone.yml"
       - "scripts/moby/sign-notarize-macos.sh"
