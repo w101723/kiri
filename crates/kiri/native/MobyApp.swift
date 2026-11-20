@@ -62,6 +62,9 @@ private struct ContainerItem: Decodable, Identifiable {
     let Created: Int64?
     let SizeRw: Int64?
     var id: String { Id }
+    var imageSortName: String { Image ?? "" }
+    var stateSortName: String { State ?? "" }
+    var creationSortDate: Int64 { Created ?? 0 }
     var title: String { Names?.first?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? String(Id.prefix(12)) }
     var composeProject: String? { Labels?["com.docker.compose.project"] }
     var localPort: Int? { Ports?.first(where: {$0.Type == "tcp" && $0.PublicPort != nil})?.PublicPort }
@@ -1149,6 +1152,7 @@ private struct DetachedConsoleView: View {
 private struct RootView: View {
     @EnvironmentObject private var model: MobyModel
     @State private var selectedContainerIDs = Set<String>()
+    @State private var tableSortOrder = [KeyPathComparator(\ContainerItem.title)]
     @State private var sessions: [ConsoleSession] = []
     @State private var selectedSessionID: String?
     @State private var showVMPopover = false
@@ -1980,44 +1984,44 @@ private struct RootView: View {
 
     private func containerButtons(_ container: ContainerItem) -> some View {
         HStack(spacing: 5) {
-            if container.State == "running" || container.State == "paused" {
-                iconAction("停止容器", icon: "stop.fill") {
-                    containerOp("stop", container)
-                }
+            if container.State == "running" {
+                iconAction("停止", icon: "stop.fill") { containerOp("stop", container) }
             } else {
-                iconAction("启动容器", icon: "play.fill") {
-                    containerOp("start", container)
-                }
+                iconAction("启动", icon: "play.fill") { containerOp("start", container) }
             }
-            iconAction("重启容器", icon: "arrow.clockwise") {
-                containerOp("restart", container)
-            }
-            .disabled(container.State != "running")
-            iconAction("交互式 Exec", icon: "terminal") {
+            iconAction("Exec", icon: "terminal") {
                 openConsole(.exec, containerID: container.Id, name: container.title)
             }
             .disabled(container.State != "running")
-            iconAction("实时日志", icon: "doc.text") {
+            iconAction("日志", icon: "doc.text") {
                 openConsole(.logs, containerID: container.Id, name: container.title)
             }
-            iconAction("删除容器", icon: "trash", destructive: true) {
-                if model.confirm("确定强制删除容器 \(container.title)？",
-                                 detail: "不会自动删除命名数据卷。") {
-                    containerOp("remove", container)
+            Menu {
+                Button("查看详情") {
+                    model.action("inspect", fields: ["kind":"containers","id":container.Id],
+                                 title: "inspect")
                 }
+                Button("重启") { containerOp("restart", container) }
+                    .disabled(container.State != "running")
+                if container.State == "running" {
+                    Button("暂停") { containerOp("pause", container) }
+                } else if container.State == "paused" {
+                    Button("恢复") { containerOp("unpause", container) }
+                }
+                Divider()
+                Button("删除容器", role: .destructive) {
+                    if model.confirm("删除容器 \(container.title)？",
+                                     detail: "不会自动删除命名数据卷。") {
+                        containerOp("remove", container)
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 28, height: 29)
             }
-        }
-        .contextMenu {
-            if container.State == "running" {
-                Button("暂停") { containerOp("pause", container) }
-            } else if container.State == "paused" {
-                Button("恢复") { containerOp("unpause", container) }
-            }
-            Button("查看详情") {
-                model.action("inspect", fields: [
-                    "kind": "containers", "id": container.Id
-                ], title: "inspect")
-            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 28)
+            .help("更多操作")
         }
     }
 
@@ -2166,115 +2170,80 @@ private struct RootView: View {
         .help("选择容器")
     }
 
+    // SwiftUI Table maps to NSTableView on macOS: adjustable column widths,
+    // keyboard navigation, native selection, heading sort, and context menus.
     private var containers: some View {
-        ScrollView(.horizontal) {
-            ScrollView(.vertical) {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 0) {
-                    tableValue(
-                        Toggle("", isOn: Binding(
-                            get: {
-                                !filteredContainers.isEmpty &&
-                                filteredContainers.allSatisfy { selectedContainerIDs.contains($0.Id) }
-                            },
-                            set: { enabled in
-                                for item in filteredContainers {
-                                    if enabled { selectedContainerIDs.insert(item.Id) }
-                                    else { selectedContainerIDs.remove(item.Id) }
-                                }
-                            }
-                        ))
-                        .labelsHidden().toggleStyle(.checkbox),
-                        width: 25)
-                    tableTitle("名称", width: 145)
-                    tableTitle("镜像", width: 155)
-                    tableTitle("状态", width: 95)
-                    tableTitle("资源 · CPU / 内存 / I/O", width: 280)
-                    tableTitle("端口", width: 195)
-                    tableTitle("SHARE", width: 48)
-                    tableTitle("创建时间", width: 115)
-                    tableTitle("操作", width: 190)
+        let sorted = filteredContainers.sorted(using: tableSortOrder)
+        return Table(sorted, selection: $selectedContainerIDs, sortOrder: $tableSortOrder) {
+            TableColumn("名称", value: \.title) { item in
+                HStack(spacing: 8) {
+                    Image(systemName: "shippingbox")
+                        .foregroundStyle(item.State == "running" ?
+                            KiriPalette.mint : KiriPalette.muted(model.isLight))
+                    Text(item.title)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
                 }
-                .background(KiriPalette.raised(model.isLight).opacity(0.55))
-                tableDivider
-                if filteredContainers.isEmpty {
-                    Text(model.containers.isEmpty ? "暂无容器" : "没有符合条件的容器")
-                        .foregroundStyle(KiriPalette.muted(model.isLight))
-                        .frame(maxWidth: .infinity, minHeight: 160)
+                .help(item.Id)
+            }
+            .width(min: 140, ideal: 190)
+            TableColumn("镜像", value: \.imageSortName) { item in
+                Text(item.Image ?? "—").lineLimit(1)
+            }
+            .width(min: 110, ideal: 170)
+            TableColumn("状态", value: \.stateSortName) { item in
+                containerStateBadge(item)
+            }
+            .width(min: 85, ideal: 105)
+            TableColumn("资源 · CPU / 内存 / I/O") { item in
+                containerResourceCell(item)
+            }
+            .width(min: 250, ideal: 310)
+            TableColumn("端口") { item in
+                portLinks(item.Ports)
+            }
+            .width(min: 120, ideal: 170)
+            TableColumn("SHARE") { item in
+                localPortShortcut(item)
+            }
+            .width(min: 55, ideal: 70)
+            TableColumn("创建时间", value: \.creationSortDate) { item in
+                Text(dateLabel(item.Created))
+                    .foregroundStyle(KiriPalette.muted(model.isLight))
+            }
+            .width(min: 130, ideal: 150)
+            TableColumn("操作") { item in
+                containerButtons(item)
+            }
+            .width(min: 155, ideal: 170)
+        }
+        .contextMenu(forSelectionType: String.self) { selection in
+            if !selection.isEmpty {
+                Button("启动选中的 \(selection.count) 个容器") {
+                    for id in selection {
+                        model.perform(["container", "start", id],
+                                      title: "Start container", showResult: false)
+                    }
                 }
-                ForEach(visualRows) { row in
-                    switch row {
-                    case .project(let project, let running, let count):
-                        Button {
-                            if model.collapsedProjects.contains(project) {
-                                model.collapsedProjects.remove(project)
-                            } else {
-                                model.collapsedProjects.insert(project)
-                            }
-                        } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: model.collapsedProjects.contains(project) ?
-                                    "chevron.right" : "chevron.down")
-                                Image(systemName: "square.stack.3d.up")
-                                Text(project).fontWeight(.semibold)
-                                Text("\(running) / \(count) 运行中")
-                                    .foregroundStyle(KiriPalette.muted(model.isLight))
-                                Spacer()
-                            }
-                            .padding(.horizontal, 17)
-                            .frame(height: 43)
-                            .background(KiriPalette.raised(model.isLight).opacity(0.45))
+                Button("停止选中的 \(selection.count) 个容器") {
+                    for id in selection {
+                        model.perform(["container", "stop", id],
+                                      title: "Stop container", showResult: false)
+                    }
+                }
+                Divider()
+                Button("删除选中的 \(selection.count) 个容器", role: .destructive) {
+                    if model.confirm("删除所选的 \(selection.count) 个容器？",
+                                     detail: "强制删除将停止并移除容器，不会自动删除命名数据卷。") {
+                        for id in selection {
+                            model.perform(["container", "remove", id],
+                                          title: "Remove container", showResult: false)
                         }
-                        .buttonStyle(.plain)
-                        tableDivider
-                    case .container(let item, let nested):
-                        HStack(spacing: 0) {
-                            tableValue(containerSelection(item.Id), width: 25)
-                            tableValue(
-                                HStack(spacing: 10) {
-                                    Image(systemName: "cube.transparent")
-                                        .font(.system(size: 20, weight: .light))
-                                        .foregroundStyle(item.State == "running" ?
-                                            Color.green : KiriPalette.faint(model.isLight))
-                                    Text(item.title)
-                                        .font(.system(size: 12, weight: .semibold))
-                                        .foregroundStyle(KiriPalette.title(model.isLight))
-                                        .lineLimit(1)
-                                }
-                                .padding(.leading, nested ? 12 : 0), width: 145)
-                            tableValue(
-                                Text(item.Image ?? "—")
-                                    .font(.system(size: 11))
-                                    .lineLimit(1), width: 155)
-                            tableValue(containerStateBadge(item), width: 95)
-                            tableValue(containerResourceCell(item), width: 280)
-                            tableValue(portLinks(item.Ports), width: 195)
-                            tableValue(localPortShortcut(item), width: 48)
-                            tableValue(
-                                Text(dateLabel(item.Created))
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(KiriPalette.muted(model.isLight))
-                                    .lineLimit(1), width: 115)
-                            tableValue(containerButtons(item), width: 190)
-                        }
-                        .frame(minHeight: 53)
-                        .background(selectedContainerIDs.contains(item.Id) ?
-                            KiriPalette.blue.opacity(0.105) : .clear)
-                        .contentShape(Rectangle())
-                        tableDivider
                     }
                 }
             }
-                .frame(minWidth: 1460, alignment: .leading)
-            }
         }
-        .background(KiriPalette.panel(model.isLight))
-        .clipShape(RoundedRectangle(cornerRadius: 11))
-        .overlay(RoundedRectangle(cornerRadius: 11)
-            .stroke(KiriPalette.border(model.isLight)))
-        .padding(.horizontal, 14)
-        .padding(.bottom, 14)
-        .background(KiriPalette.bg(model.isLight))
+        .tableStyle(.inset(alternatesRowBackgrounds: true))
     }
 
     // Same columns, row density and inline controls as moby.html.
