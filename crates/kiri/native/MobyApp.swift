@@ -962,7 +962,7 @@ private struct ExecTerminalView: View {
 @MainActor
 private func openExecTerminal(_ containerID: String, name: String) {
     let window = NSWindow(
-        contentRect: NSRect(x: 0, y: 0, width: 680, height: 440),
+        contentRect: NSRect(x: 0, y: 0, width: 660, height: 440),
         styleMask: [.titled, .closable, .miniaturizable, .resizable],
         backing: .buffered, defer: false)
     window.title = "Exec: " + name + " (交互式终端)"
