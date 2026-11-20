@@ -8,6 +8,10 @@ on:
       - "crates/kiri/src/ui/moby.rs"
       - "crates/kiri/src/ui/mod.rs"
       - "crates/kiri/src/main.rs"
+      - "scripts/moby/check-native-ui-parity.py"
+      - "Cargo.toml"
+      - "crates/kiri/Cargo.toml"
+      - "crates/kiri-vmm/Cargo.toml"
       - ".github/workflows/moby-native-ui-check.yml"
   pull_request:
     paths:
@@ -15,6 +19,10 @@ on:
       - "crates/kiri/src/ui/moby.rs"
       - "crates/kiri/src/ui/mod.rs"
       - "crates/kiri/src/main.rs"
+      - "scripts/moby/check-native-ui-parity.py"
+      - "Cargo.toml"
+      - "crates/kiri/Cargo.toml"
+      - "crates/kiri-vmm/Cargo.toml"
       - ".github/workflows/moby-native-ui-check.yml"
   workflow_dispatch:
 
@@ -29,6 +37,8 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
       - uses: actions/checkout@v4
+      - name: Compare native controls and layout with the original Moby UI
+        run: python3 scripts/moby/check-native-ui-parity.py
       - name: Cross-compile actual native SwiftUI app for Apple Silicon
         run: |
           set -euo pipefail
