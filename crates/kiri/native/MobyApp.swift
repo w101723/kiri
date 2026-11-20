@@ -1555,6 +1555,53 @@ private struct ContainerInspectorView: View {
     }
 }
 
+/// Deliberately sparse table cell: one service identity with a 28pt icon and
+/// two typographic levels. Detailed metrics belong in the right Inspector.
+private struct ContainerRowView: View {
+    let item: ContainerItem
+    @State private var hovered = false
+
+    private var symbol: String {
+        let descriptor = (item.title + " " + (item.Image ?? "")).lowercased()
+        if ["mysql", "postgres", "mariadb", "mongo", "redis", "database"]
+            .contains(where: descriptor.contains) {
+            return "externaldrive.fill.badge.person.crop"
+        }
+        if ["nginx", "apache", "traefik", "caddy", "web", "http"]
+            .contains(where: descriptor.contains) {
+            return "network"
+        }
+        return "shippingbox.fill"
+    }
+
+    var body: some View {
+        HStack(spacing: 11) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(item.State == "running" ? Color.accentColor : .secondary)
+                .frame(width: 28, height: 28)
+                .background(
+                    Color.accentColor.opacity(item.State == "running" ? 0.09 : 0.035),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(item.Image ?? "—")
+                    .font(.system(size: 11.5, weight: .regular, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 4)
+        .onHover { hovered = $0 }
+        .help(item.Id)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 private struct RootView: View {
     @EnvironmentObject private var model: MobyModel
     @State private var selectedContainerIDs = Set<String>()
@@ -2491,46 +2538,40 @@ private struct RootView: View {
 
     // SwiftUI Table maps to NSTableView on macOS: adjustable column widths,
     // keyboard navigation, native selection, heading sort, and context menus.
+    // Native NSTableView backed five-column presentation: dimensions belong
+    // in the right Inspector, not duplicated in a 7-column table.
     private var containers: some View {
         let sorted = filteredContainers.sorted(using: tableSortOrder)
         return Table(sorted, selection: $selectedContainerIDs, sortOrder: $tableSortOrder) {
-            TableColumn("名称", value: \.title) { item in
-                HStack(spacing: 8) {
-                    Image(systemName: "shippingbox")
-                        .foregroundStyle(item.State == "running" ?
-                            KiriPalette.mint : KiriPalette.muted(model.isLight))
-                    Text(item.title)
-                        .fontWeight(.medium)
-                        .lineLimit(1)
-                }
-                .help(item.Id)
+            TableColumn("容器", value: \.title) { item in
+                ContainerRowView(item: item)
             }
-             .width(min: 110, ideal: 124)
-            TableColumn("镜像", value: \.imageSortName) { item in
-                Text(item.Image ?? "—").lineLimit(1)
-            }
-             .width(min: 85, ideal: 100)
+            .width(min: 185, ideal: 300)
             TableColumn("状态", value: \.stateSortName) { item in
                 containerStateBadge(item)
             }
-             .width(min: 70, ideal: 77)
-            TableColumn("CPU / 内存") { item in
-                containerResourceCell(item)
-            }
-             .width(min: 154, ideal: 172)
+            .width(min: 86, ideal: 90)
             TableColumn("端口") { item in
                 portLinks(item.Ports)
             }
-             .width(min: 98, ideal: 108)
+            .width(min: 115, ideal: 135)
             TableColumn("创建时间", value: \.creationSortDate) { item in
-                Text(dateLabel(item.Created))
-                    .foregroundStyle(KiriPalette.muted(model.isLight))
+                if let seconds = item.Created, seconds > 0 {
+                    Text(Date(timeIntervalSince1970: TimeInterval(seconds)),
+                         style: .relative)
+                        .font(.system(size: 11.5))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else {
+                    Text("—").foregroundStyle(.tertiary)
+                }
             }
-            .width(min: 102, ideal: 111)
+            .width(min: 105, ideal: 130)
             TableColumn("操作") { item in
                 containerButtons(item)
             }
-            .width(min: 108, ideal: 118)
+            .width(min: 105, ideal: 112)
         }
         .contextMenu(forSelectionType: String.self) { selection in
             if !selection.isEmpty {
@@ -2561,7 +2602,6 @@ private struct RootView: View {
         .tableStyle(.inset(alternatesRowBackgrounds: false))
     }
 
-    // Same columns, row density and inline controls as moby.html.
     private var images: some View {
         VStack(spacing: 0) {
             HStack {
