@@ -36,6 +36,18 @@ if not all(token in NEW for token in (
 
 checks = [
     ('NavigationSplitView {', "System managed split navigation"),
+    ('.windowToolbarStyle(.unified)', "Unified native macOS toolbar"),
+    ('sidebarEngineStatus', "Engine status inset in native sidebar"),
+    ('.inspector(isPresented: $showInspector)', "Right native macOS inspector"),
+    ('ContainerInspectorView(', "Selected container inspector content"),
+    ('InspectorSparkline(', "Real stats time-series visualizations"),
+    ('statsHistory', "Bounded history from live Docker stats"),
+    ('ContainerInspectDetails: Decodable', "Read-only Docker inspect details"),
+    ('Text("Kiri 私有 Docker · 默认 Context 不变")', "Private Docker context in sidebar"),
+    ('.tableStyle(.inset(alternatesRowBackgrounds: false))', "Disable blank zebra stripes"),
+    ('iconAction("停止", icon: "stop.circle")', "Borderless SF Symbol container actions"),
+    ('private var sidebarEngineStatus: some View', "Sidebar status view"),
+
     ('.listStyle(.sidebar)', "macOS vibrancy sidebar material"),
     ('.badge(count)', "Native sidebar counter badges"),
     ('.searchable(text: $model.search, placement: .toolbar', "System toolbar search"),
@@ -104,10 +116,15 @@ checks = [
     ('Text("Mac 目录共享")', "Explicit shared Mac directories"),
     ('Button("选择共享目录…")', "Shares panel"),
     ('Button("应用更改并重启 VM")', "Apply shares"),
-    ('OrbStack/default Docker context unchanged', "Private Docker context footer"),
+    ('Kiri 私有 Docker · 默认 Context 不变', "Private Docker context status in sidebar"),
 ]
 for key, label in checks:
     has(NEW, key, label)
+
+if ".safeAreaInset(edge: .bottom, spacing: 0) { footer }" in NEW:
+    errors.append("White full-width status footer reintroduced below console")
+if ".tableStyle(.inset(alternatesRowBackgrounds: true))" in NEW:
+    errors.append("Old blank zebra table stripes reintroduced")
 
 # The AppKit Table's visual column order should remain metadata first and
 # actions at the far right, independent of the other Compose table.
