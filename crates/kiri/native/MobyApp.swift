@@ -1052,7 +1052,7 @@ private struct NativeSwiftTermExecView: NSViewRepresentable {
         view.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         view.nativeBackgroundColor = ConsoleAppearance.canvasNS(colorScheme)
         view.nativeForegroundColor = ConsoleAppearance.foregroundNS(colorScheme)
-        view.nativeCursorColor = NSColor.controlAccentColor
+        view.cursorColor = NSColor.controlAccentColor
         controls.terminal = view
         let cli = Bundle.main.bundleURL.appendingPathComponent(
             "Contents/MacOS/kiri").path
@@ -1071,7 +1071,7 @@ private struct NativeSwiftTermExecView: NSViewRepresentable {
     func updateNSView(_ view: LocalProcessTerminalView, context: Context) {
         view.nativeBackgroundColor = ConsoleAppearance.canvasNS(colorScheme)
         view.nativeForegroundColor = ConsoleAppearance.foregroundNS(colorScheme)
-        view.nativeCursorColor = NSColor.controlAccentColor
+        view.cursorColor = NSColor.controlAccentColor
     }
     static func dismantleNSView(_ view: LocalProcessTerminalView, coordinator: ()) {
         view.terminate()
