@@ -1,0 +1,47 @@
+name: Kiri Moby DMG packaging smoke test (macOS)
+
+on:
+  push:
+    branches: [apple-silicon-native-parity]
+    paths:
+      - "scripts/moby/package-dmg-macos.sh"
+      - ".github/workflows/moby-dmg-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dmg:
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create a tiny independently signed Kiri Moby app fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="packaged/Kiri Moby.app"
+          mkdir -p "$app/Contents/MacOS"
+          cat > "$app/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <plist version="1.0"><dict>
+          <key>CFBundleIdentifier</key><string>dev.kiri.app.moby</string>
+          <key>CFBundleExecutable</key><string>kiri-moby-ui</string>
+          <key>CFBundlePackageType</key><string>APPL</string>
+          <key>CFBundleVersion</key><string>1</string>
+          </dict></plist>
+          PLIST
+          printf 'int main(void){return 0;}\n' > "$RUNNER_TEMP/fixture.c"
+          clang -arch x86_64 -o "$app/Contents/MacOS/kiri-moby-ui" "$RUNNER_TEMP/fixture.c"
+          codesign --force --sign - "$app"
+          codesign --verify --deep --strict "$app"
+      - name: Create, verify, mount and detach DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/moby/package-dmg-macos.sh \
+            "packaged/Kiri Moby.app" "$RUNNER_TEMP/Kiri-Moby-test.dmg"
+          test -s "$RUNNER_TEMP/Kiri-Moby-test.dmg"
+          (cd "$RUNNER_TEMP" && shasum -a 256 -c Kiri-Moby-test.dmg.sha256)
+          echo "PASS: macOS hdiutil create/verify/attach/detach and ad-hoc bundle validation."
