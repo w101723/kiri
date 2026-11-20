@@ -172,8 +172,8 @@ if [[ -f "$signerfile" ]]; then
 fi
 # Optional additional check against a SHA256 known independently from the
 # person's own P12, avoiding trust-on-first-use if set before first install.
-if [[ -n "${KIRI_PERSONAL_SIGN_CERT_SHA256:-}" &&
-      "$signer_sha" != "${KIRI_PERSONAL_SIGN_CERT_SHA256,,}" ]]; then
+expected_signer_sha="$(printf '%s' "${KIRI_PERSONAL_SIGN_CERT_SHA256:-}" | tr '[:upper:]' '[:lower:]')"
+if [[ -n "$expected_signer_sha" && "$signer_sha" != "$expected_signer_sha" ]]; then
   echo "REFUSING UPDATE: signer differs from expected personal certificate" >&2
   exit 2
 fi
