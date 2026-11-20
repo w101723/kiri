@@ -124,7 +124,7 @@ private enum ContainerFilter: String, CaseIterable, Identifiable {
         let state = item.State ?? ""
         let failed = state == "dead" || state == "removing"
             || ((item.Status ?? "").range(of: #"^exited \(([1-9][0-9]*)\)"#,
-                  options: .regularExpression) != nil)
+                  options: [.regularExpression, .caseInsensitive]) != nil)
         switch self {
         case .all: return true
         case .running: return state == "running"
