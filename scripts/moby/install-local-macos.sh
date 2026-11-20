@@ -46,8 +46,10 @@ esac
 verify=false
 if [[ "${1:-}" == --verify ]]; then verify=true; shift; fi
 [[ $# -eq 1 && -f "$1" ]] || { help; exit 2; }
-[[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]] ||
-  { echo "Apple Silicon macOS required" >&2; exit 2; }
+# A macOS Intel CI runner may inspect/sign-verify arm64 artifacts, but
+# a real installation must occur on Apple Silicon.
+[[ "$(uname -s)" == Darwin ]] && { $verify || [[ "$(uname -m)" == arm64 ]]; } ||
+  { echo "macOS required (Apple Silicon for installation)" >&2; exit 2; }
 if ! $verify && ! trusted; then
   echo "First run: bash Kiri-Moby-install-local.sh --trust-local-builds" >&2
   exit 2
