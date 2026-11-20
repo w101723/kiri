@@ -975,7 +975,7 @@ private final class ExecTerminalSession: ObservableObject {
 private final class SwiftTermTerminalControls: ObservableObject {
     weak var terminal: LocalProcessTerminalView?
     func interrupt() { terminal?.process.send(data: [0x03][...]) }
-    func clear() { terminal?.feed(text: "\u{001B}[2J\u{001B}[H") }
+    func clear() { terminal?.feed(byteArray: Array("\u{001B}[2J\u{001B}[H".utf8)[...]) }
 }
 
 // SwiftTerm's LocalProcessTerminalView owns the PTY, UTF-8/ANSI parser,
