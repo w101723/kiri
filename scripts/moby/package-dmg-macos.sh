@@ -46,14 +46,20 @@ Kiri Moby — macOS Apple Silicon
 
 请检查下载产物名称中的签名类型：
 - DeveloperID-notarized：已使用 Apple Developer ID 签名并通过公证。
-- DEV-ADHOC：仅供开发测试，不是 Apple 公证版本；下载后可能被 Gatekeeper 拦截。
-  这不是应用本身损坏，标准 DMG 也不能代替 Apple 公证。
-不要为了运行开发版而全局禁用 macOS 安全保护。
+- DEV-PERSONAL-CERT：使用同一张个人签名证书（非 Apple 公证）。
+  首次通过受限的本地安装脚本授权并记录证书指纹；以后请用该安装脚本升级。
+  直接从下载 DMG 拖拽到应用程序，仍可能被 macOS Gatekeeper 拦截。
+- DEV-ADHOC：没有稳定签名身份，仅供测试；下载后可能被拦截。
+  若要求固定签名，请先配置 KIRI_PERSONAL_SIGN_* Secrets。
+  这不是应用损坏，标准 DMG 不能代替 Apple 公证。
+不要全局关闭 macOS 安全保护。
 
 Check the artifact's SIGNING CLASS in its filename:
 - DeveloperID-notarized: Apple Developer ID signed, notarized and stapled.
-- DEV-ADHOC: code-signed for development only, not notarized;
-  macOS Gatekeeper may block launching a freshly downloaded copy.
+- DEV-PERSONAL-CERT: same private signing cert across builds; use the
+  once-authorized certificate-pinning installer for subsequent updates.
+  Directly opening quarantined downloaded DMGs may still trigger Gatekeeper.
+- DEV-ADHOC: no stable signer; development-only.
 Do not disable system-wide macOS security to run a development build.
 
 Docker 数据存于 ~/.kiri-moby/，不会随着 App 的替换而删除。

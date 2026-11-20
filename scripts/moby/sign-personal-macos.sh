@@ -13,6 +13,10 @@ for key in "${keys[@]}"; do
   [[ -z "${!key:-}" ]] || present=$((present+1))
 done
 if ((present == 0)); then
+  if [[ "${KIRI_REQUIRE_PERSONAL_SIGNING:-false}" == true ]]; then
+    echo "RELEASE BLOCKED: personal signing is required but P12 signing secrets are missing" >&2
+    exit 2
+  fi
   echo "No persistent personal signer: development build remains ad-hoc (signature identity changes on rebuild)."
   [[ -z "${GITHUB_OUTPUT:-}" ]] || echo "signed=false" >> "$GITHUB_OUTPUT"
   exit 0
@@ -48,9 +52,17 @@ security unlock-keychain -p "$keychain_pw" "$keychain"
 security list-keychains -d user -s "$keychain" "$login"
 security default-keychain -d user -s "$keychain"
 security import "$work/personal.p12" -k "$keychain" -P "$KIRI_PERSONAL_SIGN_P12_PASSWORD" -T /usr/bin/codesign
+# Self-signed personal identities don't chain to Apple by default. Trust them
+# ONLY within this temporary CI code-signing keychain, not on the user's Mac.
+printf '%s' "$KIRI_PERSONAL_SIGN_P12_PASSWORD" > "$work/p12-password"
+openssl pkcs12 -in "$work/personal.p12" -clcerts -nokeys \
+  -passin "file:$work/p12-password" -out "$work/chain.pem"
+openssl x509 -in "$work/chain.pem" -out "$work/leaf.pem"
+# Self-signed code identities are discoverable without -v even if no
+# system-wide trust policy recognizes them. Never change the user's trust.
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_pw" "$keychain" >/dev/null
 # One dedicated personal P12 should contain exactly one code-signing identity.
-identity_list="$(security find-identity -v -p codesigning "$keychain" | awk '/^[[:space:]]*[0-9]+\) [0-9A-Fa-f]{40}/ {print $2}')"
+identity_list="$(security find-identity -p codesigning "$keychain" | awk '/^[[:space:]]*[0-9]+\)/ {print $2}')"
 count="$(printf '%s\n' "$identity_list" | grep -Ec '^[0-9A-Fa-f]{40}$' || :)"
 if [[ "$count" != 1 ]]; then
   echo "Expected one valid personal code-signing identity in the P12, got $count." >&2
