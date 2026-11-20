@@ -650,14 +650,19 @@ private struct ContainerLogWindow: View {
             .padding(.horizontal, 13)
             .frame(height: 50)
             ScrollViewReader { proxy in
-                ScrollView([.vertical, .horizontal]) {
-                    Text(session.content.isEmpty ? "等待容器日志…" : session.content)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(.white)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .padding(12)
-                    Color.clear.frame(height: 1).id("log-bottom")
+                ScrollView(.horizontal) {
+                    ScrollView(.vertical) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(session.content.isEmpty ? "等待容器日志…" : session.content)
+                                .font(.system(size: 13, design: .monospaced))
+                                .foregroundStyle(.white)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(12)
+                            Color.clear.frame(height: 1).id("log-bottom")
+                        }
+                        .frame(minWidth: 700, alignment: .topLeading)
+                    }
                 }
                 .background(Color(red: 0.07, green: 0.08, blue: 0.10))
                 .onChange(of: session.content) { _, _ in
@@ -913,14 +918,19 @@ private struct ExecTerminalView: View {
             .padding(.horizontal, 13)
             .frame(height: 50)
             ScrollViewReader { proxy in
-                ScrollView([.vertical, .horizontal]) {
-                    Text(terminal.output.isEmpty ? "正在连接容器…" : terminal.output)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(.white)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .padding(14)
-                    Color.clear.frame(height: 1).id("terminal-bottom")
+                ScrollView(.horizontal) {
+                    ScrollView(.vertical) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(terminal.output.isEmpty ? "正在连接容器…" : terminal.output)
+                                .font(.system(size: 13, design: .monospaced))
+                                .foregroundStyle(.white)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(14)
+                            Color.clear.frame(height: 1).id("terminal-bottom")
+                        }
+                        .frame(minWidth: 660, alignment: .topLeading)
+                    }
                 }
                 .onChange(of: terminal.output) { _, _ in
                     proxy.scrollTo("terminal-bottom", anchor: .bottom)
