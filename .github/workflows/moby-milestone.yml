@@ -290,6 +290,8 @@ jobs:
           KIRI_PERSONAL_SIGN_P12_BASE64: ${{ secrets.KIRI_PERSONAL_SIGN_P12_BASE64 }}
           KIRI_PERSONAL_SIGN_P12_PASSWORD: ${{ secrets.KIRI_PERSONAL_SIGN_P12_PASSWORD }}
           KIRI_PERSONAL_SIGN_CERT_SHA256: ${{ secrets.KIRI_PERSONAL_SIGN_CERT_SHA256 }}
+          # Public root CA certificate for a private, CA-issued signer.
+          KIRI_PERSONAL_SIGN_CA_PEM_BASE64: ${{ secrets.KIRI_PERSONAL_SIGN_CA_PEM_BASE64 }}
           # This is a private personal build: never silently fall back to
           # per-build ad-hoc signing. Can be overridden explicitly with the
           # repository variable KIRI_REQUIRE_PERSONAL_SIGNING=false.
