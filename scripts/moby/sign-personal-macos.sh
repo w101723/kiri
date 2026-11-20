@@ -130,14 +130,15 @@ fi
 # Self-signed code identities are discoverable without -v even if no
 # system-wide trust policy recognizes them. Never change the user's trust.
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_pw" "$keychain" >/dev/null
-# One dedicated personal P12 should contain exactly one code-signing identity.
-identity_list="$(security find-identity -p codesigning "$keychain" | awk '/^[[:space:]]*[0-9]+\)/ {print $2}')"
-count="$(printf '%s\n' "$identity_list" | grep -Ec '^[0-9A-Fa-f]{40}$' || :)"
-if [[ "$count" != 1 ]]; then
-  echo "Expected one valid personal code-signing identity in the P12, got $count." >&2
+# Keychains may contain other imported identities (for example, when
+# signing with two test certificates on the same ephemeral runner). Select
+# the exact SHA-1 certificate identity from this P12; NEVER choose the first
+# available signer by display name or assume there is only one identity.
+identity="$(openssl x509 -in "$work/leaf.pem" -outform DER | shasum -a 1 | awk '{print toupper($1)}')"
+if ! security find-identity -p codesigning "$keychain" | grep -Fqi "$identity"; then
+  echo "P12 leaf certificate does not have a usable code-signing private key in the ephemeral Keychain." >&2
   exit 2
 fi
-identity="$(printf '%s\n' "$identity_list" | grep -E '^[0-9A-Fa-f]{40}$')"
 sign() {
   codesign --force --sign "$identity" --keychain "$keychain" --timestamp=none --options runtime "$@" 
 }
