@@ -71,6 +71,8 @@ test -s "$out/Image"
 test -s "$out/initramfs.cpio"
 test "$(stat -c '%s' "$out/initramfs.cpio")" -lt 16777216
 ! ( cpio -it --quiet < "$out/initramfs.cpio" | grep -Eq '(^|/)(dockerd|containerd|runc)$' )
+cp "$out/.config" "$out/kernel.config"
+rm -f "$out/.config"
 printf '%s\n' "RAM-only MMIO/Free Page Reporting Linux guest (no persistent storage)" > "$out/README.txt"
-(cd "$out" && sha256sum Image initramfs.cpio .config README.txt > SHA256SUMS)
+(cd "$out" && sha256sum Image initramfs.cpio kernel.config README.txt > SHA256SUMS)
 echo "Built isolated lab Guest: $out (MMIO, balloon and page reporting enabled)"
