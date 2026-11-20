@@ -561,6 +561,23 @@ private final class ContainerLogSession: ObservableObject {
     }
 
     func refresh(containerID: String) async {
+        #if KIRI_UI_PREVIEW
+        if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+            if !content.isEmpty { return }
+            content = """
+            2026-01-20 10:14:32 [notice] nginx/1.27.2
+            2026-01-20 10:14:32 [notice] built with OpenSSL 3.3
+            2026-01-20 10:14:32 [notice] using the "epoll" event method
+            2026-01-20 10:14:32 [notice] start worker processes
+            2026-01-20 10:14:32 [notice] start worker process 29
+            2026-01-20 10:14:32 [notice] start worker process 30
+            2026-01-20 10:14:32 [notice] start worker process 31
+            2026-01-20 10:16:08 172.17.0.1 - - "GET / HTTP/1.1" 200
+            2026-01-20 10:16:08 172.17.0.1 - - "GET /favicon.ico" 404
+            """
+            return
+        }
+        #endif
         guard !refreshing, following else { return }
         refreshing = true
         defer { refreshing = false }
@@ -693,7 +710,20 @@ private final class FloatingWindowRegistry: NSObject, NSWindowDelegate {
         windows[key] = window
         window.isReleasedWhenClosed = false
         window.delegate = self
-        window.center()
+        // Put the console lower-left and logs lower-right like the approved
+        // reference image. Clamp them to the visible screen on smaller Macs.
+        let screen = NSScreen.main?.visibleFrame ?? NSRect(
+            x: 0, y: 0, width: 1440, height: 900)
+        let main = NSApp.windows.first(where: {
+            $0 !== window && !$0.title.hasPrefix("Exec:") &&
+            !$0.title.hasPrefix("日志:")
+        })?.frame ?? screen
+        let x = key.hasPrefix("exec:") ?
+            main.minX + 46 : main.maxX - window.frame.width + 20
+        let y = main.minY + (key.hasPrefix("exec:") ? 55 : 135)
+        window.setFrameOrigin(NSPoint(
+            x: max(screen.minX + 8, min(x, screen.maxX - window.frame.width - 8)),
+            y: max(screen.minY + 8, min(y, screen.maxY - window.frame.height - 8))))
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -709,7 +739,7 @@ private final class FloatingWindowRegistry: NSObject, NSWindowDelegate {
 @MainActor
 private func openContainerLogs(_ containerID: String, name: String) {
     let window = NSWindow(
-        contentRect: NSRect(x: 0, y: 0, width: 790, height: 535),
+        contentRect: NSRect(x: 0, y: 0, width: 790, height: 460),
         styleMask: [.titled, .closable, .miniaturizable, .resizable],
         backing: .buffered, defer: false)
     window.title = "日志: " + name
@@ -732,6 +762,27 @@ private final class ExecTerminalSession: ObservableObject {
 
     func start(containerID: String) {
         guard !running else { return }
+        #if KIRI_UI_PREVIEW
+        if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+            running = true
+            output = """
+            / # cat /etc/os-release
+            PRETTY_NAME="Alpine Linux v3.19"
+            NAME="Alpine Linux"
+            VERSION_ID="3.19.1"
+            ID=alpine
+            HOME_URL="https://alpinelinux.org/"
+
+            / # ls -l /usr/share/nginx/html
+            total 8
+            -rw-r--r-- 1 root root 615 Jan 20 10:14 50x.html
+            -rw-r--r-- 1 root root 615 Jan 20 10:14 index.html
+
+            / # 
+            """
+            return
+        }
+        #endif
         guard !containerID.isEmpty, containerID.count <= 64,
               containerID.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) || (65...70).contains($0) }) else {
             output = "无效的容器 ID"
@@ -900,7 +951,7 @@ private struct ExecTerminalView: View {
 @MainActor
 private func openExecTerminal(_ containerID: String, name: String) {
     let window = NSWindow(
-        contentRect: NSRect(x: 0, y: 0, width: 800, height: 550),
+        contentRect: NSRect(x: 0, y: 0, width: 735, height: 440),
         styleMask: [.titled, .closable, .miniaturizable, .resizable],
         backing: .buffered, defer: false)
     window.title = "Exec: " + name + " (交互式终端)"
@@ -954,6 +1005,13 @@ private struct RootView: View {
         .frame(minWidth: 760, minHeight: 480)
         .task {
             model.begin()
+            #if KIRI_UI_PREVIEW
+            if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+                try? await Task.sleep(for: .seconds(1))
+                openContainerLogs("a000000000000000", name: "nginx")
+                openExecTerminal("a000000000000000", name: "nginx")
+            }
+            #endif
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(10))
                 if Task.isCancelled { break }
