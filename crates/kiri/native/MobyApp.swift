@@ -2946,6 +2946,11 @@ private struct RootView: View {
                     }
                 })
                 .tag(item.Id)
+                .onTapGesture(count: 2) {
+                    if item.State == "running" {
+                        openConsole(.exec, containerID: item.Id, name: item.title)
+                    }
+                }
                 .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
                 .contextMenu {
                     Button("概览") {
@@ -2971,7 +2976,7 @@ private struct RootView: View {
                     }
                     Divider()
                     Button("删除容器", role: .destructive) {
-                        if model.confirm("删除 \\(item.title)？",
+                        if model.confirm("删除 \(item.title)？",
                                          detail: "将移除容器，但不会自动删除命名数据卷。") {
                             containerOp("remove", item)
                         }
