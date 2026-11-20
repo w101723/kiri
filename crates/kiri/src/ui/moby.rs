@@ -42,7 +42,8 @@ fn host_memory_limit() -> u64 {
     let host = if rc == 0 && length == std::mem::size_of::<u64>() {
         bytes / (1024 * 1024)
     } else { 8 * 1024 };
-    (host.saturating_sub(1024).min(65_536).max(1024) / 256) * 256
+    (host.saturating_sub(1024).min(host.saturating_mul(3) / 4)
+        .min(65_536).max(1024) / 256) * 256
 }
 #[cfg(not(target_os = "macos"))]
 fn host_memory_limit() -> u64 { 65_536 }
