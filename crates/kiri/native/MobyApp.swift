@@ -228,7 +228,9 @@ private final class MobyModel: ObservableObject {
     @Published var page: Page = .containers
     @Published var search = ""
     @Published var snapshot: Snapshot?
-    @Published var busy = false
+    // Keep unrelated Docker operations responsive; only deduplicate identical requests.
+    @Published private(set) var activeOperations = Set<String>()
+    private var vmTransitionInProgress = false
     @Published var error: String?
     @Published var result: TextResult?
     @Published var toastMessage: String?
@@ -286,13 +288,25 @@ private final class MobyModel: ObservableObject {
     }
 
     func perform(_ args: [String], title: String, showResult: Bool = true) {
-        guard !busy else { return }
-        busy = true
+        let operationKey = args.joined(separator: "\u{1F}")
+        let vmTransition = args.first == "start" || args.first == "stop"
+            || args.first == "restart"
+        guard !activeOperations.contains(operationKey) else {
+            notify("\(title): 操作正在执行，请稍候")
+            return
+        }
+        guard !vmTransition || !vmTransitionInProgress else {
+            notify("VM 正在切换状态，请等待完成")
+            return
+        }
+        activeOperations.insert(operationKey)
+        if vmTransition { vmTransitionInProgress = true }
         Task {
             let answer = await Task.detached(priority: .userInitiated) {
                 Result { try request(args, as: Reply.self) }
             }.value
-            busy = false
+            activeOperations.remove(operationKey)
+            if vmTransition { vmTransitionInProgress = false }
             switch answer {
             case .success(let reply):
                 if reply.ok {
@@ -477,7 +491,10 @@ private struct RootView: View {
                         }
                     }
                     .padding(20)
-                    .frame(width: 650, height: 420)
+                    .frame(maxWidth: 650, maxHeight: 420)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 24)
                     .background(KiriPalette.panel(model.isLight))
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12)
