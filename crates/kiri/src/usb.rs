@@ -8,9 +8,6 @@
 //! `/dev/bus/usb/…`) for `docker run --device`. `kiri usb detach` gives it
 //! back to macOS.
 //!
-//! On Linux the containers run on the host's own kernel and already see its
-//! devices; on Windows, WSL 2 gets them through usbipd-win.
-
 use std::io;
 
 #[cfg(target_os = "macos")]
@@ -21,10 +18,6 @@ pub mod helper;
 pub mod mac;
 #[cfg(target_os = "macos")]
 mod usbip;
-/// Where a device shows up in Linux (shared with the guest agent).
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-pub mod sysfs;
-
 const USAGE: &str = "usage: kiri usb [list] | attach DEVICE | detach DEVICE | helper remove\n\
     DEVICE is a location (0x02114000), vendor:product (1532:00d7) or part of the name";
 
@@ -152,46 +145,6 @@ fn detach(which: &str) -> io::Result<()> {
     detach_location(&d.location())?;
     println!("{} is back on the Mac.", d.name);
     Ok(())
-}
-
-// Linux: the containers share the host's kernel, so there is nothing to
-// pass through. Windows runs this in WSL 2, where usbipd-win attaches.
-#[cfg(not(target_os = "macos"))]
-fn list() -> io::Result<()> {
-    let wsl = std::fs::read_to_string("/proc/version").is_ok_and(|v| v.contains("microsoft"));
-    let dir = std::path::Path::new("/sys/bus/usb/devices");
-    // WSL has no USB bus at all until usbipd-win attaches a device.
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        if wsl {
-            println!("No USB devices are attached to WSL. In Windows: usbipd list, then usbipd attach --wsl --busid <BUSID>.");
-        } else {
-            println!("No USB devices.");
-        }
-        return Ok(());
-    };
-    drop(entries);
-    let devices = sysfs_devices(dir);
-    println!("{:<22} {:<10} {:<14} NAME", "DEVICE", "ID", "TTY");
-    for d in devices {
-        println!("{:<22} {:<10} {:<14} {}", d.node, d.id, d.tty.as_deref().unwrap_or("-"), d.name);
-    }
-    println!("\nContainers already see these devices: docker run --device /dev/ttyUSB0 …");
-    if wsl {
-        println!("To add one from Windows: usbipd attach --wsl --busid <BUSID>");
-    }
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn attach(_: &str) -> io::Result<()> {
-    Err(io::Error::other(
-        "nothing to attach here: containers already see this machine's USB devices (docker run --device /dev/ttyUSB0 …). Under Windows, attach the device to WSL with usbipd-win first.",
-    ))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn detach(_: &str) -> io::Result<()> {
-    attach("")
 }
 
 /// What a device is, for its icon in the window: from its interfaces'
@@ -341,154 +294,3 @@ pub fn ui_detach(key: &str) -> io::Result<String> {
     Ok("Given back to the Mac".into())
 }
 
-/// Linux: the host's devices, which containers already see.
-#[cfg(not(target_os = "macos"))]
-pub fn ui_list() -> serde_json::Value {
-    let rows: Vec<serde_json::Value> = sysfs_devices(std::path::Path::new("/sys/bus/usb/devices"))
-        .into_iter()
-        .map(|d| serde_json::json!({"key": d.node, "name": d.name, "id": d.id, "speed": d.speed, "state": "shared", "kind": d.kind, "path": d.tty.unwrap_or(d.node), "maker": d.maker, "serial": d.serial, "bus": d.bus, "dev": d.dev, "paths": d.paths}))
-        .collect();
-    serde_json::json!({"type": "usb", "devices": rows, "can": "none",
-        "note": "Containers run on this computer's own kernel, so they see its USB devices as they are: docker run --device with the path shown."})
-}
-
-/// The engine's `GET /kiri/usb/nodes` on Linux and in WSL: each device's
-/// id, serial number and nodes, so the Windows window can say where a
-/// device it attached to WSL shows up.
-#[cfg(not(target_os = "macos"))]
-pub fn host_nodes() -> serde_json::Value {
-    serde_json::Value::Array(
-        sysfs_devices(std::path::Path::new("/sys/bus/usb/devices"))
-            .into_iter()
-            .map(|d| serde_json::json!({"id": d.id, "serial": d.serial, "busid": d.busid, "paths": d.paths}))
-            .collect(),
-    )
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn ui_attach(_: &str) -> io::Result<String> {
-    attach("").map(|_| String::new())
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn ui_detach(_: &str) -> io::Result<String> {
-    attach("").map(|_| String::new())
-}
-
-#[cfg(not(target_os = "macos"))]
-struct SysDevice {
-    node: String,
-    id: String,
-    name: String,
-    speed: String,
-    tty: Option<String>,
-    kind: &'static str,
-    maker: String,
-    serial: String,
-    bus: u32,
-    dev: u32,
-    /// Its name in sysfs (`1-2`).
-    busid: String,
-    /// `[{path, what}]`, from `sysfs::nodes`.
-    paths: Vec<serde_json::Value>,
-}
-
-/// The USB devices under a sysfs bus directory, hubs left out.
-#[cfg(not(target_os = "macos"))]
-fn sysfs_devices(dir: &std::path::Path) -> Vec<SysDevice> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut out = Vec::new();
-    for e in entries.flatten() {
-        let p = e.path();
-        let read = |f: &str| std::fs::read_to_string(p.join(f)).map(|s| s.trim().to_owned()).unwrap_or_default();
-        let (vid, pid) = (read("idVendor"), read("idProduct"));
-        if vid.is_empty() || read("bDeviceClass") == "09" {
-            continue;
-        }
-        let maker = read("manufacturer");
-        let name = [maker.clone(), read("product")].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
-        let speed = match read("speed").as_str() {
-            "1.5" => "low",
-            "12" => "full",
-            "480" => "high",
-            "5000" => "super",
-            "10000" | "20000" => "super+",
-            _ => "",
-        };
-        let hex = |v: String| u8::from_str_radix(&v, 16).unwrap_or(0);
-        let mut ifs = Vec::new();
-        for i in std::fs::read_dir(&p).into_iter().flatten().flatten() {
-            let ip = i.path();
-            let r = |f: &str| std::fs::read_to_string(ip.join(f)).map(|s| s.trim().to_owned()).unwrap_or_default();
-            if ip.join("bInterfaceClass").exists() {
-                ifs.push((hex(r("bInterfaceNumber")), hex(r("bInterfaceClass")), hex(r("bInterfaceSubClass")), hex(r("bInterfaceProtocol"))));
-            }
-        }
-        let kind = kind_of(hex(read("bDeviceClass")), &ifs, u16::from_str_radix(&vid, 16).unwrap_or(0), &name);
-        out.push(SysDevice {
-            kind,
-            node: format!("/dev/bus/usb/{:0>3}/{:0>3}", read("busnum"), read("devnum")),
-            id: format!("{vid}:{pid}"),
-            name: if name.is_empty() { "USB device".into() } else { name },
-            speed: speed.into(),
-            tty: tty_of(&p),
-            serial: read("serial"),
-            bus: read("busnum").parse().unwrap_or(0),
-            dev: read("devnum").parse().unwrap_or(0),
-            busid: e.file_name().to_string_lossy().into_owned(),
-            paths: sysfs::nodes(&p).into_iter().map(|n| serde_json::json!({"path": n.path, "what": n.what})).collect(),
-            maker,
-        });
-    }
-    out.sort_by(|a, b| a.node.cmp(&b.node));
-    out
-}
-
-/// A serial device's tty (/dev/ttyUSB0, /dev/ttyACM0), from its interfaces.
-#[cfg(not(target_os = "macos"))]
-fn tty_of(dev: &std::path::Path) -> Option<String> {
-    for iface in std::fs::read_dir(dev).ok()?.flatten() {
-        let ip = iface.path();
-        // cdc-acm: <iface>/tty/ttyACM0; usb-serial: <iface>/ttyUSB0.
-        let tty_dir = std::fs::read_dir(ip.join("tty")).ok().and_then(|mut d| d.next()).and_then(|e| e.ok()).map(|e| e.file_name());
-        let direct = std::fs::read_dir(&ip).ok().and_then(|d| d.flatten().map(|e| e.file_name()).find(|n| n.to_string_lossy().starts_with("ttyUSB")));
-        if let Some(n) = tty_dir.or(direct) {
-            return Some(format!("/dev/{}", n.to_string_lossy()));
-        }
-    }
-    None
-}
-
-#[cfg(all(test, not(target_os = "macos")))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sysfs_lists_devices_not_hubs_with_their_tty() {
-        let d = std::env::temp_dir().join(format!("kiri-usb-sysfs-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        let dev = |name: &str, files: &[(&str, &str)]| {
-            let p = d.join(name);
-            std::fs::create_dir_all(&p).unwrap();
-            for (f, v) in files {
-                std::fs::write(p.join(f), format!("{v}\n")).unwrap();
-            }
-            p
-        };
-        dev("usb1", &[("idVendor", "1d6b"), ("idProduct", "0002"), ("bDeviceClass", "09"), ("busnum", "1"), ("devnum", "1")]);
-        let s = dev("1-1", &[("idVendor", "10c4"), ("idProduct", "ea60"), ("bDeviceClass", "00"), ("busnum", "1"), ("devnum", "3"), ("product", "CP2102"), ("speed", "12"), ("serial", "0001")]);
-        std::fs::create_dir_all(s.join("1-1:1.0/ttyUSB0")).unwrap();
-        dev("1-1:1.0", &[]);
-        let got = sysfs_devices(&d);
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].node, "/dev/bus/usb/001/003");
-        assert_eq!(got[0].id, "10c4:ea60");
-        assert_eq!(got[0].speed, "full");
-        assert_eq!(got[0].tty.as_deref(), Some("/dev/ttyUSB0"));
-        assert_eq!((got[0].bus, got[0].dev, got[0].serial.as_str()), (1, 3, "0001"));
-        assert_eq!(got[0].busid, "1-1");
-        let paths: Vec<&str> = got[0].paths.iter().filter_map(|p| p["path"].as_str()).collect();
-        assert_eq!(paths, ["/dev/ttyUSB0", "/dev/bus/usb/001/003"]);
-        let _ = std::fs::remove_dir_all(&d);
-    }
-}
