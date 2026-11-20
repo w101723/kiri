@@ -59,13 +59,14 @@ jobs:
           <?xml version="1.0" encoding="UTF-8"?>
           <plist version="1.0"><dict>
           <key>CFBundleIdentifier</key><string>dev.kiri.app.moby</string>
-          <key>CFBundleExecutable</key><string>kiri</string>
+          <key>CFBundleExecutable</key><string>kiri-moby-ui</string>
           <key>CFBundlePackageType</key><string>APPL</string>
           <key>CFBundleVersion</key><string>1</string>
           </dict></plist>
           PLIST
           printf 'int main(void){return 0;}\n' > "$RUNNER_TEMP/kiri-signing-probe.c"
           clang -arch x86_64 -o "$app/Contents/MacOS/kiri" "$RUNNER_TEMP/kiri-signing-probe.c"
+          cp "$app/Contents/MacOS/kiri" "$app/Contents/MacOS/kiri-moby-ui"
           for bin in kiri-moby-host docker cli-plugins/docker-compose cli-plugins/docker-buildx; do
             cp "$app/Contents/MacOS/kiri" "$app/Contents/Resources/bin/$bin"
           done
