@@ -873,13 +873,13 @@ private struct RootView: View {
             ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 0) {
-                        tableTitle("NAME", width: 180)
-                        tableTitle("STATE", width: 130)
-                        tableTitle("PORTS", width: 135)
-                        tableTitle("SHARE", width: 50)
-                        tableTitle("SIZE", width: 75)
-                        tableTitle("CREATED", width: 94)
-                        tableTitle("ACTIONS", width: 325)
+                        tableTitle("NAME", width: 152)
+                        tableTitle("STATE", width: 110)
+                        tableTitle("PORTS", width: 120)
+                        tableTitle("SHARE", width: 38)
+                        tableTitle("SIZE", width: 62)
+                        tableTitle("CREATED", width: 80)
+                        tableTitle("ACTIONS", width: 280)
                     }
                     tableDivider
                     if filteredContainers.isEmpty {
@@ -922,28 +922,28 @@ private struct RootView: View {
                                             .font(.system(size: 11)).lineLimit(1)
                                     }
                                     .padding(.leading, nested ? 18 : 0),
-                                    width: 180)
+                                    width: 152)
                                 tableValue(
                                     HStack(spacing: 7) {
                                         Circle().fill(item.State == "running" ?
                                             KiriPalette.mint : KiriPalette.muted(model.isLight))
                                             .frame(width: 7, height: 7)
                                         Text(item.Status ?? item.State ?? "—").lineLimit(2)
-                                    }, width: 130)
-                                tableValue(portLinks(item.Ports), width: 135)
-                                tableValue(Text("—"), width: 50)
+                                    }, width: 110)
+                                tableValue(portLinks(item.Ports), width: 120)
+                                tableValue(Text("—"), width: 38)
                                 tableValue(
                                     Text((item.SizeRw ?? 0) > 0 ?
-                                         sizeLabel(item.SizeRw) : "—"), width: 75)
-                                tableValue(Text(dateLabel(item.Created)), width: 94)
-                                tableValue(containerButtons(item), width: 325)
+                                         sizeLabel(item.SizeRw) : "—"), width: 62)
+                                tableValue(Text(dateLabel(item.Created)), width: 80)
+                                tableValue(containerButtons(item), width: 280)
                             }
                             .frame(minHeight: 59)
                             tableDivider
                         }
                     }
                 }
-                .frame(minWidth: 1125)
+                .frame(minWidth: 1010)
             }
         }
         .background(KiriPalette.bg(model.isLight))
