@@ -841,60 +841,6 @@ private struct ContainerLogWindow: View {
     }
 }
 
-// NSWindow instances must be retained while visible: retaining only a local
-// variable causes sporadic window/session loss under AppKit lifetime rules.
-@MainActor
-private final class FloatingWindowRegistry: NSObject, NSWindowDelegate {
-    static let shared = FloatingWindowRegistry()
-    private var windows: [String: NSWindow] = [:]
-
-    func show(_ window: NSWindow, key: String) {
-        if let existing = windows[key] {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        windows[key] = window
-        window.isReleasedWhenClosed = false
-        window.delegate = self
-        // Put the console lower-left and logs lower-right like the approved
-        // reference image. Clamp them to the visible screen on smaller Macs.
-        let screen = NSScreen.main?.visibleFrame ?? NSRect(
-            x: 0, y: 0, width: 1440, height: 900)
-        let main = NSApp.windows.first(where: {
-            $0 !== window && !$0.title.hasPrefix("Exec:") &&
-            !$0.title.hasPrefix("日志:")
-        })?.frame ?? screen
-        let x = key.hasPrefix("exec:") ?
-            main.minX + 46 : main.maxX - window.frame.width + 20
-        let y = main.minY + (key.hasPrefix("exec:") ? 55 : 135)
-        window.setFrameOrigin(NSPoint(
-            x: max(screen.minX + 8, min(x, screen.maxX - window.frame.width - 8)),
-            y: max(screen.minY + 8, min(y, screen.maxY - window.frame.height - 8))))
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        guard let closing = notification.object as? NSWindow else { return }
-        if let entry = windows.first(where: { $0.value === closing }) {
-            windows.removeValue(forKey: entry.key)
-        }
-    }
-}
-
-@MainActor
-private func openContainerLogs(_ containerID: String, name: String) {
-    let window = NSWindow(
-        contentRect: NSRect(x: 0, y: 0, width: 760, height: 460),
-        styleMask: [.titled, .closable, .miniaturizable, .resizable],
-        backing: .buffered, defer: false)
-    window.title = "日志: " + name
-    window.contentView = NSHostingView(rootView: ContainerLogWindow(
-        containerID: containerID, containerName: name))
-    FloatingWindowRegistry.shared.show(window, key: "logs:" + containerID)
-}
-
 // Dedicated macOS PTY session. The child runs the signed Kiri CLI which
 // delegates to docker exec -it over Kiri's private Docker socket.
 @MainActor
@@ -1101,18 +1047,6 @@ private struct ExecTerminalView: View {
     }
 }
 
-@MainActor
-private func openExecTerminal(_ containerID: String, name: String) {
-    let window = NSWindow(
-        contentRect: NSRect(x: 0, y: 0, width: 660, height: 440),
-        styleMask: [.titled, .closable, .miniaturizable, .resizable],
-        backing: .buffered, defer: false)
-    window.title = "Exec: " + name + " (交互式终端)"
-    window.contentView = NSHostingView(rootView: ExecTerminalView(
-        containerID: containerID, containerName: name))
-    FloatingWindowRegistry.shared.show(window, key: "exec:" + containerID)
-}
-
 private struct ConsoleSession: Codable, Hashable, Identifiable {
     enum Kind: String, Codable { case exec, logs }
     let kind: Kind
@@ -1126,10 +1060,18 @@ private struct ConsoleSession: Codable, Hashable, Identifiable {
 
 /// Native macOS tabbing applies only to real secondary windows, not an
 /// artificial set of traffic lights inside the workspace.
+private final class NativeTabbedWindowAnchor: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.tabbingMode = .preferred
+    }
+}
 private struct WindowTabbingConfigurator: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
-    func updateNSView(_ view: NSView, context: Context) {
-        DispatchQueue.main.async { view.window?.tabbingMode = .preferred }
+    func makeNSView(context: Context) -> NativeTabbedWindowAnchor {
+        NativeTabbedWindowAnchor(frame: .zero)
+    }
+    func updateNSView(_ view: NativeTabbedWindowAnchor, context: Context) {
+        view.window?.tabbingMode = .preferred
     }
 }
 
@@ -1499,99 +1441,6 @@ private struct RootView: View {
                       Double(usedMiB) / 1024, Double(limit) / 1024)
     }
 
-    private var titleStrip: some View {
-        HStack(spacing: 12) {
-            Color.clear.frame(width: 68, height: 1) // native traffic lights
-            Image(systemName: "shippingbox.fill")
-                .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(KiriPalette.blue)
-            Text("Kiri – Moby")
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(KiriPalette.title(model.isLight))
-            Spacer(minLength: 12)
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(model.online ? Color.green : Color.gray)
-                    .frame(width: 9, height: 9)
-                Text(model.online ? "VM 运行中" : "VM 未连接")
-            }
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(model.online ? Color(red: 0.08, green: 0.49, blue: 0.18) :
-                KiriPalette.muted(model.isLight))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(model.online ? Color.green.opacity(0.11) :
-                KiriPalette.raised(model.isLight))
-            .clipShape(Capsule())
-            Rectangle().fill(KiriPalette.border(model.isLight))
-                .frame(width: 1, height: 16)
-            Text("CPU \(model.snapshot?.info?.NCPU ?? model.snapshot?.vm_config?.cpus ?? 0) 核")
-            Rectangle().fill(KiriPalette.border(model.isLight))
-                .frame(width: 1, height: 16)
-            Text("内存 \(liveMemoryLabel)")
-            Rectangle().fill(KiriPalette.border(model.isLight))
-                .frame(width: 1, height: 16)
-            Text("磁盘 \(diskFreeLabel) 可用")
-            Button { model.page = .settings } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 17))
-                    .frame(width: 36, height: 32)
-            }
-            .help("设置")
-            Button {
-                let alert = NSAlert()
-                alert.messageText = "Kiri Moby"
-                alert.informativeText = "Apple Silicon 原生 Docker 虚拟机管理器。\nCompose 项目按容器标签自动分组，资源限制在设置中调整。"
-                alert.runModal()
-            } label: {
-                Image(systemName: "questionmark.circle")
-                    .font(.system(size: 17))
-                    .frame(width: 32, height: 32)
-            }
-            .help("帮助")
-        }
-        .font(.system(size: 12))
-        .foregroundStyle(KiriPalette.muted(model.isLight))
-        .buttonStyle(.plain)
-        .padding(.horizontal, 12)
-        .frame(height: 58)
-        .background(KiriPalette.side(model.isLight))
-    }
-
-    private func navButton(_ page: Page) -> some View {
-        let active = model.page == page
-        return Button { model.page = page } label: {
-            HStack(spacing: 12) {
-                Image(systemName: page.symbol)
-                    .font(.system(size: 16, weight: .medium))
-                    .frame(width: 22)
-                if !model.sidebarCollapsed {
-                    Text(page.displayName).lineLimit(1)
-                        .font(.system(size: 13, weight: active ? .semibold : .medium))
-                    Spacer(minLength: 2)
-                    if let count = navCount(page) {
-                        Text("\(count)")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(active ? .white : KiriPalette.muted(model.isLight))
-                            .frame(minWidth: 20, minHeight: 20)
-                            .padding(.horizontal, 2)
-                            .background(active ? Color.black.opacity(0.14) :
-                                KiriPalette.raised(model.isLight))
-                            .clipShape(Capsule())
-                    }
-                }
-            }
-            .foregroundStyle(active ? .white : KiriPalette.title(model.isLight))
-            .padding(.horizontal, 13)
-            .frame(maxWidth: .infinity, minHeight: 43, alignment: .leading)
-            .background(active ? KiriPalette.blue : .clear)
-            .clipShape(RoundedRectangle(cornerRadius: 7))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(page.displayName)
-    }
-
     private func navCount(_ page: Page) -> Int? {
         switch page {
         case .containers: model.containers.count
@@ -1601,83 +1450,6 @@ private struct RootView: View {
         case .compose: Set(model.containers.compactMap(\.composeProject)).count
         default: nil
         }
-    }
-
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            if !model.sidebarCollapsed {
-                Text("资源")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(KiriPalette.faint(model.isLight))
-                    .padding(.horizontal, 11)
-                    .frame(height: 29, alignment: .leading)
-            }
-            ForEach([Page.containers, .images, .volumes, .networks, .compose, .builds],
-                    id: \.self) { page in
-                navButton(page)
-            }
-            if !model.sidebarCollapsed {
-                Text("系统")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(KiriPalette.faint(model.isLight))
-                    .padding(.horizontal, 11)
-                    .padding(.top, 24)
-                    .frame(height: 46, alignment: .bottomLeading)
-            } else {
-                Divider().padding(.vertical, 12)
-            }
-            Button { model.page = .overview } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "desktopcomputer")
-                        .font(.system(size: 16))
-                        .frame(width: 22)
-                    if !model.sidebarCollapsed {
-                        Text("虚拟机 (Moby)")
-                            .font(.system(size: 13, weight: .medium))
-                        Spacer(minLength: 2)
-                        Circle()
-                            .fill(model.online ? Color.green : Color.gray)
-                            .frame(width: 9, height: 9)
-                    }
-                }
-                .foregroundStyle(model.page == .overview ? .white :
-                    KiriPalette.title(model.isLight))
-                .padding(.horizontal, 13)
-                .frame(maxWidth: .infinity, minHeight: 43, alignment: .leading)
-                .background(model.page == .overview ? KiriPalette.blue : .clear)
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-            }
-            .buttonStyle(.plain)
-            .help("虚拟机")
-            navButton(.settings)
-            Spacer(minLength: 14)
-            HStack {
-                Button { model.isLight.toggle() } label: {
-                    Image(systemName: model.isLight ? "moon.stars" : "sun.max")
-                }
-                .help("切换外观")
-                if !model.sidebarCollapsed {
-                    Spacer()
-                    Button { model.sidebarCollapsed.toggle() } label: {
-                        Image(systemName: "sidebar.left")
-                    }
-                    .help("折叠侧边栏")
-                } else {
-                    Button { model.sidebarCollapsed.toggle() } label: {
-                        Image(systemName: "sidebar.right")
-                    }
-                    .help("展开侧边栏")
-                }
-            }
-            .foregroundStyle(KiriPalette.muted(model.isLight))
-            .buttonStyle(.plain)
-            .padding(.horizontal, 15)
-            .frame(height: 30)
-        }
-        .padding(.horizontal, model.sidebarCollapsed ? 7 : 14)
-        .padding(.top, 8)
-        .padding(.bottom, 12)
-        .background(KiriPalette.side(model.isLight))
     }
 
     private var vmCard: some View {
@@ -1742,67 +1514,6 @@ private struct RootView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12)
             .stroke(KiriPalette.border(model.isLight)))
-    }
-
-    private var pageHeader: some View {
-        HStack(spacing: 16) {
-            Text(model.page.displayName)
-                .font(.system(size: 25, weight: .bold))
-                .foregroundStyle(KiriPalette.title(model.isLight))
-            Spacer(minLength: 18)
-            if model.page == .containers {
-                HStack(spacing: 9) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(KiriPalette.muted(model.isLight))
-                    TextField("搜索容器…", text: $model.search)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12))
-                    Menu {
-                        ForEach(ContainerFilter.allCases) { filter in
-                            Button("\(filter.rawValue) · \(model.containers.filter { filter.includes($0) }.count)") {
-                                model.containerFilter = filter
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "line.3.horizontal.decrease")
-                            .foregroundStyle(model.containerFilter == .all ?
-                                KiriPalette.muted(model.isLight) : KiriPalette.blue)
-                    }
-                    .menuStyle(.borderlessButton)
-                    .frame(width: 20)
-                    .help("筛选运行中、已停止或异常容器")
-                }
-                .padding(.horizontal, 13)
-                .frame(width: 312, height: 37)
-                .background(KiriPalette.panel(model.isLight))
-                .clipShape(RoundedRectangle(cornerRadius: 9))
-                .overlay(RoundedRectangle(cornerRadius: 9)
-                    .stroke(KiriPalette.border(model.isLight)))
-                Button {
-                    if let image = model.ask("输入要创建的容器镜像", placeholder: "nginx:alpine") {
-                        model.perform(["run", image], title: "新建容器", showResult: false)
-                    }
-                } label: {
-                    Label("新建容器", systemImage: "plus")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 16)
-                        .frame(height: 37)
-                        .background(KiriPalette.blue)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-                .buttonStyle(.plain)
-            } else {
-                Button { model.refresh() } label: {
-                    Label("刷新", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.bordered)
-                .font(.system(size: 12))
-            }
-        }
-        .padding(.horizontal, 20)
-        .frame(height: 78)
-        .background(KiriPalette.bg(model.isLight))
     }
 
     private var footer: some View {
@@ -2777,7 +2488,7 @@ private struct KiriMobyNativeApp: App {
         }
 
         WindowGroup("容器控制台", id: "container-console", for: ConsoleSession.self) { $session in
-            if let session {
+            if let session = session.wrappedValue {
                 DetachedConsoleView(session: session)
             } else {
                 Text("请选择一个容器会话")
