@@ -61,7 +61,7 @@ openssl x509 -in "$work/chain.pem" -out "$work/leaf.pem"
 security add-trusted-cert -r trustAsRoot -p codeSign -k "$keychain" "$work/leaf.pem"
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_pw" "$keychain" >/dev/null
 # One dedicated personal P12 should contain exactly one code-signing identity.
-identity_list="$(security find-identity -v -p codesigning "$keychain" | awk '/^[[:space:]]*[0-9]+\) [0-9A-Fa-f]{40}/ {print $2}')"
+identity_list="$(security find-identity -v -p codesigning "$keychain" | awk '/^[[:space:]]*[0-9]+\)/ {print $2}')"
 count="$(printf '%s\n' "$identity_list" | grep -Ec '^[0-9A-Fa-f]{40}$' || :)"
 if [[ "$count" != 1 ]]; then
   echo "Expected one valid personal code-signing identity in the P12, got $count." >&2
