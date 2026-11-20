@@ -706,6 +706,27 @@ mod tests {
     }
 
     #[test]
+    fn vm_resource_limits_reject_unsafe_settings() {
+        let valid = default_vm_resources();
+        assert_eq!(validate_vm_resources(valid).unwrap(), valid);
+        assert!(validate_vm_resources(VmResources {
+            cpus: 0, memory_mib: valid.memory_mib
+        }).is_err());
+        assert!(validate_vm_resources(VmResources {
+            cpus: host_cpu_limit() + 1, memory_mib: valid.memory_mib
+        }).is_err());
+        assert!(validate_vm_resources(VmResources {
+            cpus: valid.cpus, memory_mib: 768
+        }).is_err());
+        assert!(validate_vm_resources(VmResources {
+            cpus: valid.cpus, memory_mib: valid.memory_mib + 1
+        }).is_err());
+        assert!(validate_vm_resources(VmResources {
+            cpus: valid.cpus, memory_mib: host_memory_limit() + 256
+        }).is_err());
+    }
+
+    #[test]
     fn docker_raw_log_frames_are_decoded() {
         let mut frames = vec![1,0,0,0,0,0,0,3];
         frames.extend_from_slice(b"abc");
