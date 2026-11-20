@@ -426,8 +426,8 @@ fn decode_logs(body: &[u8]) -> String {
         out.extend_from_slice(&body[pos + 8..pos + 8 + len]);
         pos += 8 + len;
     }
-    if pos == 0 { return String::from_utf8_lossy(body).chars().take(60_000).collect(); }
-    String::from_utf8_lossy(&out).chars().take(60_000).collect()
+    if pos == 0 { return String::from_utf8_lossy(body).chars().take(240_000).collect(); }
+    String::from_utf8_lossy(&out).chars().take(240_000).collect()
 }
 
 fn docker_command(args: &[&str]) -> io::Result<String> {
@@ -481,7 +481,9 @@ fn execute(value: &Value) -> io::Result<String> {
             serde_json::to_string_pretty(&json).map_err(io::Error::other)
         }
         "logs" => {
-            let path = format!("/containers/{}/logs?stdout=1&stderr=1&tail=200&timestamps=1", path_escape(id));
+            let tail = value["tail"].as_str().unwrap_or("200")
+                .parse::<usize>().unwrap_or(200).clamp(10, 5000);
+            let path = format!("/containers/{}/logs?stdout=1&stderr=1&tail={tail}&timestamps=1", path_escape(id));
             let output = client::request("GET", &path, None)?;
             if !output.ok() { return Err(io::Error::other(output.error())); }
             Ok(decode_logs(&output.body))
