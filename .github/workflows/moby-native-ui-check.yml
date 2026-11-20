@@ -2,7 +2,7 @@ name: Native SwiftUI Moby GUI compile and bridge check
 
 on:
   push:
-    branches: [native-swiftui-moby]
+    branches: [native-swiftui-moby, apple-silicon-native-parity]
     paths:
       - "crates/kiri/native/**"
       - "crates/kiri/src/ui/moby.rs"

@@ -1,6 +1,11 @@
 name: Native Moby visual screenshot (source-rendered)
 
 on:
+  push:
+    branches: [apple-silicon-native-parity]
+    paths:
+      - "crates/kiri/native/MobyApp.swift"
+      - "scripts/moby/check-native-ui-parity.py"
   workflow_dispatch:
   pull_request:
     paths:
@@ -52,8 +57,7 @@ jobs:
           set -euo pipefail
           mkdir -p screenshots
           app="$RUNNER_TEMP/Kiri Moby UI Preview.app"
-          # First capture the unobscured Containers table, including CPU,
-          # working-set RAM, network and block I/O columns.
+          # First capture the full-height table and four inspector overview cards.
           KIRI_MOBY_UI_PREVIEW=1 KIRI_MOBY_UI_PREVIEW_NO_FLOATING=1 \
             "$app/Contents/MacOS/kiri-moby-ui-preview" \
             > screenshots/preview-containers.log 2>&1 &
@@ -88,7 +92,7 @@ jobs:
           kill "$table_pid" 2>/dev/null || true
           test "$table_ok" = true
           sleep 1
-          # Then capture the overlapping floating log and Exec windows.
+          # Then capture the embedded third-column SwiftTerm card.
           KIRI_MOBY_UI_PREVIEW=1 "$app/Contents/MacOS/kiri-moby-ui-preview" \
             > screenshots/preview-console.log 2>&1 &
           pid="$!"

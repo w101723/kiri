@@ -30,15 +30,15 @@ if legacy_nav != [
 if not all(token in NEW for token in (
     "NavigationSplitView {", "List(selection:", ".listStyle(.sidebar)",
     ".navigationSplitViewColumnWidth(", "nativeSidebarItem(.settings)",
-    ".toolbar {", ".searchable(text:", "VSplitView {",
+    ".toolbar {", ".searchable(text:", "HSplitView {",
 )):
-    errors.append("Native macOS NavigationSplitView/toolbar/sidebar contract is incomplete")
+    errors.append("Native macOS split/toolbar/sidebar contract is incomplete")
 
 checks = [
     ('NavigationSplitView {', "System managed split navigation"),
     ('.windowToolbarStyle(.unified)', "Unified native macOS toolbar"),
     ('sidebarEngineStatus', "Engine status inset in native sidebar"),
-    ('.inspector(isPresented: Binding(', "Right native macOS inspector scoped to Containers"),
+    ('ContainerWorkspaceDetail(', "Native container workspace is scoped to Containers"),
     ('ModernInspectorView(', "Selected container inspector content"),
     ('ModernInspectorCard {', "Four grouped inspector cards"),
     ('InspectorMetricTile(', "Compact inspector dashboard metrics"),
@@ -61,16 +61,18 @@ checks = [
     ('ToolbarItem(placement: .primaryAction)', "Native primary action"),
     ('.popover(isPresented: $showVMPopover)', "Compact VM popover"),
     ('vmResourcePopover', "VM resource and restart popover"),
-    ('VSplitView {', "Resizable vertical workspace splitter"),
-    ('UnifiedConsoleDrawer(', "Unified bottom console"),
+    ('HSplitView {', "Resizable full-height container workspace"),
+    ('ContainerDetailTab: String, CaseIterable', "Overview / Logs / Terminal segmented tabs"),
+    ('.pickerStyle(.segmented)', "Native segmented detail navigation"),
+    ('ForEach(loadedTerminalIDs.sorted()', "SwiftTerm views remain mounted when switching tabs"),
+    ('EmbeddedContainerLogsView(containerID:', "Searchable inline log pane"),
     ('WindowGroup("容器控制台", id: "container-console"', "Real macOS console windows"),
-    ('openWindow(id: "container-console", value: session)', "Pop-out from drawer"),
+    ('openWindow(id: "container-console", value: ConsoleSession(', "Pop-out from detail pane"),
     ('tabbingMode = .preferred', "AppKit native window tabbing"),
     ('ConsoleSession: Codable, Hashable, Identifiable', "Stable typed sessions"),
     ('NativeLogTextView: NSViewRepresentable', "Incremental NSTextView log renderer"),
     ('ConsoleAppearance.canvas', "Consistent charcoal console canvas"),
-    ('ConsoleAppearance.toolbar', "Single compact shared console tab bar"),
-    ('ScrollView(.horizontal, showsIndicators: false)', "Compact scrollable console tabs"),
+    ('ConsoleAppearance.toolbar', "Card-scoped dark console controls"),
     ('CompactContainerMetrics(stats:', "Compact CPU/RAM-only resource cells"),
     ('LabeledContent("网络接收（累计）"', "Network and disk moved into detail popover"),
     ('String(published)', "Port number grouping disabled"),
@@ -82,9 +84,7 @@ checks = [
     ('TableColumn("状态"', "Sortable container state"),
     ('containerResourceCell(container)', "Compose resource cells"),
     ('model.refreshContainerStats()', "Periodic Docker stats refresh"),
-    ('TableColumn("端口"', "Ports column"),
-    ('Button("localhost:', "Native localhost port link in Ports column"),
-    ('TableColumn("创建时间"', "Sortable creation date"),
+    ('ContainerWorkspaceDetail(', "Ports, mounts and metadata live in detail pane"),
     ('TableColumn("操作"', "Native operations column"),
     ('.contextMenu(forSelectionType: String.self)', "Native batch context menu"),
     ('"删除选中的', "Multi-selection delete confirmation"),
@@ -96,10 +96,10 @@ checks = [
     ('containerOp("remove"', "Remove container"),
     ('openConsole(.exec', "Exec opens console drawer"),
     ('openConsole(.logs', "Logs opens console drawer"),
-    ('onCommand(.toggleFollow', "Live log follow control"),
+    ('session.following.toggle()', "Live log follow control"),
     ('Button("最近 1,000 行")', "Log tail options"),
-    ('onCommand(.clear', "Clear logs"),
-    ('onCommand(.interrupt', "Exec interrupt"),
+    ('session.clear()', "Clear logs"),
+    ('postTerminal(.interrupt', "Exec interrupt"),
     ('Button("拉取镜像")', "Docker image pull"),
     ('Button("创建 Volume")', "Docker volume creation"),
     ('Button("创建网络")', "Docker network creation"),
@@ -125,6 +125,8 @@ checks = [
 for key, label in checks:
     has(NEW, key, label)
 
+if any(s in NEW for s in ("VSplitView {", "UnifiedConsoleDrawer(", ".inspector(isPresented:")):
+    errors.append("Legacy console drawer or overlay inspector returned")
 if ".safeAreaInset(edge: .bottom, spacing: 0) { footer }" in NEW:
     errors.append("White full-width status footer reintroduced below console")
 if ".tableStyle(.inset(alternatesRowBackgrounds: true))" in NEW:
@@ -136,7 +138,7 @@ native_table = NEW.split('return Table(sorted, selection:', 1)[-1].split(
     '.contextMenu(forSelectionType:', 1)[0]
 native_columns = re.findall(r'TableColumn\("([^"]+)"', native_table)
 expected_columns = [
-    "容器", "状态", "端口", "创建时间", "操作"
+    "容器", "状态", "操作"
 ]
 if native_columns != expected_columns:
     errors.append(

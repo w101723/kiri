@@ -1814,166 +1814,260 @@ private struct ContainerRowView: View {
     }
 }
 
-/// Native 32pt console tab surface; actual PTY capture/keyboard work
-/// exclusively inside SwiftTerm on production builds, never a chat input.
-/// Actual PTY keyboard input is owned by SwiftTerm. This is a pure
-/// macOS 32pt tab/action strip and a full-bleed graphite terminal surface.
-private struct UnifiedConsoleDrawer: View {
-    @EnvironmentObject private var model: MobyModel
-    @Environment(\.openWindow) private var openWindow
-    @Binding var sessions: [ConsoleSession]
-    @Binding var selectedID: String?
-    @Binding var followedLogIDs: Set<String>
-    let onCommand: (ConsoleCommand, ConsoleSession) -> Void
-    let onClose: (ConsoleSession) -> Void
+// The outer NavigationSplitView intentionally stays two columns. Only the
+// Containers page hosts this draggable, full-height native workspace.
+private enum ContainerDetailTab: String, CaseIterable, Identifiable {
+    case overview = "概览"
+    case logs = "日志"
+    case terminal = "终端"
+    var id: String { rawValue }
+}
 
-    @ViewBuilder
-    private func consoleBody(_ session: ConsoleSession) -> some View {
-        if session.kind == .exec {
-            ExecTerminalView(containerID: session.containerID,
-                             containerName: session.name)
-        } else {
-            ContainerLogWindow(containerID: session.containerID,
-                               containerName: session.name)
-        }
-    }
+/// Searchable, bounded Docker log snapshots in a padded charcoal card.
+private struct EmbeddedContainerLogsView: View {
+    let containerID: String
+    @StateObject private var session = ContainerLogSession()
+    @State private var query = ""
 
-    private func tab(_ session: ConsoleSession) -> some View {
-        let active = session.id == selectedID
-        return HStack(spacing: 7) {
-            Button {
-                selectedID = session.id
-            } label: {
-                Label(session.label, systemImage:
-                      session.kind == .exec ? "terminal" : "doc.text")
-                    .lineLimit(1)
-                    .font(.system(size: 11,
-                                  weight: active ? .medium : .regular))
-                    .foregroundStyle(active ? .white : .secondary)
-            }
-            .buttonStyle(.plain)
-            Button { onClose(session) } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .semibold))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("关闭 \(session.label)")
-        }
-        .padding(.leading, 12)
-        .padding(.trailing, 8)
-        .frame(height: 29)
-        .background(active ? ConsoleAppearance.canvas :
-                    Color.white.opacity(0.025))
-        .clipShape(RoundedRectangle(cornerRadius: 5))
-        .padding(.top, 3)
-        .contextMenu {
-            Button("复制选中文本") { onCommand(.copy, session) }
-            if session.kind == .logs {
-                Button(followedLogIDs.contains(session.id) ?
-                       "暂停日志跟随" : "继续日志跟随") {
-                    if followedLogIDs.contains(session.id) {
-                        followedLogIDs.remove(session.id)
-                    } else {
-                        followedLogIDs.insert(session.id)
-                    }
-                    onCommand(.toggleFollow, session)
-                }
-                Menu("日志行数") {
-                    Button("最近 200 行") { onCommand(.last200, session) }
-                    Button("最近 1,000 行") { onCommand(.last1000, session) }
-                    Button("最近 5,000 行") { onCommand(.last5000, session) }
-                }
-            }
-        }
-    }
-
-    private var tabs: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 3) {
-                ForEach(sessions) { session in
-                    tab(session)
-                }
-            }
-            .padding(.leading, 7)
-        }
-        .frame(minWidth: 110, maxWidth: 540)
-    }
-
-    private func actionBar(_ session: ConsoleSession) -> some View {
-        HStack(spacing: 11) {
-            Circle()
-                .fill(model.containers.first(where: {
-                    $0.Id == session.containerID
-                })?.State == "running" ? Color.green : Color.gray)
-                .frame(width: 7, height: 7)
-                .help("容器连接状态")
-            Rectangle()
-                .fill(Color.white.opacity(0.14))
-                .frame(width: 1, height: 13)
-            Button { onCommand(.clear, session) } label: {
-                Image(systemName: "paintbrush")
-            }
-            .help("清屏")
-            if session.kind == .exec {
-                Button { onCommand(.interrupt, session) } label: {
-                    Image(systemName: "stop.fill")
-                }
-                .help("中断 (Ctrl+C)")
-            }
-            Button {
-                openWindow(id: "container-console", value: session)
-                onClose(session)
-            } label: {
-                Image(systemName: "rectangle.portrait.and.arrow.up")
-            }
-            .help("弹出原生独立窗口")
-            Button {
-                sessions.removeAll()
-                selectedID = nil
-                followedLogIDs.removeAll()
-            } label: {
-                Image(systemName: "xmark")
-            }
-            .help("关闭控制台面板")
-        }
-        .font(.system(size: 11))
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-    }
-
-    private var consoleTabs: some View {
-        HStack(spacing: 0) {
-            tabs
-            Spacer(minLength: 6)
-            if let selected = sessions.first(where: { $0.id == selectedID }) {
-                actionBar(selected)
-            }
-        }
-        .frame(height: 32)
-        .background(ConsoleAppearance.toolbar)
-    }
-
-    private var canvas: some View {
-        ZStack {
-            ForEach(sessions) { session in
-                consoleBody(session)
-                    .opacity(selectedID == session.id ? 1 : 0)
-                    .allowsHitTesting(selectedID == session.id)
-                    .accessibilityHidden(selectedID != session.id)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(ConsoleAppearance.canvas)
+    private var visibleLog: String {
+        let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !search.isEmpty else { return session.content }
+        return session.content.components(separatedBy: "\n")
+            .filter { $0.localizedCaseInsensitiveContains(search) }
+            .joined(separator: "\n")
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            consoleTabs
-            canvas
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("过滤日志", text: $query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11))
+                    .accessibilityLabel("过滤容器日志")
+                Menu {
+                    Button("最近 200 行") { session.tailLines = 200 }
+                    Button("最近 1,000 行") { session.tailLines = 1000 }
+                    Button("最近 5,000 行") { session.tailLines = 5000 }
+                } label: {
+                    Image(systemName: "line.3.horizontal.decrease")
+                }
+                .help("日志行数")
+                Button {
+                    session.following.toggle()
+                    if session.following {
+                        Task { await session.refresh(containerID: containerID) }
+                    }
+                } label: {
+                    Image(systemName: session.following ? "pause.fill" : "play.fill")
+                }
+                .help(session.following ? "暂停实时跟随" : "继续实时跟随")
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(visibleLog, forType: .string)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .help("复制可见日志")
+                Button { session.clear() } label: {
+                    Image(systemName: "paintbrush")
+                }
+                .help("清空日志显示")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+            .background(ConsoleAppearance.toolbar)
+            if let error = session.error {
+                Text(error).font(.system(size: 10)).foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12).padding(.vertical, 4)
+            }
+            NativeLogTextView(content: visibleLog,
+                              following: session.following && query.isEmpty)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(ConsoleAppearance.canvas)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(Color.white.opacity(0.07), lineWidth: 1))
+        .environment(\.colorScheme, .dark)
+        .task(id: session.tailLines) {
+            while !Task.isCancelled {
+                if session.following { await session.refresh(containerID: containerID) }
+                do { try await Task.sleep(for: .seconds(2)) }
+                catch { break }
+            }
+        }
+    }
+}
+
+/// Per-container terminal views are cached with stable ForEach IDs. Changing
+/// Overview/Logs/Terminal only changes visibility; SwiftTerm's NSView and PTY
+/// are not dismantled by tab switches or by selecting another container.
+private struct ContainerWorkspaceDetail: View {
+    @EnvironmentObject private var model: MobyModel
+    @Environment(\.openWindow) private var openWindow
+    let container: ContainerItem
+    @Binding var activeTab: ContainerDetailTab
+    @Binding var loadedLogIDs: Set<String>
+    @Binding var loadedTerminalIDs: Set<String>
+    let onAction: (String, ContainerItem) -> Void
+
+    private func ensureCurrentSession() {
+        switch activeTab {
+        case .overview: break
+        case .logs: loadedLogIDs.insert(container.Id)
+        case .terminal:
+            if container.State == "running" { loadedTerminalIDs.insert(container.Id) }
+        }
+    }
+
+    private func postTerminal(_ action: ConsoleCommand, containerID: String) {
+        NotificationCenter.default.post(
+            name: consoleCommandNotification, object: "exec:" + containerID,
+            userInfo: ["action": action.rawValue])
+    }
+
+    private func terminalCard(_ containerID: String) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(model.containers.first(where: { $0.Id == containerID })?.State
+                          == "running" ? Color.green : Color.gray)
+                    .frame(width: 7, height: 7)
+                Text("sh · 容器终端")
+                    .font(.system(size: 11, weight: .medium))
+                Spacer(minLength: 0)
+                Button {
+                    postTerminal(.clear, containerID: containerID)
+                } label: {
+                    Image(systemName: "paintbrush")
+                }
+                .help("清屏")
+                Button {
+                    postTerminal(.interrupt, containerID: containerID)
+                } label: {
+                    Image(systemName: "stop.fill")
+                }
+                .help("发送 Ctrl+C")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .frame(height: 34)
+            .background(ConsoleAppearance.toolbar)
+            ExecTerminalView(containerID: containerID,
+                containerName: model.containers.first(where: { $0.Id == containerID })?.title
+                    ?? String(containerID.prefix(12)))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(ConsoleAppearance.canvas)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(Color.white.opacity(0.07), lineWidth: 1))
+        .environment(\.colorScheme, .dark)
+    }
+
+    private var detailHeader: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "shippingbox.fill")
+                    .font(.system(size: 17))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 32, height: 32)
+                    .background(Color.accentColor.opacity(0.09),
+                                in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(container.title)
+                            .font(.system(size: 14, weight: .semibold))
+                            .lineLimit(1)
+                        Circle()
+                            .fill(container.State == "running" ? Color.green : Color.gray)
+                            .frame(width: 6, height: 6)
+                    }
+                    Text(container.Image ?? "—")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Button {
+                    onAction(container.State == "running" ? "stop" : "start", container)
+                } label: {
+                    Image(systemName: container.State == "running" ?
+                          "stop.fill" : "play.fill")
+                }
+                .help(container.State == "running" ? "停止容器" : "启动容器")
+                Button {
+                    onAction("restart", container)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .disabled(container.State != "running")
+                .help("重启容器")
+                if activeTab != .overview {
+                    Button {
+                        let kind: ConsoleSession.Kind = activeTab == .terminal ? .exec : .logs
+                        openWindow(id: "container-console", value: ConsoleSession(
+                            kind: kind, containerID: container.Id, name: container.title))
+                    } label: {
+                        Image(systemName: "rectangle.portrait.and.arrow.up")
+                    }
+                    .help("在原生独立窗口中打开")
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Picker("容器工作区", selection: $activeTab) {
+                ForEach(ContainerDetailTab.allCases) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+        }
+        .padding(14)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            detailHeader
+            Divider()
+            ZStack {
+                ModernInspectorView(item: container, onAction: onAction)
+                    .opacity(activeTab == .overview ? 1 : 0)
+                    .allowsHitTesting(activeTab == .overview)
+                    .accessibilityHidden(activeTab != .overview)
+
+                ForEach(loadedLogIDs.sorted(), id: \.self) { id in
+                    EmbeddedContainerLogsView(containerID: id)
+                        .padding(12)
+                        .opacity(activeTab == .logs && container.Id == id ? 1 : 0)
+                        .allowsHitTesting(activeTab == .logs && container.Id == id)
+                        .accessibilityHidden(activeTab != .logs || container.Id != id)
+                }
+                ForEach(loadedTerminalIDs.sorted(), id: \.self) { id in
+                    terminalCard(id)
+                        .padding(12)
+                        .opacity(activeTab == .terminal && container.Id == id ? 1 : 0)
+                        .allowsHitTesting(activeTab == .terminal && container.Id == id)
+                        .accessibilityHidden(activeTab != .terminal || container.Id != id)
+                }
+                if activeTab == .terminal && container.State != "running" {
+                    ContentUnavailableView("容器未运行", systemImage: "terminal",
+                        description: Text("先启动容器，再打开交互式终端。"))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear { ensureCurrentSession() }
+        .onChange(of: activeTab) { _, _ in ensureCurrentSession() }
+        .onChange(of: container.Id) { _, _ in ensureCurrentSession() }
     }
 }
 
@@ -1984,9 +2078,9 @@ private struct RootView: View {
     @State private var hoveredActionRowID: String?
     @State private var showInspector = true
     @State private var tableSortOrder = [KeyPathComparator(\ContainerItem.title)]
-    @State private var sessions: [ConsoleSession] = []
-    @State private var selectedSessionID: String?
-    @State private var followedLogIDs = Set<String>()
+    @State private var activeDetailTab: ContainerDetailTab = .overview
+    @State private var loadedLogIDs = Set<String>()
+    @State private var loadedTerminalIDs = Set<String>()
     @State private var showVMPopover = false
     @Environment(\.openWindow) private var openWindow
     // Original Kiri Moby shell: 44pt title strip, 212pt flat sidebar,
@@ -2014,59 +2108,25 @@ private struct RootView: View {
             .navigationSplitViewColumnWidth(min: 185, ideal: 215, max: 250)
             .navigationTitle("Kiri - Moby")
         } detail: {
-            VSplitView {
-                Group {
-                    if !model.online && model.page != .settings {
-                        ContentUnavailableView {
-                            Label("Moby VM 未连接", systemImage: "desktopcomputer.trianglebadge.exclamationmark")
-                        } description: {
-                            Text(model.snapshot?.error ?? "启动标准 Docker Engine 后即可管理容器。")
-                        } actions: {
-                            Button("启动虚拟机") {
-                                model.perform(["start"], title: "Start VM", showResult: false)
-                            }
+            Group {
+                if !model.online && model.page != .settings {
+                    ContentUnavailableView {
+                        Label("Moby VM 未连接",
+                              systemImage: "desktopcomputer.trianglebadge.exclamationmark")
+                    } description: {
+                        Text(model.snapshot?.error ??
+                             "启动标准 Docker Engine 后即可管理容器。")
+                    } actions: {
+                        Button("启动虚拟机") {
+                            model.perform(["start"], title: "Start VM", showResult: false)
                         }
-                    } else {
-                        content
                     }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .frame(minHeight: 220)
-                if (model.page == .containers || model.page == .compose), !sessions.isEmpty {
-                    UnifiedConsoleDrawer(
-                        sessions: $sessions,
-                        selectedID: $selectedSessionID,
-                        followedLogIDs: $followedLogIDs,
-                        onCommand: { command, session in
-                            sendConsoleCommand(command, session: session)
-                        },
-                        onClose: { session in
-                            closeConsole(session)
-                        }
-                    )
-                    .frame(minHeight: 170, idealHeight: 285)
-                        .environment(\.colorScheme, .dark)
+                } else {
+                    content
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .navigationTitle(model.page.displayName)
-            .inspector(isPresented: Binding(
-                get: { showInspector && model.page == .containers },
-                set: { showInspector = $0 }
-            )) {
-                ModernInspectorView(
-                    item: model.containers.first(where: { $0.Id == selectedInspectorID }),
-                    onAction: { action, container in
-                        if action == "restart" &&
-                           !model.confirm("重启 \(container.title)？",
-                               detail: "运行中的服务会短暂中断。") {
-                            return
-                        }
-                        model.perform(["container", action, container.Id],
-                            title: action, showResult: false)
-                    })
-                    .environmentObject(model)
-                    .inspectorColumnWidth(min: 260, ideal: 305, max: 355)
-            }
         }
         .searchable(text: $model.search, placement: .toolbar, prompt: "搜索容器、镜像…")
         .toolbar {
@@ -2130,6 +2190,7 @@ private struct RootView: View {
                 selectedContainerIDs = [previewID]
                 selectedInspectorID = previewID
                 showInspector = true
+                activeDetailTab = .overview
                 // Screenshot assertions must capture an active, focused Mac
                 // window; unfocused macOS sidebars are intentionally dimmed.
                 NSApp.activate(ignoringOtherApps: true)
@@ -2316,42 +2377,16 @@ private struct RootView: View {
 
     private func openConsole(_ kind: ConsoleSession.Kind,
                              containerID: String, name: String) {
-        let session = ConsoleSession(kind: kind, containerID: containerID, name: name)
-        if !sessions.contains(where: { $0.id == session.id }) {
-            sessions.append(session)
-        }
-        selectedSessionID = session.id
-        if kind == .logs { followedLogIDs.insert(session.id) }
+        // Quick actions in any page select the container and open its workspace.
+        model.page = .containers
+        selectedContainerIDs = [containerID]
+        selectedInspectorID = containerID
+        showInspector = true
+        activeDetailTab = kind == .exec ? .terminal : .logs
+        if kind == .exec { loadedTerminalIDs.insert(containerID) }
+        else { loadedLogIDs.insert(containerID) }
     }
 
-    private func sendConsoleCommand(_ command: ConsoleCommand,
-                                    session: ConsoleSession) {
-        NotificationCenter.default.post(name: consoleCommandNotification,
-            object: session.id, userInfo: ["action": command.rawValue])
-    }
-
-    private func closeConsole(_ session: ConsoleSession) {
-        sessions.removeAll { $0.id == session.id }
-        followedLogIDs.remove(session.id)
-        if selectedSessionID == session.id {
-            selectedSessionID = sessions.last?.id
-        }
-    }
-
-    @ViewBuilder
-    private func consoleBody(_ session: ConsoleSession) -> some View {
-        if session.kind == .exec {
-            ExecTerminalView(containerID: session.containerID, containerName: session.name)
-        } else {
-            ContainerLogWindow(containerID: session.containerID, containerName: session.name)
-        }
-    }
-
-    // One 34pt tab/action strip shared across Exec and Logs.
-    // SwiftTerm and NSTextView render directly below without inner headers.
-    // Native titlebar follows the reference image: branding at left, live VM
-    // counters and settings at right. Values come from Docker/Guest telemetry,
-    // never from a fabricated preview or hard-coded example containers.
     private var diskFreeLabel: String {
         guard let attrs = try? FileManager.default.attributesOfFileSystem(
             forPath: NSHomeDirectory()),
@@ -2789,34 +2824,60 @@ private struct RootView: View {
     // keyboard navigation, native selection, heading sort, and context menus.
     // Native NSTableView backed five-column presentation: dimensions belong
     // in the right Inspector, not duplicated in a 7-column table.
+    // Only Containers uses an inner HSplitView. VM and Settings stay full width.
     private var containers: some View {
+        HSplitView {
+            containerTable
+                .frame(minWidth: 380, idealWidth: 650, maxWidth: .infinity,
+                       maxHeight: .infinity)
+            if showInspector {
+                if let selected = model.containers.first(where: {
+                    $0.Id == selectedInspectorID
+                }) {
+                    ContainerWorkspaceDetail(
+                        container: selected,
+                        activeTab: $activeDetailTab,
+                        loadedLogIDs: $loadedLogIDs,
+                        loadedTerminalIDs: $loadedTerminalIDs,
+                        onAction: { action, item in
+                            if action == "restart" &&
+                                !model.confirm("重启 \(item.title)？",
+                                    detail: "运行中的服务会短暂中断。") {
+                                return
+                            }
+                            containerOp(action, item)
+                        }
+                    )
+                    .environmentObject(model)
+                    .frame(minWidth: 340, idealWidth: 420, maxWidth: 740,
+                           maxHeight: .infinity)
+                } else {
+                    ContentUnavailableView("选择一个容器",
+                        systemImage: "sidebar.right",
+                        description: Text("在列表中选择容器以查看概览、日志与终端。"))
+                        .frame(minWidth: 340, idealWidth: 420, maxWidth: 740,
+                               maxHeight: .infinity)
+                }
+            }
+        }
+    }
+
+    private var containerTable: some View {
         let sorted = filteredContainers.sorted(using: tableSortOrder)
         return Table(sorted, selection: $selectedContainerIDs, sortOrder: $tableSortOrder) {
             TableColumn("容器", value: \.title) { item in
                 ContainerRowView(item: item)
+                    .onTapGesture(count: 2) {
+                        if item.State == "running" {
+                            openConsole(.exec, containerID: item.Id, name: item.title)
+                        }
+                    }
             }
-            .width(min: 185, ideal: 300)
+            .width(min: 185, ideal: 330)
             TableColumn("状态", value: \.stateSortName) { item in
                 containerStateBadge(item)
             }
             .width(min: 86, ideal: 90)
-            TableColumn("端口") { item in
-                portLinks(item.Ports)
-            }
-            .width(min: 115, ideal: 135)
-            TableColumn("创建时间", value: \.creationSortDate) { item in
-                if let seconds = item.Created, seconds > 0 {
-                    Text(Date(timeIntervalSince1970: TimeInterval(seconds)),
-                         style: .relative)
-                        .font(.system(size: 11.5))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                } else {
-                    Text("—").foregroundStyle(.tertiary)
-                }
-            }
-            .width(min: 105, ideal: 130)
             TableColumn("操作") { item in
                 containerButtons(item)
             }
