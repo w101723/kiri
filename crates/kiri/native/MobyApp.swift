@@ -6,6 +6,9 @@ import AppKit
 import Darwin
 import Foundation
 import SwiftUI
+#if canImport(SwiftTerm)
+import SwiftTerm
+#endif
 
 private enum Page: String, CaseIterable, Hashable, Identifiable {
     case overview = "总览"
@@ -967,12 +970,79 @@ private final class ExecTerminalSession: ObservableObject {
     }
 }
 
+#if canImport(SwiftTerm)
+@MainActor
+private final class SwiftTermTerminalControls: ObservableObject {
+    weak var terminal: LocalProcessTerminalView?
+    func interrupt() { terminal?.process.send(data: [0x03][...]) }
+    func clear() { terminal?.feed(text: "\u{001B}[2J\u{001B}[H") }
+}
+
+// SwiftTerm's LocalProcessTerminalView owns the PTY, UTF-8/ANSI parser,
+// keyboard handling and resize/SIGWINCH. The launched executable is Kiri's
+// signed CLI, not a local host shell or a different Docker Engine context.
+private struct NativeSwiftTermExecView: NSViewRepresentable {
+    let containerID: String
+    @ObservedObject var controls: SwiftTermTerminalControls
+
+    func makeNSView(context: Context) -> LocalProcessTerminalView {
+        let view = LocalProcessTerminalView(frame: .zero)
+        view.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        controls.terminal = view
+        let cli = Bundle.main.bundleURL.appendingPathComponent(
+            "Contents/MacOS/kiri").path
+        guard FileManager.default.isExecutableFile(atPath: cli) else {
+            view.feed(text: "Kiri CLI 不存在：\(cli)\r\n")
+            return view
+        }
+        var env = ProcessInfo.processInfo.environment
+        env["TERM"] = "xterm-256color"
+        let environment = env.map { "\($0.key)=\($0.value)" }.sorted()
+        view.startProcess(executable: cli,
+                          args: ["moby-native", "terminal", containerID],
+                          environment: environment)
+        return view
+    }
+    func updateNSView(_ view: LocalProcessTerminalView, context: Context) {}
+    static func dismantleNSView(_ view: LocalProcessTerminalView, coordinator: ()) {
+        view.terminate()
+    }
+}
+#endif
+
 private struct ExecTerminalView: View {
     @StateObject private var terminal = ExecTerminalSession()
+    #if canImport(SwiftTerm)
+    @StateObject private var swiftTermControls = SwiftTermTerminalControls()
+    #endif
     let containerID: String
     let containerName: String
 
     var body: some View {
+        #if canImport(SwiftTerm) && !KIRI_UI_PREVIEW
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Label("Exec: \(containerName)", systemImage: "terminal")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Button("清屏", systemImage: "paintbrush") {
+                    swiftTermControls.clear()
+                }
+                Button("Ctrl+C", systemImage: "stop.fill") {
+                    swiftTermControls.interrupt()
+                }
+            }
+            .labelStyle(.titleAndIcon)
+            .font(.system(size: 11))
+            .padding(.horizontal, 14)
+            .frame(height: 36)
+            NativeSwiftTermExecView(containerID: containerID,
+                                    controls: swiftTermControls)
+                .frame(minHeight: 145)
+        }
+        .frame(minHeight: 170)
+        .background(Color.black)
+        #else
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 Spacer()
@@ -1044,6 +1114,7 @@ private struct ExecTerminalView: View {
         .frame(minHeight: 170)
         .onAppear { terminal.start(containerID: containerID) }
         .onDisappear { terminal.close() }
+        #endif
     }
 }
 
