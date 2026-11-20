@@ -150,6 +150,9 @@ for bin in "$res/bin/docker" "$res/bin/cli-plugins/docker-compose" "$res/bin/cli
   sign "$bin"
 done
 sign --entitlements crates/kiri/kiri.entitlements "$app/Contents/MacOS/kiri"
+if [[ -f "$app/Contents/MacOS/kiri-moby-ui" ]]; then
+  sign "$app/Contents/MacOS/kiri-moby-ui"
+fi
 sign --entitlements crates/kiri/kiri.entitlements "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 # Pin the exact LEAF certificate DER fingerprint; do not trust an arbitrary CN.

@@ -135,10 +135,16 @@ candidate="$stage/Kiri Moby.app"
   { echo "Kiri Moby.app missing in build" >&2; exit 2; }
 bundleid="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$candidate/Contents/Info.plist")"
 [[ "$bundleid" == dev.kiri.app.moby ]] || { echo "Unexpected bundle ID: $bundleid" >&2; exit 2; }
+entry="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$candidate/Contents/Info.plist")"
+[[ "$entry" == kiri-moby-ui ]] || {
+  echo "Expected verified native SwiftUI app entrypoint, got: $entry" >&2
+  exit 2
+}
 revision="$candidate/Contents/Resources/SOURCE_REVISION"
 [[ -f "$revision" ]] || { echo "Missing source revision" >&2; exit 2; }
 grep -Eq '^[0-9a-fA-F]{40}$' "$revision" || { echo "Invalid source revision" >&2; exit 2; }
 for program in "$candidate/Contents/MacOS/kiri" \
+  "$candidate/Contents/MacOS/kiri-moby-ui" \
   "$candidate/Contents/Resources/bin/kiri-moby-host" \
   "$candidate/Contents/Resources/bin/docker" \
   "$candidate/Contents/Resources/bin/cli-plugins/docker-compose" \

@@ -1,0 +1,51 @@
+name: Native SwiftUI Moby GUI compile and bridge check
+
+on:
+  push:
+    branches: [native-swiftui-moby]
+    paths:
+      - "crates/kiri/native/**"
+      - "crates/kiri/src/ui/moby.rs"
+      - "crates/kiri/src/ui/mod.rs"
+      - "crates/kiri/src/main.rs"
+      - ".github/workflows/moby-native-ui-check.yml"
+  pull_request:
+    paths:
+      - "crates/kiri/native/**"
+      - "crates/kiri/src/ui/moby.rs"
+      - "crates/kiri/src/ui/mod.rs"
+      - "crates/kiri/src/main.rs"
+      - ".github/workflows/moby-native-ui-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  swiftui:
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cross-compile actual native SwiftUI app for Apple Silicon
+        run: |
+          set -euo pipefail
+          sdk="$(xcrun --sdk macosx --show-sdk-path)"
+          swiftc -parse-as-library -O \
+            -target arm64-apple-macosx14.0 -sdk "$sdk" \
+            crates/kiri/native/MobyApp.swift \
+            -o "$RUNNER_TEMP/kiri-moby-native-ui"
+          test "$(lipo "$RUNNER_TEMP/kiri-moby-native-ui" -archs)" = arm64
+          if otool -L "$RUNNER_TEMP/kiri-moby-native-ui" | grep -E 'WebKit|JavaScriptCore'; then
+            echo "Native GUI unexpectedly depends on WebKit/JavaScriptCore" >&2
+            exit 1
+          fi
+          codesign --force --sign - "$RUNNER_TEMP/kiri-moby-native-ui"
+          codesign --verify --strict "$RUNNER_TEMP/kiri-moby-native-ui"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Compile existing Rust backend with native command bridge
+        run: cargo check -p kiri --target aarch64-apple-darwin
