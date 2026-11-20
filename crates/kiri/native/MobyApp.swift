@@ -2014,7 +2014,7 @@ private struct ContainerWorkspaceDetail: View {
                         openWindow(id: "container-console", value: ConsoleSession(
                             kind: kind, containerID: container.Id, name: container.title))
                     } label: {
-                        Image(systemName: "rectangle.portrait.and.arrow.up")
+                        Image(systemName: "arrow.up.right.square")
                     }
                     .help("在原生独立窗口中打开")
                 }
