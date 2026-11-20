@@ -224,10 +224,15 @@ jobs:
           test "$(lipo "$bin" -archs)" = "arm64"
           codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$bin"
           codesign --verify --strict --verbose=2 "$bin"
-          native="target/aarch64-apple-darwin/release/kiri-moby-ui"
-          sdk="$(xcrun --sdk macosx --show-sdk-path)"
-          swiftc -parse-as-library -O -target arm64-apple-macosx14.0 \
-            -sdk "$sdk" crates/kiri/native/MobyApp.swift -o "$native"
+          # The release executable MUST link SwiftTerm. The previous
+          # swiftc-only fallback has no VT100/xterm cursor renderer.
+          swift build --package-path crates/kiri/native -c release \
+            --triple arm64-apple-macosx14.0 --product kiri-moby-ui
+          swift_dir="$(swift build --package-path crates/kiri/native -c release \
+            --triple arm64-apple-macosx14.0 --show-bin-path)"
+          target_dir="target/aarch64-apple-darwin/release"
+          native="$target_dir/kiri-moby-ui"
+          cp "$swift_dir/kiri-moby-ui" "$native"
           test "$(lipo "$native" -archs)" = "arm64"
           if otool -L "$native" | grep -E 'WebKit|JavaScriptCore'; then
             echo "Native SwiftUI GUI unexpectedly links WebKit or JavaScriptCore" >&2
@@ -235,7 +240,15 @@ jobs:
           fi
           codesign --force --sign - "$native"
           codesign --verify --strict --verbose=2 "$native"
-          tar -C target/aarch64-apple-darwin/release -czf kiri-moby-gui-arm64.tgz kiri kiri-moby-ui
+          # SwiftTerm uses SwiftPM Metal resources. Carry every bundled
+          # resource through the host/guest GUI artifact into the .app.
+          files=(kiri kiri-moby-ui)
+          for bundle in "$swift_dir"/*.bundle; do
+            test -d "$bundle" || continue
+            cp -R "$bundle" "$target_dir/"
+            files+=("$(basename "$bundle")")
+          done
+          tar -C "$target_dir" -czf kiri-moby-gui-arm64.tgz "${files[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: milestone-gui-arm64
@@ -290,7 +303,11 @@ jobs:
           mac="$app/Contents/MacOS"
           res="$app/Contents/Resources"
           mkdir -p "$mac" "$res/guest" "$res/bin/cli-plugins"
-          tar -xzf downloaded/gui/kiri-moby-gui-arm64.tgz -C "$mac" kiri kiri-moby-ui
+          tar -xzf downloaded/gui/kiri-moby-gui-arm64.tgz -C "$mac"
+          for bundle in "$mac"/*.bundle; do
+            test -d "$bundle" || continue
+            mv "$bundle" "$res/"
+          done
           chmod 755 "$mac/kiri" "$mac/kiri-moby-ui"
           cp assembled/guest/Image assembled/guest/initramfs.cpio \
              assembled/guest/data.img.tgz assembled/guest/system.img.tgz \
