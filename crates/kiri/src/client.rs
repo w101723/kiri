@@ -131,7 +131,11 @@ pub fn get_background(path: &str) -> io::Result<Value> {
 }
 
 fn send(method: &str, path: &str, body: Option<&Value>, extra: &str) -> io::Result<Response> {
-    let mut s = connect(Some(Duration::from_secs(120)))?;
+    send_timeout(method, path, body, extra, Duration::from_secs(120))
+}
+
+fn send_timeout(method: &str, path: &str, body: Option<&Value>, extra: &str, timeout: Duration) -> io::Result<Response> {
+    let mut s = connect(Some(timeout))?;
     let payload = body.map(Value::to_string).unwrap_or_default();
     // The window's action this is part of, for the engine's log lines.
     let op = crate::diag::op_header();
@@ -171,6 +175,17 @@ pub fn get(path: &str) -> io::Result<Value> {
     let r = request("GET", path, None)?;
     if !r.ok() {
         return Err(io::Error::other(r.error()));
+    }
+    Ok(r.json())
+}
+
+/// Bounded, background-only Docker telemetry request. Unlike long-running
+/// image pulls/builds, a hung stats request must not stall the native UI.
+/// This is a socket I/O timeout, not a global Docker Engine configuration.
+pub fn get_background_timeout(path: &str, timeout: Duration) -> io::Result<Value> {
+    let r = send_timeout("GET", path, None, "X-Kiri-Background: 1\r\n", timeout)?;
+    if !r.ok() {
+        return Err(io::Error::other(format!("Docker HTTP {}: {}", r.status, r.error())));
     }
     Ok(r.json())
 }
