@@ -1286,6 +1286,280 @@ private struct DetachedConsoleView: View {
     }
 }
 
+/// Simple SwiftUI history trace; the backend samples every five seconds,
+/// so there is no fake history until actual Docker stats arrive.
+private struct InspectorSparkline: View {
+    let samples: [ContainerHistoryPoint]
+    let cpu: Bool
+    let color: Color
+
+    var body: some View {
+        GeometryReader { geometry in
+            let values: [Double?] = samples.map {
+                cpu ? $0.cpuPercent : $0.memoryPercent
+            }
+            let ceiling = max(100, values.compactMap { $0 }.max() ?? 100)
+            Path { path in
+                guard geometry.size.width > 0, geometry.size.height > 0 else { return }
+                var drawing = false
+                for (index, sample) in values.enumerated() {
+                    guard let sample else {
+                        drawing = false
+                        continue
+                    }
+                    let x = CGFloat(index) / CGFloat(max(1, values.count - 1)) *
+                        geometry.size.width
+                    let y = geometry.size.height * CGFloat(1 -
+                        min(ceiling, max(0, sample)) / ceiling)
+                    if drawing {
+                        path.addLine(to: CGPoint(x: x, y: y))
+                    } else {
+                        path.move(to: CGPoint(x: x, y: y))
+                        drawing = true
+                    }
+                }
+            }
+            .stroke(color, style: StrokeStyle(lineWidth: 1.8, lineCap: .round,
+                                               lineJoin: .round))
+        }
+        .frame(height: 49)
+        .background(Color.secondary.opacity(0.055))
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .accessibilityLabel(cpu ? "CPU 使用历史" : "内存占用历史")
+    }
+}
+
+private struct ContainerInspectorView: View {
+    @EnvironmentObject private var model: MobyModel
+    let item: ContainerItem?
+    @State private var inspection: ContainerInspectDetails?
+    @State private var inspectionError: String?
+    @State private var loading = false
+    @State private var revealSensitive = false
+
+    private func envValue(_ text: String) -> String {
+        let split = text.split(separator: "=", maxSplits: 1,
+                               omittingEmptySubsequences: false)
+        guard split.count > 1 else { return "" }
+        let key = String(split[0]).uppercased()
+        let sensitive = ["PASSWORD", "SECRET", "TOKEN", "PRIVATE", "CREDENTIAL",
+                         "API_KEY", "ACCESS_KEY", "AUTH", "CERT", "PASSWD"]
+            .contains(where: key.contains)
+        return sensitive && !revealSensitive ? "••••••" : String(split[1])
+    }
+    private func envName(_ text: String) -> String {
+        String(text.split(separator: "=", maxSplits: 1,
+                          omittingEmptySubsequences: false).first ?? "")
+    }
+
+    private func load(_ id: String) async {
+        inspection = nil
+        inspectionError = nil
+        revealSensitive = false
+        loading = true
+        defer { loading = false }
+        #if KIRI_UI_PREVIEW
+        if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+            let preview = """
+            {"Config":{"Env":["NGINX_VERSION=1.27.2","APP_ENV=production",
+            "API_TOKEN=redacted-preview"],"WorkingDir":"/etc/nginx","User":""},
+            "Mounts":[{"Type":"bind","Source":"/Users/demo/site",
+            "Destination":"/usr/share/nginx/html","RW":false}]}
+            """
+            inspection = try? JSONDecoder().decode(
+                ContainerInspectDetails.self, from: Data(preview.utf8))
+            return
+        }
+        #endif
+        guard let encodedData = try? JSONSerialization.data(withJSONObject: [
+            "action": "inspect", "kind": "containers", "id": id
+        ]), let encoded = String(data: encodedData, encoding: .utf8) else {
+            inspectionError = "无法构建容器查询请求"
+            return
+        }
+        let result = await Task.detached(priority: .utility) {
+            Result { try request(["action", encoded], as: Reply.self) }
+        }.value
+        guard !Task.isCancelled else { return }
+        switch result {
+        case .failure(let error):
+            inspectionError = error.localizedDescription
+        case .success(let reply):
+            guard reply.ok, let data = reply.message?.data(using: .utf8) else {
+                inspectionError = reply.error ?? "Docker Inspect 返回了空结果"
+                return
+            }
+            do {
+                inspection = try JSONDecoder().decode(
+                    ContainerInspectDetails.self, from: data)
+            } catch {
+                inspectionError = "容器详情解析失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    var body: some View {
+        Group {
+            if let item {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 17) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "shippingbox.fill")
+                                .font(.system(size: 25))
+                                .foregroundStyle(.tint)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(item.title)
+                                    .font(.system(size: 17, weight: .semibold))
+                                    .lineLimit(1)
+                                Text(item.Image ?? "未知镜像")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                        .padding(.top, 5)
+                        GroupBox("实时资源") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                if let stats = model.containerStats[item.Id] {
+                                    LabeledContent("CPU 使用率", value: stats.cpu_percent.map {
+                                        String(format: "%.1f%%", $0)
+                                    } ?? "—")
+                                    InspectorSparkline(
+                                        samples: model.statsHistory[item.Id] ?? [],
+                                        cpu: true, color: .blue)
+                                    LabeledContent("内存工作集", value:
+                                        sizeLabel(stats.memory_bytes))
+                                    LabeledContent("内存上限", value:
+                                        sizeLabel(stats.memory_limit_bytes))
+                                    InspectorSparkline(
+                                        samples: model.statsHistory[item.Id] ?? [],
+                                        cpu: false, color: .green)
+                                    Divider()
+                                    LabeledContent("网络收 / 发", value:
+                                        "\(sizeLabel(stats.net_rx_bytes)) / \(sizeLabel(stats.net_tx_bytes))")
+                                    LabeledContent("磁盘读 / 写", value:
+                                        "\(sizeLabel(stats.block_read_bytes)) / \(sizeLabel(stats.block_write_bytes))")
+                                    LabeledContent("进程数", value:
+                                        stats.pids.map(String.init) ?? "—")
+                                    Text("最多保留最近 60 次采样；网络与磁盘值为累计流量")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Text(item.State == "running" ? "正在采集…" : "容器未运行")
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(7)
+                        }
+                        GroupBox("端口映射") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                let ports = (item.Ports ?? []).filter { $0.PublicPort != nil }
+                                if ports.isEmpty {
+                                    Text("没有已发布端口")
+                                        .foregroundStyle(.secondary)
+                                }
+                                ForEach(Array(ports.enumerated()), id: \.offset) { _, port in
+                                    HStack(spacing: 5) {
+                                        Text("localhost:\(String(port.PublicPort ?? 0))")
+                                            .fontWeight(.medium)
+                                        Image(systemName: "arrow.right")
+                                            .foregroundStyle(.secondary)
+                                        Text("\(String(port.PrivatePort ?? 0))/\(port.Type ?? "tcp")")
+                                    }
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .lineLimit(1)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(7)
+                        }
+                        GroupBox("挂载卷") {
+                            VStack(alignment: .leading, spacing: 10) {
+                                if loading { ProgressView().controlSize(.small) }
+                                let mounts = inspection?.Mounts ?? []
+                                if mounts.isEmpty && !loading {
+                                    Text(inspection == nil ? "选择后加载 Docker 详情" :
+                                         "没有挂载卷")
+                                        .foregroundStyle(.secondary)
+                                }
+                                ForEach(mounts) { mount in
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(mount.Destination ?? "—")
+                                            .fontWeight(.medium)
+                                        Text(mount.Source ?? "—")
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(.secondary)
+                                        Text("\(mount.Type ?? "volume") · \(mount.RW == true ? "读写" : "只读")")
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(7)
+                        }
+                        GroupBox {
+                            VStack(alignment: .leading, spacing: 9) {
+                                Toggle("显示可能含敏感信息的变量值",
+                                       isOn: $revealSensitive)
+                                    .font(.system(size: 10))
+                                let env = inspection?.Config?.Env ?? []
+                                if env.isEmpty && !loading {
+                                    Text("没有环境变量或尚未加载详情")
+                                        .foregroundStyle(.secondary)
+                                }
+                                ForEach(Array(env.enumerated()), id: \.offset) { _, entry in
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(envName(entry))
+                                            .font(.system(size: 11, weight: .medium,
+                                                          design: .monospaced))
+                                        Text(envValue(entry))
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(3)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(7)
+                        } label: {
+                            Label("环境变量", systemImage: "key.horizontal")
+                        }
+                        if let inspectionError {
+                            Label(inspectionError, systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                                .font(.caption)
+                        }
+                        Text("ID: " + item.Id)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    .padding(13)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                ContentUnavailableView(
+                    "选择一个容器",
+                    systemImage: "sidebar.right",
+                    description: Text("在容器列表中选择一行，查看详细配置和资源历史。"))
+            }
+        }
+        .task(id: item?.Id) {
+            if let id = item?.Id { await load(id) }
+            else {
+                inspection = nil
+                inspectionError = nil
+            }
+        }
+    }
+}
+
 private struct RootView: View {
     @EnvironmentObject private var model: MobyModel
     @State private var selectedContainerIDs = Set<String>()
