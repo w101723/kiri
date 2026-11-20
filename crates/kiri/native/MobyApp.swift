@@ -369,65 +369,46 @@ private func sizeLabel(_ value: Int64?) -> String {
 
 private struct RootView: View {
     @EnvironmentObject private var model: MobyModel
+    // Original Kiri Moby shell: 44pt title strip, 212pt flat sidebar,
+    // bottom-left VM card, toolbar with status chips and footer.
+    // These are SwiftUI/AppKit views; no HTML, WKWebView or JavaScript.
     var body: some View {
-        NavigationSplitView {
-            List(Page.allCases, selection: $model.page) { page in
-                Label(page.rawValue, systemImage: page.symbol).tag(page)
-                    .padding(.vertical, 5)
-            }
-            .navigationSplitViewColumnWidth(min: 190, ideal: 215, max: 250)
-            .listStyle(.sidebar)
-        } detail: {
-            VStack(spacing: 0) {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(model.page.rawValue).font(.title2.bold())
-                        Text(model.online ? "Docker Engine 已连接" : "Moby VM 未连接")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if let balloon = model.snapshot?.memory?.balloon_target_mib {
-                        Label("\(balloon) MiB", systemImage: "memorychip")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    TextField("搜索", text: $model.search)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 180)
-                        .disabled([Page.settings, .compose, .builds].contains(model.page))
-                    if model.busy { ProgressView().controlSize(.small) }
-                    Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                        .help("刷新")
-                    Button {
-                        if model.online && !model.confirm("停止 VM？", detail: "正在运行的容器也会停止。") { return }
-                        model.perform([model.online ? "stop" : "start"],
-                                      title: model.online ? "Stop VM" : "Start VM", showResult: false)
-                    } label: {
-                        Image(systemName: model.online ? "stop.fill" : "play.fill")
-                    }
-                    .help(model.online ? "停止 VM" : "启动 VM")
-                }
-                .padding(.horizontal, 22)
-                .padding(.vertical, 14)
-                Divider()
-                Group {
-                    if !model.online && ![Page.settings, .overview].contains(model.page) {
-                        ContentUnavailableView("Moby VM 未连接",
-                            systemImage: "shippingbox",
-                            description: Text("启动标准 Docker Engine 后显示容器、镜像和数据卷"))
-                            .overlay(alignment: .bottom) {
+        VStack(spacing: 0) {
+            titleStrip
+            Rectangle().fill(KiriPalette.border(model.isLight)).frame(height: 1)
+            HStack(spacing: 0) {
+                sidebar.frame(width: model.sidebarCollapsed ? 60 : 212)
+                Rectangle().fill(KiriPalette.border(model.isLight)).frame(width: 1)
+                VStack(spacing: 0) {
+                    pageHeader
+                    Rectangle().fill(KiriPalette.border(model.isLight)).frame(height: 1)
+                    Group {
+                        if !model.online && model.page != .settings {
+                            VStack(spacing: 14) {
+                                Text("Moby VM 未连接").font(.system(size: 15, weight: .semibold))
+                                Text(model.snapshot?.error ??
+                                     "启动标准 Docker Engine 后显示容器和镜像。")
+                                    .foregroundStyle(KiriPalette.muted(model.isLight))
                                 Button("启动 VM") {
                                     model.perform(["start"], title: "Start VM", showResult: false)
-                                }.buttonStyle(.borderedProminent).padding(.bottom, 70)
+                                }.buttonStyle(.borderedProminent)
                             }
-                    } else {
-                        content
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            content
+                        }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(KiriPalette.bg(model.isLight))
             }
+            footer
         }
-        .navigationSplitViewStyle(.balanced)
-        .frame(minWidth: 800, minHeight: 540)
+        .foregroundStyle(KiriPalette.title(model.isLight))
+        .font(.system(size: 12))
+        .background(KiriPalette.bg(model.isLight))
+        .preferredColorScheme(model.isLight ? .light : .dark)
+        .frame(minWidth: 760, minHeight: 480)
         .task {
             model.begin()
             while !Task.isCancelled {
@@ -436,6 +417,7 @@ private struct RootView: View {
                 model.refresh()
             }
         }
+        .onChange(of: model.page) { _, _ in model.search = "" }
         .alert("Kiri Moby", isPresented: Binding(
             get: { model.error != nil },
             set: { if !$0 { model.error = nil } }
@@ -447,18 +429,247 @@ private struct RootView: View {
         .sheet(item: $model.result) { result in
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Text(result.title).font(.title3.bold())
+                    Text(result.title).font(.system(size: 14, weight: .semibold))
                     Spacer()
                     Button("关闭") { model.result = nil }
                 }
+                Divider()
                 ScrollView {
-                    Text(result.body).font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    Text(result.body).font(.system(size: 12, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .padding(20)
-            .frame(minWidth: 600, minHeight: 390)
+            .frame(minWidth: 650, minHeight: 420)
         }
+    }
+
+    private var titleStrip: some View {
+        HStack(spacing: 8) {
+            // Leave space for AppKit's red/yellow/green window controls.
+            Color.clear.frame(width: 64, height: 1)
+            Button { model.sidebarCollapsed.toggle() } label: {
+                Image(systemName: "sidebar.left")
+            }.help("折叠侧边栏")
+            Button {} label: { Image(systemName: "chevron.left") }.disabled(true)
+            Button {} label: { Image(systemName: "chevron.right") }.disabled(true)
+            Spacer(minLength: 24)
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(KiriPalette.muted(model.isLight))
+                TextField("Search containers, images…", text: $model.search)
+                    .textFieldStyle(.plain)
+                Text("⌘K").font(.system(size: 11))
+                    .foregroundStyle(KiriPalette.faint(model.isLight))
+            }
+            .padding(.horizontal, 10).frame(width: 285, height: 28)
+            .background(KiriPalette.panel(model.isLight))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .stroke(KiriPalette.border(model.isLight)))
+            Button { model.page = .settings } label: { Image(systemName: "gearshape") }
+                .help("Settings")
+        }
+        .font(.system(size: 13))
+        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .frame(height: 44)
+        .background(KiriPalette.side(model.isLight))
+    }
+
+    private func navButton(_ page: Page) -> some View {
+        Button {
+            model.page = page
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: page.symbol)
+                    .frame(width: 18)
+                    .foregroundStyle(model.page == page ?
+                        KiriPalette.blue : KiriPalette.muted(model.isLight))
+                if !model.sidebarCollapsed {
+                    Text(page.rawValue).lineLimit(1)
+                    Spacer(minLength: 2)
+                    if let count = navCount(page) {
+                        Text("\(count)")
+                            .foregroundStyle(KiriPalette.faint(model.isLight))
+                    }
+                }
+            }
+            .padding(.horizontal, model.sidebarCollapsed ? 10 : 9)
+            .frame(maxWidth: .infinity, minHeight: 31, alignment: .leading)
+            .background(model.page == page ?
+                KiriPalette.raised(model.isLight) : .clear)
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7)
+                .stroke(model.page == page ? KiriPalette.border(model.isLight) : .clear))
+        }
+        .buttonStyle(.plain)
+        .help(page.rawValue)
+    }
+
+    private func navCount(_ page: Page) -> Int? {
+        switch page {
+        case .containers: model.containers.count
+        case .images: model.images.count
+        case .volumes: model.volumes.count
+        case .networks: model.networks.count
+        default: nil
+        }
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                if !model.sidebarCollapsed {
+                    Text("DOCKER")
+                        .font(.system(size: 11, weight: .semibold))
+                        .tracking(0.8)
+                        .foregroundStyle(KiriPalette.faint(model.isLight))
+                    Spacer()
+                    Button { model.isLight.toggle() } label: {
+                        Image(systemName: model.isLight ? "moon" : "sun.max")
+                    }.buttonStyle(.plain).help("切换浅色/深色主题")
+                }
+            }.padding(.horizontal, 8).frame(height: 30)
+            ForEach([Page.containers, .compose, .images, .volumes, .networks, .builds],
+                    id: \.self) { navButton($0) }
+            if !model.sidebarCollapsed {
+                Text("KIRI").font(.system(size: 11, weight: .semibold))
+                    .tracking(0.8)
+                    .foregroundStyle(KiriPalette.faint(model.isLight))
+                    .padding(.horizontal, 8).padding(.top, 14).padding(.bottom, 4)
+            } else {
+                Rectangle().fill(KiriPalette.border(model.isLight))
+                    .frame(height: 1).padding(.vertical, 12)
+            }
+            navButton(.settings)
+            Spacer(minLength: 15)
+            vmCard
+        }
+        .padding(.horizontal, model.sidebarCollapsed ? 9 : 12)
+        .padding(.top, 8).padding(.bottom, 14)
+        .background(KiriPalette.side(model.isLight))
+    }
+
+    private var vmCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 7) {
+                Circle().fill(model.online ? KiriPalette.mint : KiriPalette.faint(model.isLight))
+                    .frame(width: 8, height: 8)
+                if !model.sidebarCollapsed {
+                    Text("Linux VM").fontWeight(.semibold)
+                    Spacer(minLength: 1)
+                    Text(model.online ? "Running" : "Off")
+                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                }
+            }
+            if !model.sidebarCollapsed {
+                if model.online {
+                    Text("Docker \(model.snapshot?.version?.Version ?? "—") · arm64")
+                        .font(.system(size: 11))
+                        .foregroundStyle(KiriPalette.faint(model.isLight)).lineLimit(1)
+                }
+                HStack {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Running")
+                        Text("CPUs")
+                        Text("Balloon")
+                    }.foregroundStyle(KiriPalette.muted(model.isLight))
+                    Spacer(minLength: 3)
+                    VStack(alignment: .trailing, spacing: 7) {
+                        Text(model.online ? "\(model.containers.filter {$0.State == "running"}.count)" : "—")
+                        Text(model.online ? "\(model.snapshot?.info?.NCPU ?? 4)" : "—")
+                        Text(model.online ?
+                             "\(model.snapshot?.memory?.balloon_target_mib ?? 0) MiB" : "—")
+                    }.font(.system(size: 11, weight: .medium, design: .monospaced))
+                }
+                GeometryReader { proxy in
+                    let target = Double(model.snapshot?.memory?.balloon_target_mib ?? 0)
+                    let total = Double(model.snapshot?.info?.MemTotal ?? 0)
+                    let percent = total > 0 ? min(1, target * 1_048_576 / total) : 0
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(KiriPalette.raised(model.isLight))
+                        Capsule().fill(KiriPalette.blue)
+                            .frame(width: proxy.size.width * percent)
+                    }
+                }
+                .frame(height: 4)
+                Button(model.online ? "Stop" : "Start") {
+                    if model.online &&
+                        !model.confirm("停止 Moby VM？", detail: "运行中的容器会被停止。") { return }
+                    model.perform([model.online ? "stop" : "start"],
+                                  title: "VM", showResult: false)
+                }
+                .font(.system(size: 12, weight: .semibold))
+                .frame(maxWidth: .infinity, minHeight: 30)
+                .background(KiriPalette.blue)
+                .foregroundStyle(.white)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(model.sidebarCollapsed ? 7 : 12)
+        .background(KiriPalette.panel(model.isLight))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12)
+            .stroke(KiriPalette.border(model.isLight)))
+    }
+
+    private var pageHeader: some View {
+        HStack(spacing: 12) {
+            Text(model.page.rawValue).font(.system(size: 15, weight: .semibold))
+            Text(model.online ? "Docker Engine 已连接" : "VM 未连接")
+                .foregroundStyle(KiriPalette.muted(model.isLight))
+                .lineLimit(1)
+            Spacer(minLength: 10)
+            if model.page == .containers {
+                HStack(spacing: 5) {
+                    ForEach(ContainerFilter.allCases) { selected in
+                        let count = model.containers.filter { selected.includes($0) }.count
+                        Button("\(selected.rawValue)  \(count)") {
+                            model.containerFilter = selected
+                        }
+                        .font(.system(size: 11))
+                        .padding(.horizontal, 9).frame(height: 28)
+                        .background(model.containerFilter == selected ?
+                            KiriPalette.blue.opacity(0.15) : .clear)
+                        .foregroundStyle(model.containerFilter == selected ?
+                            KiriPalette.link(model.isLight) : KiriPalette.muted(model.isLight))
+                        .clipShape(Capsule())
+                        .overlay(Capsule().stroke(model.containerFilter == selected ?
+                            KiriPalette.blue : KiriPalette.border(model.isLight)))
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            Button("刷新") { model.refresh() }
+                .buttonStyle(.bordered)
+                .font(.system(size: 12))
+        }
+        .padding(.horizontal, 20)
+        .frame(height: 55)
+        .background(KiriPalette.bg(model.isLight))
+    }
+
+    private var footer: some View {
+        HStack(spacing: 0) {
+            Text("Kiri Moby  ·  \(model.snapshot?.version?.Version.map { "Docker \($0)" } ?? "Linux VM")"
+                + "  ·  \(model.containers.filter {$0.State == "running"}.count)"
+                + " of \(model.containers.count) containers running"
+                + "  ·  \(model.online ? "Linux VM running" : "Linux VM offline")"
+                + "  ·  OrbStack/default Docker context unchanged")
+                .foregroundStyle(KiriPalette.faint(model.isLight))
+                .lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 25)
+        .background(KiriPalette.side(model.isLight))
+        .overlay(alignment: .top) {
+            Rectangle().fill(KiriPalette.border(model.isLight)).frame(height: 1)
+        }
+        .font(.system(size: 11))
     }
 
     @ViewBuilder private var content: some View {
