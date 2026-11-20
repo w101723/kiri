@@ -643,6 +643,7 @@ private func openExecTerminal(_ containerID: String) {
 
 private struct RootView: View {
     @EnvironmentObject private var model: MobyModel
+    @State private var selectedContainerIDs = Set<String>()
     // Original Kiri Moby shell: 44pt title strip, 212pt flat sidebar,
     // bottom-left VM card, toolbar with status chips and footer.
     // These are SwiftUI/AppKit views; no HTML, WKWebView or JavaScript.
@@ -1217,8 +1218,9 @@ private struct RootView: View {
 
     private func dateLabel(_ seconds: Int64?) -> String {
         guard let seconds, seconds > 0 else { return "—" }
-        return Date(timeIntervalSince1970: TimeInterval(seconds))
-            .formatted(date: .numeric, time: .omitted)
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(seconds)))
     }
 
     private func tableTitle(_ title: String, width: CGFloat) -> some View {
@@ -1252,28 +1254,63 @@ private struct RootView: View {
             .buttonStyle(.plain)
     }
 
+    private func iconAction(_ tooltip: String, icon: String,
+                            destructive: Bool = false,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(destructive ? Color.red : KiriPalette.title(model.isLight))
+                .frame(width: 30, height: 29)
+                .background(KiriPalette.panel(model.isLight))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6)
+                    .stroke(KiriPalette.border(model.isLight)))
+        }
+        .buttonStyle(.plain)
+        .help(tooltip)
+        .accessibilityLabel(tooltip)
+    }
+
     private func containerButtons(_ container: ContainerItem) -> some View {
         HStack(spacing: 5) {
-            if container.State == "running" {
-                smallAction("停止") { containerOp("stop", container) }
-                smallAction("重启") { containerOp("restart", container) }
-                smallAction("暂停") { containerOp("pause", container) }
-                smallAction("执行") { openExecTerminal(container.Id) }
-            } else if container.State == "paused" {
-                smallAction("恢复") { containerOp("unpause", container) }
+            if container.State == "running" || container.State == "paused" {
+                iconAction("停止容器", icon: "stop.fill") {
+                    containerOp("stop", container)
+                }
             } else {
-                smallAction("启动") { containerOp("start", container) }
+                iconAction("启动容器", icon: "play.fill") {
+                    containerOp("start", container)
+                }
             }
-            smallAction("日志") { model.showLiveLogs(container.Id) }
-            smallAction("详情") {
-                model.action("inspect", fields: ["kind":"containers", "id":container.Id],
-                             title: "inspect")
+            iconAction("重启容器", icon: "arrow.clockwise") {
+                containerOp("restart", container)
             }
-            smallAction("删除", destructive:true) {
+            .disabled(container.State != "running")
+            iconAction("交互式 Exec", icon: "terminal") {
+                openExecTerminal(container.Id)
+            }
+            .disabled(container.State != "running")
+            iconAction("实时日志", icon: "doc.text") {
+                openContainerLogs(container.Id, name: container.title)
+            }
+            iconAction("删除容器", icon: "trash", destructive: true) {
                 if model.confirm("确定强制删除容器 \(container.title)？",
-                                 detail: "这不会自动删除命名数据卷。") {
+                                 detail: "不会自动删除命名数据卷。") {
                     containerOp("remove", container)
                 }
+            }
+        }
+        .contextMenu {
+            if container.State == "running" {
+                Button("暂停") { containerOp("pause", container) }
+            } else if container.State == "paused" {
+                Button("恢复") { containerOp("unpause", container) }
+            }
+            Button("查看详情") {
+                model.action("inspect", fields: [
+                    "kind": "containers", "id": container.Id
+                ], title: "inspect")
             }
         }
     }
@@ -1285,24 +1322,50 @@ private struct RootView: View {
     private func portLinks(_ ports: [PublishedPort]?) -> some View {
         HStack(spacing: 3) {
             let exposed = (ports ?? []).filter { $0.PublicPort != nil }
-            if exposed.isEmpty { Text("—").foregroundStyle(KiriPalette.muted(model.isLight)) }
+            if exposed.isEmpty {
+                Text("—").foregroundStyle(KiriPalette.muted(model.isLight))
+            }
             ForEach(Array(exposed.enumerated()), id: \.offset) { offset, port in
-                if offset > 0 { Text(",").foregroundStyle(KiriPalette.faint(model.isLight)) }
+                if offset > 0 {
+                    Text(",").foregroundStyle(KiriPalette.faint(model.isLight))
+                }
+                let label = "\(port.IP ?? "0.0.0.0"):\(port.PublicPort ?? 0)→\(port.PrivatePort ?? 0)/\(port.Type ?? "tcp")"
                 if port.Type == "tcp", let published = port.PublicPort {
-                    Button("\(published)→\(port.PrivatePort ?? 0)") {
-                        model.action("open_local",
-                            fields: ["url":"http://127.0.0.1:\(published)/"],
-                            title:"open_local")
+                    Button(label) {
+                        model.action("open_local", fields: [
+                            "url": "http://127.0.0.1:\(published)/"
+                        ], title: "open_local")
                     }
-                    .foregroundStyle(KiriPalette.link(model.isLight))
+                    .foregroundStyle(KiriPalette.title(model.isLight))
                     .buttonStyle(.plain)
+                    .help("浏览 localhost:\(published)")
                 } else {
-                    Text("\(port.PublicPort ?? 0)→\(port.PrivatePort ?? 0)/\(port.Type ?? "udp")")
+                    Text(label)
                 }
             }
         }
         .font(.system(size: 11))
         .lineLimit(1)
+    }
+
+    private func localPortShortcut(_ container: ContainerItem) -> some View {
+        Group {
+            if let port = container.localPort {
+                Button {
+                    model.action("open_local", fields: [
+                        "url": "http://127.0.0.1:\(port)/"
+                    ], title: "open_local")
+                } label: {
+                    Image(systemName: "link")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(KiriPalette.blue)
+                }
+                .buttonStyle(.plain)
+                .help("打开本地端口 \(port)（非公网分享）")
+            } else {
+                Text("—").foregroundStyle(KiriPalette.faint(model.isLight))
+            }
+        }
     }
 
     private var containers: some View {
