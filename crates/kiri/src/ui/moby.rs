@@ -643,3 +643,106 @@ mod tests {
         assert_eq!(decode_logs(b"plain\n"), "plain\n");
     }
 }
+
+
+/// Native SwiftUI frontend's narrow, short-lived command bridge.
+///
+/// The Finder-launched SwiftUI binary invokes Contents/MacOS/kiri with this
+/// private subcommand. All Docker operations keep using the existing Rust
+/// Moby adapter and private ~/.kiri-moby/run/docker.sock. No WebKit process,
+/// HTTP server, second engine, or new data store is introduced.
+///
+/// Only one JSON response is written to stdout; diagnostic logs stay stderr.
+pub(super) fn native_command(args: &[String]) -> io::Result<()> {
+    let result: io::Result<Value> = (|| {
+        let operation = args.first().map(String::as_str).unwrap_or("");
+        let value = match operation {
+            "snapshot" => {
+                if !client::alive() {
+                    json!({"online":false, "containers":[], "images":[], "volumes":[],
+                        "networks":[], "shares":read_shares()?, "memory":Value::Null})
+                } else {
+                    let containers = client::get("/containers/json?all=1")?;
+                    let images = client::get("/images/json")?;
+                    let volumes = client::get("/volumes")?;
+                    let networks = client::get("/networks")?;
+                    let info = client::get("/info")?;
+                    let version = client::get("/version")?;
+                    json!({"online":true, "containers":containers, "images":images,
+                        "volumes":volumes["Volumes"], "networks":networks,
+                        "info":info, "version":version,
+                        "memory":memory_status(), "shares":read_shares()?})
+                }
+            }
+            "start" => {
+                start_vm()?;
+                json!({"message":"Moby VM started"})
+            }
+            "stop" => {
+                stop_vm()?;
+                json!({"message":"VM stopped; Docker disk synced"})
+            }
+            "restart" => {
+                if client::alive() { stop_vm()?; }
+                start_vm()?;
+                json!({"message":"Moby VM restarted"})
+            }
+            "pull" => {
+                let name = args.get(1).ok_or_else(|| io::Error::other("image required"))?;
+                json!({"message":docker_command(&["pull", name])?})
+            }
+            "run" => {
+                let name = args.get(1).ok_or_else(|| io::Error::other("image required"))?;
+                json!({"message":run_image(name, &[])?})
+            }
+            "rmi" => {
+                let id = args.get(1).ok_or_else(|| io::Error::other("image ID required"))?;
+                require_ok(client::request("DELETE", &format!("/images/{}", path_escape(id)), None))?;
+                json!({"message":"Image removed"})
+            }
+            "rmvol" => {
+                let name = args.get(1).ok_or_else(|| io::Error::other("volume name required"))?;
+                require_ok(client::request("DELETE", &format!("/volumes/{}", path_escape(name)), None))?;
+                json!({"message":"Volume removed"})
+            }
+            "rmnet" => {
+                let id = args.get(1).ok_or_else(|| io::Error::other("network ID required"))?;
+                require_ok(client::request("DELETE", &format!("/networks/{}", path_escape(id)), None))?;
+                json!({"message":"Network removed"})
+            }
+            "container" => {
+                let action = args.get(1).map(String::as_str).unwrap_or("");
+                let id = args.get(2).ok_or_else(|| io::Error::other("container ID required"))?;
+                let path = format!("/containers/{}", path_escape(id));
+                match action {
+                    "remove" => { require_ok(client::request("DELETE", &format!("{path}?force=1"), None))?; }
+                    "start" | "stop" | "restart" | "pause" | "unpause" => {
+                        require_ok(client::request("POST", &format!("{path}/{action}"), None))?;
+                    }
+                    _ => return Err(io::Error::other("unsupported container action")),
+                }
+                json!({"message":format!("{action}: {}", &id[..id.len().min(12)])})
+            }
+            "action" => {
+                let encoded = args.get(1).ok_or_else(|| io::Error::other("JSON action required"))?;
+                let input: Value = serde_json::from_str(encoded)?;
+                json!({"message":execute(&input)?})
+            }
+            _ => return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                "moby-native: expected snapshot/start/stop/restart/pull/run/rmi/rmvol/rmnet/container/action")),
+        };
+        Ok(value)
+    })();
+    let reply = match result {
+        Ok(value) => {
+            let mut response = json!({"ok":true});
+            if let Some(fields) = value.as_object() {
+                for (key, val) in fields { response[key] = val.clone(); }
+            }
+            response
+        }
+        Err(err) => json!({"ok":false, "error":err.to_string()}),
+    };
+    println!("{reply}");
+    Ok(())
+}
