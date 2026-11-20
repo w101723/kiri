@@ -1365,6 +1365,12 @@ private struct RootView: View {
         .task {
             model.begin()
             #if KIRI_UI_PREVIEW
+            if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+                // Screenshot assertions must capture an active, focused Mac
+                // window; unfocused macOS sidebars are intentionally dimmed.
+                NSApp.activate(ignoringOtherApps: true)
+                NSApp.windows.first(where: { $0.isVisible })?.makeKeyAndOrderFront(nil)
+            }
             if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" &&
                ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW_NO_FLOATING"] != "1" {
                 try? await Task.sleep(for: .seconds(1))
