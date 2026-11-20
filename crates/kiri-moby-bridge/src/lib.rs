@@ -212,3 +212,6 @@ pub mod ports;
 
 /// Validated path mapping shared by the macOS launcher and Linux Guest.
 pub mod shares;
+
+/// Adaptive Guest memory telemetry and conservative balloon policy.
+pub mod memory;

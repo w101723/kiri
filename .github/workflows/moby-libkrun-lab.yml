@@ -1,0 +1,57 @@
+name: Kiri libkrun2 isolated RAM lab (compile only)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [memory-reclaim]
+    paths:
+      - "scripts/moby/libkrun2-ram-lab.c"
+      - "scripts/moby/libkrun2-memory-probe.c"
+      - "scripts/moby/libkrun2-entitlements.plist"
+      - ".github/workflows/moby-libkrun-lab.yml"
+  pull_request:
+    paths:
+      - "scripts/moby/libkrun2-ram-lab.c"
+      - "scripts/moby/libkrun2-memory-probe.c"
+      - "scripts/moby/libkrun2-entitlements.plist"
+      - ".github/workflows/moby-libkrun-lab.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    name: Apple Silicon experimental VMM runner (no VM boot)
+    runs-on: macos-15-intel
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and sign isolated macOS ARM64 libkrun laboratory
+        run: |
+          set -euo pipefail
+          mkdir -p target/libkrun-lab
+          clang -std=c11 -Wall -Wextra -Werror -arch arm64 \
+            -o target/libkrun-lab/kiri-libkrun2-ram-lab \
+            scripts/moby/libkrun2-ram-lab.c
+          clang -std=c11 -Wall -Wextra -Werror -arch arm64 \
+            -o target/libkrun-lab/kiri-libkrun2-symbol-probe \
+            scripts/moby/libkrun2-memory-probe.c
+          for exe in target/libkrun-lab/kiri-*; do
+            test "$(lipo "$exe" -archs)" = "arm64"
+            codesign --force --sign - \
+              --entitlements scripts/moby/libkrun2-entitlements.plist "$exe"
+            codesign --verify --strict --verbose=2 "$exe"
+          done
+          cp docs/MOBY_LIBKRUN_MEMORY.md target/libkrun-lab/README.md
+          tar -C target/libkrun-lab -czf target/kiri-libkrun2-memory-lab-arm64.tgz .
+          shasum -a 256 target/kiri-libkrun2-memory-lab-arm64.tgz \
+            > target/kiri-libkrun2-memory-lab-arm64.tgz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: experimental-libkrun2-ram-lab-arm64
+          path: |
+            target/kiri-libkrun2-memory-lab-arm64.tgz
+            target/kiri-libkrun2-memory-lab-arm64.tgz.sha256
+          if-no-files-found: error
+          retention-days: 14

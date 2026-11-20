@@ -182,6 +182,8 @@ impl Guest {
             console: console_output(opts)?,
             agent_port: kiri_proto::HOST_PORT,
             disk: if opts.data_disk { Some(data_disk(&dir)?) } else { None },
+            // The legacy runtime has no separate sealed Moby OS seed.
+            seed_disk: None,
             nat_mac: if opts.data_disk { Some(mac_address()?) } else { None },
             // The Mac's folders a bind mount may name: /mnt/mac in the guest.
             share: opts.data_disk.then(mac_share),

@@ -25,7 +25,7 @@ unzip -q "$2" -d "$work/hzip"
 g="$(find "$work/gzip" -type f -name kiri-moby-guest-arm64.tgz -print -quit)"
 h="$(find "$work/hzip" -type f -name kiri-moby-host-arm64.tgz -print -quit)"
 [ -n "$g" ] && [ -n "$h" ] || { echo "ZIP files lack their expected .tgz bundles" >&2; exit 2; }
-tar -xzf "$g" -C "$work/guest" Image initramfs.cpio data.img.tgz SHA256SUMS
+tar -xzf "$g" -C "$work/guest" Image initramfs.cpio data.img.tgz system.img.tgz rootfs.revision SHA256SUMS
 (cd "$work/guest" && shasum -a 256 -c SHA256SUMS)
 tar -xzf "$h" -C "$work/host" kiri-moby-host
 file "$work/host/kiri-moby-host" | grep -q arm64 || { echo "Host not arm64" >&2; exit 2; }
@@ -35,7 +35,7 @@ backup="$dest/backup-$(date +%Y%m%d-%H%M%S)"
 if [ -e "$backup" ]; then echo "Backup already exists: $backup" >&2; exit 2; fi
 mkdir -m 700 "$backup"
 mkdir -m 700 "$backup/guest" "$backup/bin"
-for name in Image initramfs.cpio data.img.tgz SHA256SUMS; do
+for name in Image initramfs.cpio data.img.tgz system.img.tgz rootfs.revision SHA256SUMS; do
   if [ -f "$dest/guest/$name" ]; then
     mv "$dest/guest/$name" "$backup/guest/$name"
   fi

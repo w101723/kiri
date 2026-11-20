@@ -24,6 +24,9 @@ fn main() -> std::io::Result<()> {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use kiri_vmm::{Config, Share, ShareDir, Vm};
+    use kiri_moby_bridge::memory::{GuestMemory, Governor};
+    use std::sync::{mpsc, Mutex};
+
 
     let build_revision = option_env!("GITHUB_SHA").unwrap_or("local-build");
     if std::env::args().nth(1).as_deref() == Some("--version") {
@@ -35,6 +38,8 @@ fn main() -> std::io::Result<()> {
     const DOCKER_VSOCK_PORT: u32 = 2375; // AF_VSOCK, NOT TCP
     const CONTROL_VSOCK_PORT: u32 = 2376; // graceful shutdown
     const TCP_FORWARD_VSOCK_PORT: u32 = 2377; // published port transport
+    const MEMORY_VSOCK_PORT: u32 = 2378; // read-only Guest telemetry
+
 
     let data = match std::env::var_os("KIRI_MOBY_DATA_DIR") {
         Some(path) => PathBuf::from(path),
@@ -130,6 +135,59 @@ fn main() -> std::io::Result<()> {
         std::fs::remove_dir(&staging)?;
     }
 
+    // On-disk OS seed is read-only to the Guest. Replace it only while holding
+    // exclusive ownership of the VM/data.img, and never rewrite user data.
+    // Existing Kiri installations are upgraded inside Linux only if the
+    // rootfs revision is different; normal boots perform no userspace copy.
+    let seed_archive = guest.join("system.img.tgz");
+    let seed_revision_path = guest.join("rootfs.revision");
+    let revision = std::fs::read_to_string(&seed_revision_path).map_err(|e| {
+        io::Error::new(e.kind(), format!("missing rootfs.revision (install upgraded Guest assets): {e}"))
+    })?;
+    let revision = revision.trim();
+    if revision.len() != 64 || !revision.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData,
+            "invalid rootfs.revision; refusing to start with unverified seed"));
+    }
+    if !seed_archive.is_file() {
+        return Err(io::Error::new(io::ErrorKind::NotFound,
+            format!("missing read-only system seed {}; install matching Guest bundle",
+                seed_archive.display())));
+    }
+    let seed_disk = vm_dir.join("system.img");
+    let seed_stamp = vm_dir.join("system.revision");
+    let needs_seed_update = !seed_disk.is_file()
+        || std::fs::read_to_string(&seed_stamp).ok().as_deref().map(str::trim) != Some(revision);
+    if needs_seed_update {
+        let staging = vm_dir.join("system-staging");
+        if staging.exists() {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists,
+                format!("incomplete seed upgrade at {}; inspect manually", staging.display())));
+        }
+        std::fs::create_dir_all(&staging)?;
+        let unpacked = std::process::Command::new("/usr/bin/tar")
+            .arg("-xzf").arg(&seed_archive).arg("-C").arg(&staging)
+            .arg("system.img").status()?;
+        if !unpacked.success() || !staging.join("system.img").is_file() {
+            return Err(io::Error::other("failed to extract verified system.img seed"));
+        }
+        let fsync = std::fs::OpenOptions::new().read(true)
+            .open(staging.join("system.img"))?;
+        fsync.sync_all()?;
+        drop(fsync);
+        std::fs::rename(staging.join("system.img"), &seed_disk)?;
+        std::fs::remove_dir(&staging)?;
+        let tmp = vm_dir.join("system.revision.new");
+        let mut stamp = std::fs::OpenOptions::new().write(true)
+            .create_new(true).open(&tmp)?;
+        stamp.write_all(revision.as_bytes())?;
+        stamp.write_all(b"\n")?;
+        stamp.sync_all()?;
+        drop(stamp);
+        std::fs::rename(tmp, &seed_stamp)?;
+        eprintln!("Kiri Moby: installed read-only userspace seed rev={revision}");
+    }
+
     // Explicit per-directory shares preserve the same Mac path in the Guest
     // without sharing the entirety of /Users or /Volumes. The kernel cmdline
     // carries an ASCII-only hex-encoded mapping; no shell/path injection.
@@ -211,6 +269,7 @@ fn main() -> std::io::Result<()> {
         console: Some(console_log.into()),
         agent_port: 5556,
         disk: Some(disk),
+        seed_disk: Some(seed_disk),
         share,
         rosetta_tag: Some("rosetta".into()),
         nat_mac: Some("02:4b:69:72:69:01".into()),
@@ -253,6 +312,10 @@ fn main() -> std::io::Result<()> {
     let control_listener = UnixListener::bind(&control_path)?;
     std::fs::set_permissions(&control_path, std::fs::Permissions::from_mode(0o600))?;
     control_listener.set_nonblocking(true)?;
+    // Human-readable, same-user-only diagnostics. Target is the guest's
+    // balloon target, NOT proven macOS physical-memory reclamation.
+    let memory_report = Arc::new(Mutex::new((memory_mib, 0_u64, 0_u64)));
+    let control_memory = Arc::clone(&memory_report);
     let control_stop = Arc::clone(&stopping);
     let control_worker = thread::spawn(move || {
         while !control_stop.load(Ordering::Acquire) {
@@ -261,7 +324,14 @@ fn main() -> std::io::Result<()> {
                     use std::io::Read;
                     let _ = client.set_read_timeout(Some(Duration::from_secs(2)));
                     let mut request = [0_u8; 5];
-                    if client.read_exact(&mut request).is_ok() && &request == b"STOP\n" {
+                    if client.read_exact(&mut request).is_ok() && &request == b"STAT\n" {
+                        let (target, total, available) = *control_memory.lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        let output = format!(
+                            "{{\"balloon_target_mib\":{target},\"guest_total_kib\":{total},\"guest_available_kib\":{available},\"host_reclaimed_bytes\":null}}\n"
+                        );
+                        let _ = client.write_all(output.as_bytes());
+                    } else if &request == b"STOP\n" {
                         let _ = client.write_all(b"OK\n");
                         control_stop.store(true, Ordering::Release);
                     } else {
@@ -291,11 +361,16 @@ fn main() -> std::io::Result<()> {
     // During initial VM/Engine smoke tests, avoid automatic Docker API
     // probes and any Mac TCP port listeners.
     let disable_ports = std::env::var("KIRI_MOBY_DISABLE_PORT_FORWARD").ok().as_deref() == Some("1");
+    let (memory_kick_tx, memory_kick_rx) = mpsc::sync_channel::<()>(1);
+    // Keep the sender alive even when the port watcher is disabled. The
+    // receiver can then wait with a timeout without spinning on disconnect.
+    let _memory_kick_keepalive = memory_kick_tx.clone();
     let port_watcher = if !disable_ports && manual_ports.trim().is_empty() {
         // Docker /events triggers fast reconciliation; a 30s snapshot
         // recovers missed transitions. Join the worker before retiring VM.
         Some(kiri_moby_bridge::ports::start(
-            path.clone(), Arc::clone(&connector), Arc::clone(&stopping)
+            path.clone(), Arc::clone(&connector), Arc::clone(&stopping),
+            Some(memory_kick_tx)
         ))
     } else {
         None
@@ -363,10 +438,87 @@ fn main() -> std::io::Result<()> {
         });
     }
 
+    // Periodic lightweight Guest samples must never hold up Docker API
+    // accept, Compose, or Buildx. Missing or malformed telemetry is fail-open:
+    // retain the current memory target rather than risking an OOM.
+    let (memory_tx, memory_rx) = mpsc::sync_channel::<(GuestMemory, bool)>(1);
+    let memory_stop = Arc::clone(&stopping);
+    let memory_connector = Arc::clone(&connector);
+    let memory_worker = thread::spawn(move || {
+        let mut exited_container = false;
+        while !memory_stop.load(Ordering::Acquire) {
+            if let Ok(stream) = memory_connector.connect(MEMORY_VSOCK_PORT) {
+                if let Ok(fd) = stream.fd.try_clone() {
+                    let mut peer = UnixStream::from(fd);
+                    let mut bytes = [0_u8; 128];
+                    let mut len = 0;
+                    // VZ AF_VSOCK can remain O_NONBLOCK after duplication.
+                    // Poll until a complete newline-terminated sample arrives,
+                    // with a strict bound so shutdown never waits on a peer.
+                    let deadline = std::time::Instant::now() + Duration::from_millis(700);
+                    while len < bytes.len() && std::time::Instant::now() < deadline {
+                        let mut pfd = libc::pollfd {
+                            fd: peer.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        };
+                        let ready = unsafe { libc::poll(&mut pfd, 1, 100) };
+                        if ready <= 0 { continue; }
+                        if pfd.revents & libc::POLLIN == 0 { break; }
+                        match std::io::Read::read(&mut peer, &mut bytes[len..]) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                len += n;
+                                if bytes[..len].contains(&b'\n') { break; }
+                            }
+                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                            Err(_) => break,
+                        }
+                    }
+                    if len > 0 && bytes[..len].last() == Some(&b'\n') {
+                        if let Ok(line) = std::str::from_utf8(&bytes[..len]) {
+                            if let Some(sample) = GuestMemory::from_wire(line) {
+                                let _ = memory_tx.try_send((sample, exited_container));
+                            }
+                        }
+                    }
+                }
+            }
+            // Normal interval is two seconds; Docker exit/stop events cut
+            // short the wait to promptly re-sample reclaimed memory.
+            exited_container = memory_kick_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+            while memory_kick_rx.try_recv().is_ok() {
+                exited_container = true;
+            }
+        }
+    });
+    let adaptive_memory = std::env::var("KIRI_MOBY_MEMORY_POLICY")
+        .ok().as_deref() != Some("off");
+    let mut memory_governor = Governor::new(memory_mib);
+    eprintln!("Kiri Moby memory: adaptive={} ceiling={}MiB (macOS RSS recovery is not guaranteed)",
+        adaptive_memory, memory_mib);
+
     // Avoid waiting forever in accept() after Ctrl-C, so dockerd can stop
     // cleanly and flush the ext4 data disk before VM destruction.
     listener.set_nonblocking(true)?;
     while !stopping.load(Ordering::Acquire) {
+        while let Ok((sample, exited_container)) = memory_rx.try_recv() {
+            if exited_container { memory_governor.released_hint(); }
+            let old_target = memory_governor.target_mib();
+            let new_target = if adaptive_memory { memory_governor.update(sample) } else { None };
+            if let Some(next_mib) = new_target {
+                if vm.set_memory_target(next_mib * 1024 * 1024).is_some() {
+                    eprintln!("Kiri Moby memory: balloon target {} -> {} MiB, Guest MemAvailable={} MiB",
+                        old_target, next_mib, sample.available_kib / 1024);
+                } else {
+                    // Disable attempted updates if Virtualization.framework did
+                    // not supply a traditional balloon device.
+                    eprintln!("Kiri Moby memory: VZ balloon device unavailable");
+                }
+            }
+            *memory_report.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                (memory_governor.target_mib(), sample.total_kib, sample.available_kib);
+        }
         let client = match listener.accept() {
             Ok((client, _)) => client,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -412,6 +564,9 @@ fn main() -> std::io::Result<()> {
     }
 
     eprintln!("Stopping standard Docker Engine gracefully...");
+    if memory_worker.join().is_err() {
+        eprintln!("Kiri Moby memory telemetry worker panicked");
+    }
     if control_worker.join().is_err() {
         eprintln!("Kiri Moby local lifecycle worker panicked");
     }

@@ -18,7 +18,7 @@ dest="${KIRI_MOBY_DATA_DIR:-$HOME/.kiri-moby}"
 [ ! -L "$dest" ] || { echo "Refusing symlink for guest data dir" >&2; exit 2; }
 mkdir -p "$dest" "$dest/guest" "$dest/bin" "$dest/run"
 chmod 700 "$dest" "$dest/guest" "$dest/bin" "$dest/run"
-for name in Image initramfs.cpio data.img.tgz SHA256SUMS; do
+for name in Image initramfs.cpio data.img.tgz system.img.tgz rootfs.revision SHA256SUMS; do
   [ ! -e "$dest/guest/$name" ] || { echo "Refusing to overwrite $dest/guest/$name" >&2; exit 2; }
 done
 [ ! -e "$dest/bin/kiri-moby-host" ] || {
@@ -34,7 +34,7 @@ h="$(find "$tmp/hostzip" -type f -name kiri-moby-host-arm64.tgz -print -quit)"
 [ -n "$g" ] && [ -n "$h" ] || {
   echo "Expected .tgz not found inside the GitHub artifact ZIPs" >&2; exit 2;
 }
-tar -xzf "$g" -C "$tmp/root" Image initramfs.cpio data.img.tgz SHA256SUMS
+tar -xzf "$g" -C "$tmp/root" Image initramfs.cpio data.img.tgz system.img.tgz rootfs.revision SHA256SUMS
 (cd "$tmp/root" && shasum -a 256 -c SHA256SUMS)
 tar -xzf "$h" -C "$tmp/bin" kiri-moby-host
 file "$tmp/bin/kiri-moby-host"
@@ -43,7 +43,7 @@ file "$tmp/bin/kiri-moby-host" | grep -q arm64 || {
 }
 codesign --verify --strict --verbose=2 "$tmp/bin/kiri-moby-host"
 chmod 700 "$tmp/bin/kiri-moby-host"
-for name in Image initramfs.cpio data.img.tgz SHA256SUMS; do
+for name in Image initramfs.cpio data.img.tgz system.img.tgz rootfs.revision SHA256SUMS; do
   mv "$tmp/root/$name" "$dest/guest/$name"
 done
 mv "$tmp/bin/kiri-moby-host" "$dest/bin/kiri-moby-host"

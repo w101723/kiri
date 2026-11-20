@@ -27,7 +27,7 @@ button,input{font-family:inherit}button{cursor:pointer}input{color:var(--text);b
 <script>
 "use strict";
 const d=id=>document.getElementById(id);
-const s={online:false,containers:[],images:[],volumes:[],networks:[],shares:[],info:{},version:{},page:"dashboard",search:""};
+const s={online:false,containers:[],images:[],volumes:[],networks:[],shares:[],info:{},version:{},memory:{},page:"dashboard",search:""};
 const pageNames={dashboard:"总览",containers:"容器",images:"镜像",volumes:"Volume",networks:"网络",compose:"Compose",build:"Build",settings:"设置"};
 function send(x){window.webkit?.messageHandlers?.kiri?.postMessage(JSON.stringify(x))}
 function el(tag,cls,txt){const o=document.createElement(tag);if(cls)o.className=cls;if(txt!==undefined)o.textContent=String(txt);return o}
@@ -55,7 +55,12 @@ function containerBtns(c){const b=el("div","buttons"),id=c.Id;
 function dashboard(root){const grid=el("div","grid");[
  ["运行中的容器",s.containers.filter(x=>x.State==="running").length],["全部容器",s.containers.length],["镜像",s.images.length],["数据卷",s.volumes.length]
  ].forEach(([title,n])=>{const c=el("div","metric");c.append(el("small","",title),el("strong","",n));grid.append(c)});root.append(grid);
-  const info=el("div","card");info.append(el("h2","","标准 Moby Docker Engine"));info.append(el("p","",("Docker "+(s.version.Version||"—")+" · "+(s.info.Architecture||"arm64")+" · "+(s.info.Driver||"overlay2"))));info.append(el("p","",("CPU: "+(s.info.NCPU||"—")+"  ·  内存: "+fmtBytes(s.info.MemTotal)+"  ·  "+(s.info.OperatingSystem||"Linux VM"))));root.append(info);
+  const info=el("div","card");info.append(el("h2","","标准 Moby Docker Engine"));info.append(el("p","",("Docker "+(s.version.Version||"—")+" · "+(s.info.Architecture||"arm64")+" · "+(s.info.Driver||"overlay2"))));info.append(el("p","",("CPU: "+(s.info.NCPU||"—")+"  ·  VM 配置上限: "+fmtBytes(s.info.MemTotal)+"  ·  "+(s.info.OperatingSystem||"Linux VM"))));
+  if(Number.isFinite(Number(s.memory.balloon_target_mib))&&Number(s.memory.balloon_target_mib)>0){
+    info.append(el("p","","当前 Balloon 内存目标: "+s.memory.balloon_target_mib+" MiB · Guest 可用: "+Math.round((s.memory.guest_available_kib||0)/1024)+" MiB"));
+    info.append(el("p","","提示：Balloon 目标不等于 Mac 实际已释放内存；以系统内存压力/RSS 为准。"));
+  }
+  root.append(info);
   root.append(tool("最近容器",[btn("查看全部",()=>switchTo("containers"))]));root.append(table(["容器","镜像","状态","操作"],s.containers.slice(0,7).map(c=>[line(c.Names?.[0]?.slice(1)||c.Id.slice(0,12),c.Id.slice(0,12)),c.Image,state(c),containerBtns(c)])))}
 function containers(root){root.append(tool("容器",[btn("运行镜像",()=>{const name=window.prompt("镜像，例如 nginx:alpine");if(name?.trim())send({cmd:"run",name:name.trim()})},"primary")]));
   root.append(table(["容器","镜像","状态","端口","操作"],filtered(s.containers,c=>(c.Names||[]).join(" ")+c.Id+c.Image).map(c=>{
@@ -134,7 +139,7 @@ d("power").onclick=()=>{if(s.online&&!confirmDelete("停止 Moby VM？"))return;
 d("modalClose").onclick=()=>d("overlay").style.display="none";
 d("overlay").onclick=e=>{if(e.target===d("overlay"))d("overlay").style.display="none"};
 window.kiri={on(e){if(!e||typeof e!=="object")return;
- if(e.type==="snapshot"){Object.assign(s,{online:!!e.online,containers:e.containers||[],images:e.images||[],volumes:e.volumes||[],networks:e.networks||[],shares:e.shares||[],info:e.info||{},version:e.version||{},error:e.error});render()}
+ if(e.type==="snapshot"){Object.assign(s,{online:!!e.online,containers:e.containers||[],images:e.images||[],volumes:e.volumes||[],networks:e.networks||[],shares:e.shares||[],info:e.info||{},version:e.version||{},memory:e.memory||{},error:e.error});render()}
  else if(e.type==="operation"){if(e.ok&&["inspect","logs","exec","compose_logs","compose_ps","compose_up","compose_down","build"].includes(e.label)){d("modalTitle").textContent=e.label;d("modalText").textContent=e.message||"完成";d("overlay").style.display="flex"}else toast(e.label+": "+(e.message||"完成"),!e.ok)}
  else if(e.type==="vm"){d("subtitle").textContent=e.state==="starting"?"正在启动 VM…":e.state==="stopping"?"正在停止 VM…":"标准 Docker Engine"}
  else if(e.type==="selected_compose"){composePath=e.path||"";if(s.page==="compose")render()}

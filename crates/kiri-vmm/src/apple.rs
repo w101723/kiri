@@ -38,6 +38,9 @@ pub struct Config {
     pub agent_port: u32,
     /// Raw disk image for the guest's data (layers and containers): `/dev/vda`.
     pub disk: Option<PathBuf>,
+    /// Read-only, self-contained ext4 userspace upgrade seed, always /dev/vdb.
+    /// Never mount it writable or reorder it ahead of the persistent /dev/vda.
+    pub seed_disk: Option<PathBuf>,
     /// The host folders a bind mount may name, shared over virtiofs.
     pub share: Option<Share>,
     /// Share Rosetta with the guest over virtiofs under this tag, so it can
@@ -496,23 +499,33 @@ fn build(cfg: Config, queue: &DispatchQueue, events: Sender<Event>) -> io::Resul
             VZVirtioTraditionalMemoryBalloonDeviceConfiguration::new(),
         )]));
 
-        if let Some(disk) = &cfg.disk {
-            let disk_url = url(disk)?;
-            // Cached with fsync: Apple's "full" sync is much slower, and the
-            // disk only holds data the host can always send again.
-            let attachment = VZDiskImageStorageDeviceAttachment::initWithURL_readOnly_cachingMode_synchronizationMode_error(
-                VZDiskImageStorageDeviceAttachment::alloc(),
-                &disk_url,
-                false,
-                VZDiskImageCachingMode::Cached,
-                VZDiskImageSynchronizationMode::Fsync,
-            )
-            .map_err(|e| io::Error::other(format!("data disk: {}", describe(&e))))?;
-            let block = VZVirtioBlockDeviceConfiguration::initWithAttachment(
-                VZVirtioBlockDeviceConfiguration::alloc(),
-                &attachment,
-            );
-            conf.setStorageDevices(&NSArray::from_retained_slice(&[Retained::into_super(block)]));
+        // Deterministic order is part of Kiri's persistent disk ABI:
+        // /dev/vda = writable data+root; /dev/vdb = read-only OS upgrade seed.
+        // The seed is an ordinary file-backed disk, not a large initramfs.
+        let mut storage: Vec<Retained<VZStorageDeviceConfiguration>> = Vec::new();
+        for (disk, read_only, label) in [
+            (cfg.disk.as_ref(), false, "data"),
+            (cfg.seed_disk.as_ref(), true, "read-only system seed"),
+        ] {
+            if let Some(disk) = disk {
+                let disk_url = url(disk)?;
+                let attachment = VZDiskImageStorageDeviceAttachment::initWithURL_readOnly_cachingMode_synchronizationMode_error(
+                    VZDiskImageStorageDeviceAttachment::alloc(),
+                    &disk_url,
+                    read_only,
+                    VZDiskImageCachingMode::Cached,
+                    VZDiskImageSynchronizationMode::Fsync,
+                )
+                .map_err(|e| io::Error::other(format!("{label} disk: {}", describe(&e))))?;
+                let block = VZVirtioBlockDeviceConfiguration::initWithAttachment(
+                    VZVirtioBlockDeviceConfiguration::alloc(),
+                    &attachment,
+                );
+                storage.push(Retained::into_super(block));
+            }
+        }
+        if !storage.is_empty() {
+            conf.setStorageDevices(&NSArray::from_retained_slice(&storage));
         }
 
         let mut shares = Vec::new();

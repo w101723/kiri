@@ -1,0 +1,91 @@
+#!/bin/sh
+# Tiny first-stage boot: all Alpine/Moby packages live on EXT4, NOT in RAM.
+# /dev/vda: persistent Docker & Alpine ext4 root. /dev/vdb: read-only seed.
+set -eu
+export PATH=/bin:/sbin
+umask 022
+bb=/bin/busybox
+log() { echo "[kiri-early-init] $*" >/dev/console; }
+die() { log "FATAL: $*"; exec /bin/sh; }
+
+$bb mount -t proc proc /proc || die "mount /proc"
+$bb mount -t sysfs sysfs /sys || die "mount /sys"
+$bb mount -t devtmpfs devtmpfs /dev || die "mount /dev"
+exec >/dev/console 2>&1
+
+# Linux device enumeration can differ between boots. Require distinct ext4
+# labels before mounting anything writable: never mount the OS seed RW.
+data_dev=""
+seed_dev=""
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    for device in /dev/vda /dev/vdb /dev/vdc; do
+        [ -b "$device" ] || continue
+        # BusyBox blkid does not guarantee util-linux -s/-o flags.
+        # Parse its default tagged output rather than shelling out to udev.
+        labels="$($bb blkid "$device" 2>/dev/null || true)"
+        case "$labels" in
+            *'LABEL="kiri-moby"'*) data_dev="$device" ;;
+            *'LABEL="kiri-system"'*) seed_dev="$device" ;;
+        esac
+    done
+    [ -n "$data_dev" ] && [ -n "$seed_dev" ] && break
+    $bb sleep 1
+done
+[ -n "$data_dev" ] && [ -n "$seed_dev" ] &&
+    [ "$data_dev" != "$seed_dev" ] || die "missing Kiri data or system disk label"
+log "Mounting persistent root $data_dev and read-only OS seed $seed_dev"
+$bb mount -t ext4 -o noatime "$data_dev" /newroot || die "mount Docker data/root disk"
+$bb mount -t ext4 -o ro,noatime "$seed_dev" /seed || die "mount signed read-only OS seed"
+
+stamp=.kiri-moby-rootfs-revision
+[ -r "/seed/$stamp" ] || die "system image has no rootfs revision"
+# Legacy data images stored Docker data at /docker and /containerd. Move
+# instead of copying; abort on conflicts to avoid destroying user state.
+$bb mkdir -p /newroot/var/lib
+for directory in docker containerd; do
+    if [ -e "/newroot/$directory" ]; then
+        [ ! -e "/newroot/var/lib/$directory" ] ||
+            die "Docker state layout conflict for $directory"
+        $bb mv "/newroot/$directory" "/newroot/var/lib/$directory" ||
+            die "persistent Docker data migration failed"
+    fi
+done
+
+if ! $bb cmp -s "/seed/$stamp" "/newroot/$stamp" 2>/dev/null; then
+    log "Userspace revision changed; updating OS on ext4 without touching /var/lib"
+    # Marker lives at root, not inside copied directories. Removing it BEFORE
+    # a copy guarantees a crash mid-upgrade retries the next boot.
+    $bb rm -f "/newroot/$stamp"
+    for entry in bin etc home lib lib64 media mnt opt root sbin srv usr Users Volumes init; do
+        if [ -e "/seed/$entry" ] || [ -L "/seed/$entry" ]; then
+            $bb cp -a "/seed/$entry" /newroot/ ||
+                die "failed to update $entry on ext4"
+        fi
+    done
+    $bb mkdir -p /newroot/var/log /newroot/var/tmp /newroot/var/lib
+    $bb sync
+    $bb cp "/seed/$stamp" "/newroot/$stamp.new" ||
+        die "failed to write pending rootfs revision"
+    $bb sync
+    $bb mv "/newroot/$stamp.new" "/newroot/$stamp" ||
+        die "failed to commit rootfs revision"
+    $bb sync
+    log "Userspace update complete"
+else
+    log "Userspace already current; no rootfs copying"
+fi
+
+[ -x /newroot/init ] && [ -x /newroot/usr/local/sbin/kiri-moby-guest ] ||
+    die "ext4 userspace incomplete"
+$bb mkdir -p /newroot/dev/pts /newroot/dev/shm /newroot/proc \
+    /newroot/sys/fs/cgroup /newroot/run /newroot/tmp /newroot/mnt/mac
+if [ ! -e /newroot/var/run ] && [ ! -L /newroot/var/run ]; then
+    $bb ln -s /run /newroot/var/run || die "create /var/run link"
+fi
+$bb umount /seed || die "unmount read-only system seed"
+$bb mount --move /dev /newroot/dev || die "move /dev"
+$bb mount --move /proc /newroot/proc || die "move /proc"
+$bb mount --move /sys /newroot/sys || die "move /sys"
+log "Switching to ext4 root without retaining Alpine initramfs in RAM"
+exec /bin/busybox switch_root -c /dev/console /newroot /init --ext4-root
+die "switch_root failed"

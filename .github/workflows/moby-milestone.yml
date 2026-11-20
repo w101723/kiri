@@ -2,12 +2,15 @@ name: Kiri Moby unified macOS ARM64 milestone bundle
 
 on:
   workflow_dispatch:
+  # Primary install artifact: Finder-mounted DMG containing Kiri Moby.app and Applications.
   # Build a single integrated artifact automatically when this milestone
   # workflow changes, without re-building the 90-minute kernel every push.
   push:
-    branches: [moby-engine]
+    branches: [moby-engine, memory-reclaim]
     paths:
       - ".github/workflows/moby-milestone.yml"
+      - "scripts/moby/install-local-macos.sh"
+      - "scripts/moby/package-dmg-macos.sh"
 
 concurrency:
   group: moby-milestone-${{ github.ref }}
@@ -15,6 +18,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   guest:
@@ -23,6 +27,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-unknown-linux-musl
@@ -30,17 +36,79 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends musl-tools cpio e2fsprogs
+      - name: Syntax-check tiny boot stage and ext4 userspace init
+        run: |
+          sh -n scripts/moby/guest/stage1-init
+          sh -n scripts/moby/guest/init
+          # Data and the read-only seed must be selected by LABEL, never by
+          # potentially reordered virtio device letters.
+          grep -Fq 'kiri-moby' scripts/moby/guest/stage1-init
+          grep -Fq 'kiri-system' scripts/moby/guest/stage1-init
+          if grep -Fq 'blkid -s LABEL' scripts/moby/guest/stage1-init; then
+            echo "The tiny BusyBox blkid lacks util-linux flag compatibility" >&2
+            exit 1
+          fi
       - name: Compile Guest agent
         run: cargo build --release --target aarch64-unknown-linux-musl -p kiri-moby-bridge --bin kiri-moby-guest
       - name: Build standard Docker Guest and data disk template
         run: ./scripts/moby/build-guest.sh
-      - name: Build Linux ARM64 kernel
+      - name: Validate tiny early-boot archive and sealed rootfs checksums
+        run: |
+          set -euo pipefail
+          cd target/moby-guest
+          sha256sum -c SHA256SUMS
+          test -s rootfs.revision
+          test "$(stat -c '%s' initramfs.cpio)" -lt 16777216
+          cpio -it --quiet < initramfs.cpio > /tmp/kiri-boot-contents
+          grep -Fxq init /tmp/kiri-boot-contents
+          grep -Fxq bin/busybox /tmp/kiri-boot-contents
+          if grep -Eq 'dockerd|containerd|runc' /tmp/kiri-boot-contents; then
+            echo "The Docker Engine unexpectedly resides in initramfs" >&2
+            exit 1
+          fi
+          echo "Tiny ARM64 boot image verified" >> "$GITHUB_STEP_SUMMARY"
+      - name: Reuse exact-kernel verified ARM64 artifact if sources match
+        id: reuse_kernel
+        if: github.ref_name == 'memory-reclaim'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Use only a kernel from the previously successful milestone, and
+          # only when the guest kernel source/config/build scripts match.
+          prior="3024338cf42d0fa8efc705328b71279caf3e78b0"
+          if ! git cat-file -e "$prior^{commit}" 2>/dev/null ||
+             ! git diff --quiet "$prior" HEAD -- guest/kernel xtask; then
+            echo 'reused=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! command -v gh >/dev/null 2>&1; then
+            echo 'reused=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p /tmp/kiri-kernel-previous
+          if ! gh run download 44546791830 --repo w101723/kiri \
+              --name milestone-guest-arm64 --dir /tmp/kiri-kernel-previous; then
+            echo 'reused=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tar -xzf /tmp/kiri-kernel-previous/kiri-moby-guest-arm64.tgz \
+            -C /tmp/kiri-kernel-previous
+          (
+            cd /tmp/kiri-kernel-previous
+            sha256sum -c SHA256SUMS
+          )
+          mkdir -p guest/out
+          cp /tmp/kiri-kernel-previous/Image guest/out/Image
+          echo 'reused=true' >> "$GITHUB_OUTPUT"
+      - name: Build Linux ARM64 kernel if a verified reuse is not possible
+        if: steps.reuse_kernel.outputs.reused != 'true'
         run: cargo xtask kernel
       - name: Bundle Guest with file checksums
         run: |
           cp guest/out/Image target/moby-guest/Image
           (cd target/moby-guest && sha256sum Image >> SHA256SUMS)
-          tar -C target/moby-guest -czf kiri-moby-guest-arm64.tgz Image initramfs.cpio data.img.tgz SHA256SUMS
+          tar -C target/moby-guest -czf kiri-moby-guest-arm64.tgz Image initramfs.cpio data.img.tgz system.img.tgz rootfs.revision SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: milestone-guest-arm64
@@ -60,6 +128,10 @@ jobs:
           targets: aarch64-apple-darwin
       - name: Run Host-side protocol tests
         run: cargo test -p kiri-moby-bridge --lib --target x86_64-apple-darwin
+      - name: Compile isolated libkrun v2 memory-replacement API probe
+        run: |
+          clang -std=c11 -Wall -Wextra -Werror -arch arm64             -o /tmp/kiri-libkrun-probe scripts/moby/libkrun2-memory-probe.c
+          test "$(lipo /tmp/kiri-libkrun-probe -archs)" = "arm64"
       - name: Cross-build, verify ARM64 and sign Host
         run: |
           set -euo pipefail
@@ -111,11 +183,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p assembled/guest assembled/bin
-          tar -xzf downloaded/guest/kiri-moby-guest-arm64.tgz -C assembled/guest Image initramfs.cpio data.img.tgz SHA256SUMS
+          tar -xzf downloaded/guest/kiri-moby-guest-arm64.tgz -C assembled/guest Image initramfs.cpio data.img.tgz system.img.tgz rootfs.revision SHA256SUMS
           tar -xzf downloaded/host/kiri-moby-host-arm64.tgz -C assembled/bin kiri-moby-host
           (cd assembled/guest && shasum -a 256 -c SHA256SUMS)
           printf '%s\n' "${{ github.sha }}" > assembled/SOURCE_REVISION
-          (cd assembled && shasum -a 256 guest/Image guest/initramfs.cpio guest/data.img.tgz guest/SHA256SUMS bin/kiri-moby-host SOURCE_REVISION > BUNDLE_SHA256SUMS)
+          (cd assembled && shasum -a 256 guest/Image guest/initramfs.cpio guest/data.img.tgz guest/system.img.tgz guest/rootfs.revision guest/SHA256SUMS bin/kiri-moby-host SOURCE_REVISION > BUNDLE_SHA256SUMS)
           tar -C assembled -czf kiri-moby-macos-arm64-bundle.tgz guest bin SOURCE_REVISION BUNDLE_SHA256SUMS
       - name: Fetch pinned official Docker CLI, Compose and Buildx
         run: |
@@ -140,7 +212,8 @@ jobs:
           tar -xzf downloaded/gui/kiri-moby-gui-arm64.tgz -C "$mac" kiri
           chmod 755 "$mac/kiri"
           cp assembled/guest/Image assembled/guest/initramfs.cpio \
-             assembled/guest/data.img.tgz assembled/guest/SHA256SUMS "$res/guest/"
+             assembled/guest/data.img.tgz assembled/guest/system.img.tgz \
+             assembled/guest/rootfs.revision assembled/guest/SHA256SUMS "$res/guest/"
           cp assembled/bin/kiri-moby-host "$res/bin/kiri-moby-host"
           cp assembled/SOURCE_REVISION "$res/SOURCE_REVISION"
           tar -xzf downloaded/cli/docker.tgz -C downloaded/cli docker/docker
@@ -198,12 +271,56 @@ jobs:
           tar -czf Kiri-Moby-macos-arm64-app.tgz -C packaged "Kiri Moby.app"
           shasum -a 256 Kiri-Moby-macos-arm64-app.tgz > Kiri-Moby-macos-arm64-app.tgz.sha256
           ls -lh Kiri-Moby-macos-arm64-app.tgz
+      - name: Create standard drag-to-Applications DMG
+        run: |
+          bash scripts/moby/package-dmg-macos.sh \
+            "packaged/Kiri Moby.app" Kiri-Moby-macos-arm64.dmg
+          ls -lh Kiri-Moby-macos-arm64.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kiri-Moby-macos-arm64-DMG
+          path: |
+            Kiri-Moby-macos-arm64.dmg
+            Kiri-Moby-macos-arm64.dmg.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - name: Verify ad-hoc app package and bundle local-only installer
+        run: |
+          bash -n scripts/moby/install-local-macos.sh
+          bash scripts/moby/install-local-macos.sh --verify Kiri-Moby-macos-arm64-app.tgz
+          cp scripts/moby/install-local-macos.sh Kiri-Moby-install-local.sh
+      - name: Label unsigned/ad-hoc artifact as development-only
+        run: |
+          printf '%s\n' "Ad-hoc development build only; do not use for Gatekeeper-trusted updates." > DEV-ADHOC-ONLY.txt
+      - name: Developer ID sign + notarize for normal macOS updates
+        id: notarize
+        env:
+          MACOS_DEVELOPER_ID_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
+          MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          MACOS_DEVELOPER_ID_IDENTITY: ${{ secrets.MACOS_DEVELOPER_ID_IDENTITY }}
+          APPLE_NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: bash scripts/moby/sign-notarize-macos.sh "packaged/Kiri Moby.app"
+      - uses: actions/upload-artifact@v4
+        if: steps.notarize.outputs.notarized == 'true'
+        with:
+          name: Kiri-Moby-macos-arm64-DeveloperID-notarized
+          path: |
+            Kiri-Moby-macos-arm64-notarized.dmg
+            Kiri-Moby-macos-arm64-notarized.dmg.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
       - uses: actions/upload-artifact@v4
         with:
           name: Kiri-Moby-macos-arm64-app
           path: |
             Kiri-Moby-macos-arm64-app.tgz
             Kiri-Moby-macos-arm64-app.tgz.sha256
+            DEV-ADHOC-ONLY.txt
+            Kiri-Moby-install-local.sh
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
