@@ -231,6 +231,8 @@ private final class MobyModel: ObservableObject {
     @Published var busy = false
     @Published var error: String?
     @Published var result: TextResult?
+    @Published var toastMessage: String?
+    @Published var toastIsError = false
     @Published var composeFile = ""
     @Published var buildFolder = ""
     @Published var buildTag = ""
@@ -272,6 +274,17 @@ private final class MobyModel: ObservableObject {
         }
     }
 
+    // Legacy Moby UI showed long text in an in-window modal, and normal
+    // Docker operation notifications as non-blocking temporary toasts.
+    func notify(_ message: String, error: Bool = false) {
+        toastMessage = message
+        toastIsError = error
+        Task {
+            try? await Task.sleep(for: .seconds(6.5))
+            if toastMessage == message { toastMessage = nil }
+        }
+    }
+
     func perform(_ args: [String], title: String, showResult: Bool = true) {
         guard !busy else { return }
         busy = true
@@ -283,14 +296,20 @@ private final class MobyModel: ObservableObject {
             switch answer {
             case .success(let reply):
                 if reply.ok {
-                    if showResult {
+                    let detailLabels: Set<String> = [
+                        "inspect", "logs", "exec", "compose_logs", "compose_ps",
+                        "compose_up", "compose_down", "build"
+                    ]
+                    if showResult && detailLabels.contains(title) {
                         result = TextResult(title: title, body: reply.message ?? "完成")
+                    } else {
+                        notify("\(title): \(reply.message ?? "完成")")
                     }
                 } else {
-                    error = reply.error ?? "\(title) failed"
+                    notify("\(title): \(reply.error ?? "失败")", error: true)
                 }
             case .failure(let failure):
-                error = failure.localizedDescription
+                notify("\(title): \(failure.localizedDescription)", error: true)
             }
             refresh()
         }
@@ -426,22 +445,51 @@ private struct RootView: View {
         } message: {
             Text(model.error ?? "")
         }
-        .sheet(item: $model.result) { result in
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Text(result.title).font(.system(size: 14, weight: .semibold))
-                    Spacer()
-                    Button("关闭") { model.result = nil }
-                }
-                Divider()
-                ScrollView {
-                    Text(result.body).font(.system(size: 12, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay {
+            if let result = model.result {
+                ZStack {
+                    Color.black.opacity(0.52).ignoresSafeArea()
+                        .onTapGesture { model.result = nil }
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack {
+                            Text(result.title).font(.system(size: 14, weight: .semibold))
+                            Spacer()
+                            Button("关闭") { model.result = nil }
+                        }
+                        Divider()
+                        ScrollView {
+                            Text(result.body)
+                                .font(.system(size: 12, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding(20)
+                    .frame(width: 650, height: 420)
+                    .background(KiriPalette.panel(model.isLight))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12)
+                        .stroke(KiriPalette.border(model.isLight)))
+                    .shadow(radius: 18)
                 }
             }
-            .padding(20)
-            .frame(minWidth: 650, minHeight: 420)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if let message = model.toastMessage {
+                Text(message)
+                    .font(.system(size: 12))
+                    .lineLimit(3)
+                    .frame(maxWidth: 380, alignment: .leading)
+                    .padding(12)
+                    .background(model.toastIsError ?
+                        KiriPalette.red.opacity(0.16) : KiriPalette.panel(model.isLight))
+                    .clipShape(RoundedRectangle(cornerRadius: 9))
+                    .overlay(RoundedRectangle(cornerRadius: 9)
+                        .stroke(model.toastIsError ? KiriPalette.red :
+                            KiriPalette.border(model.isLight)))
+                    .shadow(radius: 10)
+                    .padding(16)
+            }
         }
     }
 
