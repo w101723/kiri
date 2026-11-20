@@ -1192,6 +1192,13 @@ private struct WindowTabbingConfigurator: NSViewRepresentable {
 
 private struct DetachedConsoleView: View {
     let session: ConsoleSession
+    @State private var logFollowing = true
+
+    private func command(_ kind: ConsoleCommand) {
+        NotificationCenter.default.post(name: consoleCommandNotification,
+            object: session.id, userInfo: ["action": kind.rawValue])
+    }
+
     var body: some View {
         Group {
             if session.kind == .exec {
@@ -1200,9 +1207,42 @@ private struct DetachedConsoleView: View {
                 ContainerLogWindow(containerID: session.containerID, containerName: session.name)
             }
         }
+        .frame(minWidth: 450, minHeight: 220)
+        .background(ConsoleAppearance.canvas)
         .environment(\.colorScheme, .dark)
         .background(WindowTabbingConfigurator())
         .navigationTitle(session.label)
+        .toolbar {
+            ToolbarItemGroup(placement: .automatic) {
+                if session.kind == .logs {
+                    Button {
+                        logFollowing.toggle()
+                        command(.toggleFollow)
+                    } label: {
+                        Label(logFollowing ? "暂停跟随" : "实时跟随",
+                              systemImage: logFollowing ? "pause.fill" : "play.fill")
+                    }
+                    Menu {
+                        Button("最近 200 行") { command(.last200) }
+                        Button("最近 1,000 行") { command(.last1000) }
+                        Button("最近 5,000 行") { command(.last5000) }
+                    } label: {
+                        Label("日志范围", systemImage: "line.3.horizontal.decrease")
+                    }
+                }
+                Button { command(.copy) } label: {
+                    Label("复制", systemImage: "doc.on.doc")
+                }
+                Button { command(.clear) } label: {
+                    Label("清屏", systemImage: "paintbrush")
+                }
+                if session.kind == .exec {
+                    Button { command(.interrupt) } label: {
+                        Label("中断", systemImage: "stop.fill")
+                    }
+                }
+            }
+        }
     }
 }
 
