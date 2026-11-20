@@ -1520,84 +1520,145 @@ private struct RootView: View {
         }
     }
 
+    private func containerStateBadge(_ item: ContainerItem) -> some View {
+        let state = item.State ?? "unknown"
+        let running = state == "running"
+        return Text(running ? "运行中" : (state == "paused" ? "已暂停" :
+                    (state == "exited" || state == "created" ? "已停止" : state)))
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(running ? Color(red: 0.08, green: 0.53, blue: 0.21) :
+                KiriPalette.muted(model.isLight))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(running ? Color.green.opacity(0.15) :
+                KiriPalette.raised(model.isLight))
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+    }
+
+    private func containerSelection(_ id: String) -> some View {
+        Toggle("", isOn: Binding(
+            get: { selectedContainerIDs.contains(id) },
+            set: { enabled in
+                if enabled { selectedContainerIDs.insert(id) }
+                else { selectedContainerIDs.remove(id) }
+            }
+        ))
+        .labelsHidden()
+        .toggleStyle(.checkbox)
+        .help("选择容器")
+    }
+
     private var containers: some View {
-        ScrollView(.horizontal) {
-            ScrollView(.vertical) {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 0) {
-                        tableTitle("NAME", width: 152)
-                        tableTitle("STATE", width: 110)
-                        tableTitle("PORTS", width: 120)
-                        tableTitle("SHARE", width: 38)
-                        tableTitle("SIZE", width: 62)
-                        tableTitle("CREATED", width: 80)
-                        tableTitle("ACTIONS", width: 280)
-                    }
-                    tableDivider
-                    if filteredContainers.isEmpty {
-                        Text(model.containers.isEmpty ? "暂无容器" : "没有符合条件的容器")
-                            .foregroundStyle(KiriPalette.muted(model.isLight))
-                            .frame(maxWidth: .infinity, minHeight: 130)
-                    }
-                    ForEach(visualRows) { row in
-                        switch row {
-                        case .project(let project, let running, let count):
-                            Button {
-                                if model.collapsedProjects.contains(project) {
-                                    model.collapsedProjects.remove(project)
-                                } else {
-                                    model.collapsedProjects.insert(project)
+        ScrollView([.horizontal, .vertical]) {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 0) {
+                    tableValue(
+                        Toggle("", isOn: Binding(
+                            get: {
+                                !filteredContainers.isEmpty &&
+                                filteredContainers.allSatisfy { selectedContainerIDs.contains($0.Id) }
+                            },
+                            set: { enabled in
+                                for item in filteredContainers {
+                                    if enabled { selectedContainerIDs.insert(item.Id) }
+                                    else { selectedContainerIDs.remove(item.Id) }
                                 }
-                            } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: model.collapsedProjects.contains(project) ?
-                                          "chevron.right" : "chevron.down")
-                                    Text(project).fontWeight(.semibold)
-                                    Text("\(running) / \(count) running")
-                                        .foregroundStyle(KiriPalette.muted(model.isLight))
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 12).frame(height: 36)
-                                .background(KiriPalette.panel(model.isLight))
                             }
-                            .buttonStyle(.plain)
-                            tableDivider
-                        case .container(let item, let nested):
-                            HStack(spacing: 0) {
-                                tableValue(
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(item.title)
-                                            .foregroundStyle(KiriPalette.link(model.isLight))
-                                            .fontWeight(.semibold)
-                                        Text(item.Image ?? "—")
-                                            .foregroundStyle(KiriPalette.muted(model.isLight))
-                                            .font(.system(size: 11)).lineLimit(1)
-                                    }
-                                    .padding(.leading, nested ? 18 : 0),
-                                    width: 152)
-                                tableValue(
-                                    HStack(spacing: 7) {
-                                        Circle().fill(item.State == "running" ?
-                                            KiriPalette.mint : KiriPalette.muted(model.isLight))
-                                            .frame(width: 7, height: 7)
-                                        Text(item.Status ?? item.State ?? "—").lineLimit(2)
-                                    }, width: 110)
-                                tableValue(portLinks(item.Ports), width: 120)
-                                tableValue(Text("—"), width: 38)
-                                tableValue(
-                                    Text((item.SizeRw ?? 0) > 0 ?
-                                         sizeLabel(item.SizeRw) : "—"), width: 62)
-                                tableValue(Text(dateLabel(item.Created)), width: 80)
-                                tableValue(containerButtons(item), width: 280)
+                        ))
+                        .labelsHidden().toggleStyle(.checkbox),
+                        width: 25)
+                    tableTitle("名称", width: 145)
+                    tableTitle("镜像", width: 155)
+                    tableTitle("状态", width: 95)
+                    tableTitle("端口", width: 195)
+                    tableTitle("SHARE", width: 48)
+                    tableTitle("创建时间", width: 115)
+                    tableTitle("操作", width: 190)
+                }
+                .background(KiriPalette.raised(model.isLight).opacity(0.55))
+                tableDivider
+                if filteredContainers.isEmpty {
+                    Text(model.containers.isEmpty ? "暂无容器" : "没有符合条件的容器")
+                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                        .frame(maxWidth: .infinity, minHeight: 160)
+                }
+                ForEach(visualRows) { row in
+                    switch row {
+                    case .project(let project, let running, let count):
+                        Button {
+                            if model.collapsedProjects.contains(project) {
+                                model.collapsedProjects.remove(project)
+                            } else {
+                                model.collapsedProjects.insert(project)
                             }
-                            .frame(minHeight: 59)
-                            tableDivider
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: model.collapsedProjects.contains(project) ?
+                                    "chevron.right" : "chevron.down")
+                                Image(systemName: "square.stack.3d.up")
+                                Text(project).fontWeight(.semibold)
+                                Text("\(running) / \(count) 运行中")
+                                    .foregroundStyle(KiriPalette.muted(model.isLight))
+                                Spacer()
+                            }
+                            .padding(.horizontal, 17)
+                            .frame(height: 43)
+                            .background(KiriPalette.raised(model.isLight).opacity(0.45))
                         }
+                        .buttonStyle(.plain)
+                        tableDivider
+                    case .container(let item, let nested):
+                        HStack(spacing: 0) {
+                            tableValue(containerSelection(item.Id), width: 25)
+                            tableValue(
+                                HStack(spacing: 10) {
+                                    Image(systemName: "cube.transparent")
+                                        .font(.system(size: 20, weight: .light))
+                                        .foregroundStyle(item.State == "running" ?
+                                            Color.green : KiriPalette.faint(model.isLight))
+                                    Text(item.title)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(KiriPalette.title(model.isLight))
+                                        .lineLimit(1)
+                                }
+                                .padding(.leading, nested ? 12 : 0), width: 145)
+                            tableValue(
+                                Text(item.Image ?? "—")
+                                    .font(.system(size: 11))
+                                    .lineLimit(1), width: 155)
+                            tableValue(containerStateBadge(item), width: 95)
+                            tableValue(portLinks(item.Ports), width: 195)
+                            tableValue(localPortShortcut(item), width: 48)
+                            tableValue(
+                                Text(dateLabel(item.Created))
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(KiriPalette.muted(model.isLight))
+                                    .lineLimit(1), width: 115)
+                            tableValue(containerButtons(item), width: 190)
+                        }
+                        .frame(minHeight: 53)
+                        .background(selectedContainerIDs.contains(item.Id) ?
+                            KiriPalette.blue.opacity(0.105) : .clear)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if selectedContainerIDs.contains(item.Id) {
+                                selectedContainerIDs.remove(item.Id)
+                            } else {
+                                selectedContainerIDs.insert(item.Id)
+                            }
+                        }
+                        tableDivider
                     }
                 }
-                .frame(minWidth: 1010)
             }
+            .frame(minWidth: 1160, alignment: .leading)
         }
+        .background(KiriPalette.panel(model.isLight))
+        .clipShape(RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11)
+            .stroke(KiriPalette.border(model.isLight)))
+        .padding(.horizontal, 14)
+        .padding(.bottom, 14)
         .background(KiriPalette.bg(model.isLight))
     }
 
