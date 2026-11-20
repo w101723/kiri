@@ -74,6 +74,24 @@ jobs:
           Path("/tmp/kiri-moby-gui-check.js").write_text(page.split("<script>", 1)[1].split("</script>", 1)[0])
           PY
           node --check /tmp/kiri-moby-gui-check.js
+      - name: Guard original Kiri UI shell and Moby JavaScript compatibility
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          page = Path("crates/kiri/src/ui/moby.html").read_text()
+          assert "--side: #121920" in page, "upstream Kiri CSS must remain reused"
+          assert 'data-page="containers"' in page
+          assert 'data-page="build"' in page
+          for identifier in ("filter-tabs", "vm-state", "power", "search", "content", "statusbar"):
+              assert f'id="{identifier}"' in page, identifier
+          for hidden in ('id="k8s-label"', 'id="k8s-nav"', 'data-page="pods"', 'data-page="services"'):
+              assert hidden not in page, hidden
+          assert page.count("<script>") == 1
+          assert "window.kiri={on(e)" in page
+          script = page.split("<script>", 1)[1].split("</script>", 1)[0]
+          Path("/tmp/kiri-moby-compat-check.js").write_text(script)
+          PY
+          node --check /tmp/kiri-moby-compat-check.js
       - name: Compile complete macOS Kiri GUI against upstream Moby
         run: cargo check -p kiri --target aarch64-apple-darwin
       - name: Compile macOS ARM64 host (not run on Intel)

@@ -14,6 +14,7 @@ on:
       - "scripts/moby/install-local-macos.sh"
       - "scripts/moby/package-dmg-macos.sh"
       - "crates/kiri-moby-bridge/src/memory.rs"
+      - "crates/kiri/src/ui/moby.html"
 
 concurrency:
   group: moby-milestone-${{ github.ref }}
