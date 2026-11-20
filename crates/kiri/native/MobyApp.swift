@@ -728,70 +728,225 @@ private struct RootView: View {
         }
     }
 
-    private var containers: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("\(model.containers.count) 个容器").foregroundStyle(.secondary)
-                Spacer()
-                Button("运行镜像") {
-                    if let name = model.ask("运行镜像", placeholder: "alpine:3.22") {
-                        model.perform(["run", name], title: "Run container")
-                    }
-                }.buttonStyle(.borderedProminent)
-            }.padding(16)
-            List {
-                ForEach(model.containers.filter {
-                    match([$0.title, $0.Image ?? "", $0.Id, $0.composeProject ?? ""])
-                }) { container in
-                    HStack(spacing: 12) {
-                        Image(systemName: "shippingbox.fill")
-                            .foregroundStyle(container.State == "running" ? .green : .secondary)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(container.title).fontWeight(.semibold)
-                            Text(container.Image ?? "").font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 15)
-                        Text(container.Status ?? container.State ?? "—")
-                            .foregroundStyle(container.State == "running" ? .green : .secondary)
-                            .font(.caption)
-                        if let port = container.localPort {
-                            Button(":\(port)") {
-                                model.action("open_local",
-                                    fields: ["url":"http://127.0.0.1:\(port)/"], title: "Open port")
-                            }.buttonStyle(.link).font(.caption)
-                        }
-                        Menu {
-                            Button("详情") { model.action("inspect",
-                                fields: ["kind":"containers", "id":container.Id], title: "Inspect") }
-                            Button("日志") { model.action("logs",
-                                fields: ["id":container.Id], title: "Logs") }
-                            Button("执行命令") {
-                                if let command = model.ask("执行 Shell 命令", placeholder: "pwd") {
-                                    model.action("exec",
-                                        fields: ["id":container.Id, "command":command], title: "Exec")
-                                }
-                            }
-                            Divider()
-                            ForEach(["start","stop","restart","pause","unpause"], id: \.self) { operation in
-                                Button(operation.capitalized) {
-                                    model.perform(["container",operation,container.Id],
-                                                  title: operation.capitalized)
-                                }
-                            }
-                            Divider()
-                            Button("删除容器", role: .destructive) {
-                                if model.confirm("删除 \(container.title)？",
-                                    detail: "将强制删除此容器；命名数据卷不会自动删除。") {
-                                    model.perform(["container","remove",container.Id],title:"Remove")
-                                }
-                            }
-                        } label: { Image(systemName: "ellipsis.circle") }
-                            .menuStyle(.borderlessButton)
-                            .frame(width: 30)
-                    }.padding(.vertical, 7)
-                }
-            }.listStyle(.inset)
+    private enum ContainerVisualRow: Identifiable {
+        case project(String, Int, Int), container(ContainerItem, Bool)
+        var id: String {
+            switch self {
+            case .project(let project, _, _): "project:" + project
+            case .container(let c, _): "container:" + c.Id
+            }
         }
+    }
+
+    private var filteredContainers: [ContainerItem] {
+        model.containers.filter { item in
+            model.containerFilter.includes(item)
+                && match([item.title, item.Image ?? "", item.Id, item.composeProject ?? ""])
+        }
+    }
+
+    // Compose project headers are ordered by the first container in the Docker
+    // snapshot, exactly like the previous WebKit table.
+    private var visualRows: [ContainerVisualRow] {
+        let items = filteredContainers
+        var visited = Set<String>()
+        var result: [ContainerVisualRow] = []
+        for container in items {
+            if let project = container.composeProject, !project.isEmpty {
+                if !visited.insert(project).inserted { continue }
+                let members = items.filter { $0.composeProject == project }
+                let running = members.filter { $0.State == "running" }.count
+                result.append(.project(project, running, members.count))
+                if !model.collapsedProjects.contains(project) {
+                    result.append(contentsOf: members.map {
+                        ContainerVisualRow.container($0, true)
+                    })
+                }
+            } else {
+                result.append(.container(container, false))
+            }
+        }
+        return result
+    }
+
+    private func dateLabel(_ seconds: Int64?) -> String {
+        guard let seconds, seconds > 0 else { return "—" }
+        return Date(timeIntervalSince1970: TimeInterval(seconds))
+            .formatted(date: .numeric, time: .omitted)
+    }
+
+    private func tableTitle(_ title: String, width: CGFloat) -> some View {
+        Text(title).font(.system(size: 11, weight: .medium))
+            .tracking(0.4)
+            .foregroundStyle(KiriPalette.faint(model.isLight))
+            .frame(width: width, alignment: .leading)
+            .padding(.horizontal, 12).frame(height: 39)
+    }
+
+    private func tableValue<V: View>(_ value: V, width: CGFloat) -> some View {
+        value.frame(width: width, alignment: .leading)
+            .padding(.horizontal, 12)
+    }
+
+    private var tableDivider: some View {
+        Rectangle().fill(KiriPalette.border(model.isLight)).frame(height: 1)
+    }
+
+    private func smallAction(_ name: String, destructive: Bool = false,
+                             action: @escaping () -> Void) -> some View {
+        Button(name, action: action)
+            .font(.system(size: 11))
+            .foregroundStyle(destructive ?
+                KiriPalette.red : KiriPalette.title(model.isLight))
+            .padding(.horizontal, 6).frame(height: 25)
+            .background(KiriPalette.raised(model.isLight))
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5)
+                .stroke(KiriPalette.border(model.isLight)))
+            .buttonStyle(.plain)
+    }
+
+    private func containerButtons(_ container: ContainerItem) -> some View {
+        HStack(spacing: 5) {
+            if container.State == "running" {
+                smallAction("停止") { containerOp("stop", container) }
+                smallAction("重启") { containerOp("restart", container) }
+                smallAction("暂停") { containerOp("pause", container) }
+                smallAction("执行") {
+                    if let command = model.ask("在容器中执行命令（使用 sh -c）",
+                                               placeholder: "pwd") {
+                        model.action("exec",
+                            fields: ["id":container.Id, "command":command],
+                            title: "exec")
+                    }
+                }
+            } else if container.State == "paused" {
+                smallAction("恢复") { containerOp("unpause", container) }
+            } else {
+                smallAction("启动") { containerOp("start", container) }
+            }
+            smallAction("日志") {
+                model.action("logs", fields: ["id":container.Id], title: "logs")
+            }
+            smallAction("详情") {
+                model.action("inspect", fields: ["kind":"containers", "id":container.Id],
+                             title: "inspect")
+            }
+            smallAction("删除", destructive:true) {
+                if model.confirm("确定强制删除容器 \(container.title)？",
+                                 detail: "这不会自动删除命名数据卷。") {
+                    containerOp("remove", container)
+                }
+            }
+        }
+    }
+
+    private func containerOp(_ action: String, _ container: ContainerItem) {
+        model.perform(["container", action, container.Id], title: action, showResult: false)
+    }
+
+    private func portLinks(_ ports: [PublishedPort]?) -> some View {
+        HStack(spacing: 3) {
+            let exposed = (ports ?? []).filter { $0.PublicPort != nil }
+            if exposed.isEmpty { Text("—").foregroundStyle(KiriPalette.muted(model.isLight)) }
+            ForEach(Array(exposed.enumerated()), id: \.offset) { offset, port in
+                if offset > 0 { Text(",").foregroundStyle(KiriPalette.faint(model.isLight)) }
+                if port.Type == "tcp", let published = port.PublicPort {
+                    Button("\(published)→\(port.PrivatePort ?? 0)") {
+                        model.action("open_local",
+                            fields: ["url":"http://127.0.0.1:\(published)/"],
+                            title:"open_local")
+                    }
+                    .foregroundStyle(KiriPalette.link(model.isLight))
+                    .buttonStyle(.plain)
+                } else {
+                    Text("\(port.PublicPort ?? 0)→\(port.PrivatePort ?? 0)/\(port.Type ?? "udp")")
+                }
+            }
+        }
+        .font(.system(size: 11))
+        .lineLimit(1)
+    }
+
+    private var containers: some View {
+        ScrollView(.horizontal) {
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 0) {
+                        tableTitle("NAME", width: 180)
+                        tableTitle("STATE", width: 130)
+                        tableTitle("PORTS", width: 135)
+                        tableTitle("SHARE", width: 50)
+                        tableTitle("SIZE", width: 75)
+                        tableTitle("CREATED", width: 94)
+                        tableTitle("ACTIONS", width: 325)
+                    }
+                    tableDivider
+                    if filteredContainers.isEmpty {
+                        Text(model.containers.isEmpty ? "暂无容器" : "没有符合条件的容器")
+                            .foregroundStyle(KiriPalette.muted(model.isLight))
+                            .frame(maxWidth: .infinity, minHeight: 130)
+                    }
+                    ForEach(visualRows) { row in
+                        switch row {
+                        case .project(let project, let running, let count):
+                            Button {
+                                if model.collapsedProjects.contains(project) {
+                                    model.collapsedProjects.remove(project)
+                                } else {
+                                    model.collapsedProjects.insert(project)
+                                }
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: model.collapsedProjects.contains(project) ?
+                                          "chevron.right" : "chevron.down")
+                                    Text(project).fontWeight(.semibold)
+                                    Text("\(running) / \(count) running")
+                                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 12).frame(height: 36)
+                                .background(KiriPalette.panel(model.isLight))
+                            }
+                            .buttonStyle(.plain)
+                            tableDivider
+                        case .container(let item, let nested):
+                            HStack(spacing: 0) {
+                                tableValue(
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(item.title)
+                                            .foregroundStyle(KiriPalette.link(model.isLight))
+                                            .fontWeight(.semibold)
+                                        Text(item.Image ?? "—")
+                                            .foregroundStyle(KiriPalette.muted(model.isLight))
+                                            .font(.system(size: 11)).lineLimit(1)
+                                    }
+                                    .padding(.leading, nested ? 18 : 0),
+                                    width: 180)
+                                tableValue(
+                                    HStack(spacing: 7) {
+                                        Circle().fill(item.State == "running" ?
+                                            KiriPalette.mint : KiriPalette.muted(model.isLight))
+                                            .frame(width: 7, height: 7)
+                                        Text(item.Status ?? item.State ?? "—").lineLimit(2)
+                                    }, width: 130)
+                                tableValue(portLinks(item.Ports), width: 135)
+                                tableValue(Text("—"), width: 50)
+                                tableValue(
+                                    Text((item.SizeRw ?? 0) > 0 ?
+                                         sizeLabel(item.SizeRw) : "—"), width: 75)
+                                tableValue(Text(dateLabel(item.Created)), width: 94)
+                                tableValue(containerButtons(item), width: 325)
+                            }
+                            .frame(minHeight: 59)
+                            tableDivider
+                        }
+                    }
+                }
+                .frame(minWidth: 1125)
+            }
+        }
+        .background(KiriPalette.bg(model.isLight))
     }
 
     private var images: some View {
