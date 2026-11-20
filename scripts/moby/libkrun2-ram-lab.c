@@ -83,6 +83,13 @@ int main(int argc, char **argv) {
         return 2;
     }
     const uint32_t mode = strcmp(mode_name, "replace") == 0 ? 1u : 0u;
+    const char *workload = getenv("KIRI_LIBKRUN_WORKLOAD");
+    if (workload == NULL || workload[0] == '\0') { workload = "tmpfs"; }
+    if (strcmp(workload, "tmpfs") != 0 &&
+        strcmp(workload, "anon-zram") != 0) {
+        fprintf(stderr, "KIRI_LIBKRUN_WORKLOAD must be tmpfs or anon-zram\n");
+        return 2;
+    }
     // Never permit a "convenience" path to the user's existing writable
     // Kiri VM data disk. This runner has NO block-device API at all.
     void *lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
@@ -168,8 +175,9 @@ int main(int argc, char **argv) {
 
     // No storage or networking devices are attached. The initrd must have
     // its own /init executable and in-RAM root, not Kiri's ext4 /dev/vda init.
-    const char *cmdline =
-        "console=hvc0 rdinit=/init panic=-1 loglevel=5";
+    const char *cmdline = strcmp(workload, "anon-zram") == 0
+        ? "console=hvc0 rdinit=/init panic=-1 loglevel=5 zswap.enabled=0 kiri.lab.workload=anon-zram"
+        : "console=hvc0 rdinit=/init panic=-1 loglevel=5";
     Handle payload = krun_payload_load_external(
         KRUN_STR(argv[2]), RAW_ARM64_IMAGE, KRUN_STR(argv[3]),
         KRUN_STR(cmdline), &error);
@@ -187,10 +195,10 @@ int main(int argc, char **argv) {
     if (failed(error, "VMM build") || vmm == NULL) { return 1; }
 
     fprintf(stderr,
-        "Experimental isolated libkrun2 VM: pid=%ld, 2048MiB max, free-page mode=%s.\n"
+        "Experimental isolated libkrun2 VM: pid=%ld, 2048MiB max, free-page mode=%s, workload=%s.\n"
         "Compare macOS Physical footprint before, during and after Guest allocation.\n"
         "No Kiri Docker VM disk or container state is mounted.\n",
-        (long)getpid(), mode_name);
+        (long)getpid(), mode_name, workload);
     fflush(stderr);
     krun_vmm_run(vmm);
     fprintf(stderr, "libkrun2 VM exited without a memory reclamation result.\n");
