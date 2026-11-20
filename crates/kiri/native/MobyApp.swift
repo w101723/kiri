@@ -425,6 +425,12 @@ private final class MobyModel: ObservableObject {
                     block_write_bytes: 31 * 1024 * 1024, pids: 28)
             ]
             statsUpdatedAt = .now
+            statsHistory["a000000000000000"] = (0..<60).map { index in
+                ContainerHistoryPoint(
+                    timestamp: Date().addingTimeInterval(Double(index - 59) * 5),
+                    cpuPercent: 1.1 + Double((index * 7) % 15) / 3,
+                    memoryPercent: 9.0 + Double((index * 3) % 10) / 4)
+            }
             isLight = true
             return
         }
@@ -1686,6 +1692,10 @@ private struct RootView: View {
             model.begin()
             #if KIRI_UI_PREVIEW
             if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+                let previewID = "a000000000000000"
+                selectedContainerIDs = [previewID]
+                selectedInspectorID = previewID
+                showInspector = true
                 // Screenshot assertions must capture an active, focused Mac
                 // window; unfocused macOS sidebars are intentionally dimmed.
                 NSApp.activate(ignoringOtherApps: true)
