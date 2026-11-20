@@ -8,6 +8,7 @@ on:
     branches: [moby-engine, memory-reclaim]
     paths:
       - ".github/workflows/moby-milestone.yml"
+      - "scripts/moby/install-local-macos.sh"
 
 concurrency:
   group: moby-milestone-${{ github.ref }}
