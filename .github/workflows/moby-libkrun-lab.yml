@@ -1,25 +1,46 @@
-name: Kiri libkrun2 isolated RAM lab (compile only)
+name: Kiri libkrun2 isolated RAM lab (Guest + runner)
 
+# Diagnostic-only: production DMG builds run via moby-milestone.yml.
+# Avoid expensive experimental Linux kernel rebuilds on normal commits.
 on:
   workflow_dispatch:
-  push:
-    branches: [memory-reclaim]
-    paths:
-      - "scripts/moby/libkrun2-ram-lab.c"
-      - "scripts/moby/libkrun2-memory-probe.c"
-      - "scripts/moby/libkrun2-entitlements.plist"
-      - ".github/workflows/moby-libkrun-lab.yml"
-  pull_request:
-    paths:
-      - "scripts/moby/libkrun2-ram-lab.c"
-      - "scripts/moby/libkrun2-memory-probe.c"
-      - "scripts/moby/libkrun2-entitlements.plist"
-      - ".github/workflows/moby-libkrun-lab.yml"
 
 permissions:
   contents: read
 
 jobs:
+  guest:
+    name: Linux ARM64 MMIO kernel + RAM-only Guest (no Kiri data disk)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install initramfs packaging tool
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends cpio
+      - name: Syntax-check experimental scripts
+        run: |
+          bash -n scripts/moby/build-libkrun-lab-guest.sh
+          bash -n scripts/moby/measure-libkrun-lab-macos.sh
+          bash -n scripts/moby/measure-libkrun-cold-anon-macos.sh
+          sh -n scripts/moby/libkrun-lab-init
+          python3 -m py_compile scripts/moby/summarize-libkrun-cold-anon.py
+      - name: Build isolated virtio-mmio kernel and RAM-only initramfs
+        run: |
+          mkdir -p "$RUNNER_TEMP/kiri-libkrun-guest"
+          bash scripts/moby/build-libkrun-lab-guest.sh "$RUNNER_TEMP/kiri-libkrun-guest"
+          (cd "$RUNNER_TEMP/kiri-libkrun-guest" && sha256sum -c SHA256SUMS)
+          (cd "$RUNNER_TEMP/kiri-libkrun-guest" && grep -Fxq 'CONFIG_VIRTIO_MMIO=y' kernel.config)
+          (cd "$RUNNER_TEMP/kiri-libkrun-guest" && grep -Fxq 'CONFIG_PAGE_REPORTING=y' kernel.config)
+          (cd "$RUNNER_TEMP/kiri-libkrun-guest" && grep -Fxq 'CONFIG_ZRAM=y' kernel.config)
+          (cd "$RUNNER_TEMP/kiri-libkrun-guest" && grep -Fxq 'CONFIG_ZRAM_DEF_COMP_LZ4=y' kernel.config)
+      - name: Publish isolated Guest assets (no Docker VM disk)
+        uses: actions/upload-artifact@v4
+        with:
+          name: experimental-libkrun2-guest-mmio-arm64
+          path: ${{ runner.temp }}/kiri-libkrun-guest/
+          if-no-files-found: error
+          retention-days: 14
+
   compile:
     name: Apple Silicon experimental VMM runner (no VM boot)
     runs-on: macos-15-intel
@@ -44,9 +65,14 @@ jobs:
             codesign --verify --strict --verbose=2 "$exe"
           done
           cp docs/MOBY_LIBKRUN_MEMORY.md target/libkrun-lab/README.md
+          cp scripts/moby/measure-libkrun-lab-macos.sh target/libkrun-lab/measure-libkrun-lab-macos.sh
+          cp scripts/moby/measure-libkrun-cold-anon-macos.sh target/libkrun-lab/measure-libkrun-cold-anon-macos.sh
+          cp scripts/moby/summarize-libkrun-cold-anon.py target/libkrun-lab/summarize-libkrun-cold-anon.py
+          chmod +x target/libkrun-lab/measure-libkrun-lab-macos.sh
+          chmod +x target/libkrun-lab/measure-libkrun-cold-anon-macos.sh
           tar -C target/libkrun-lab -czf target/kiri-libkrun2-memory-lab-arm64.tgz .
-          shasum -a 256 target/kiri-libkrun2-memory-lab-arm64.tgz \
-            > target/kiri-libkrun2-memory-lab-arm64.tgz.sha256
+          (cd target && shasum -a 256 kiri-libkrun2-memory-lab-arm64.tgz \
+            > kiri-libkrun2-memory-lab-arm64.tgz.sha256)
       - uses: actions/upload-artifact@v4
         with:
           name: experimental-libkrun2-ram-lab-arm64

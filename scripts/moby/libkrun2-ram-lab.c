@@ -34,7 +34,6 @@ typedef struct {
 
 #define KRUN_STR(s) ((KrunStr){ (s), strlen(s) })
 #define RAW_ARM64_IMAGE 1u
-#define MACOS_FREE_PAGE_REPLACE 1u
 
 static void *required_symbol(void *lib, const char *name) {
     (void)dlerror();
@@ -75,6 +74,22 @@ int main(int argc, char **argv) {
             argv[0]);
         return 2;
     }
+    // Baseline and Replace use identical Guest/payload/allocator conditions.
+    // This is an experimental knob, never exposed in Kiri's production UI.
+    const char *mode_name = getenv("KIRI_LIBKRUN_REPORTING_MODE");
+    if (mode_name == NULL || mode_name[0] == '\0') { mode_name = "replace"; }
+    if (strcmp(mode_name, "replace") != 0 && strcmp(mode_name, "default") != 0) {
+        fprintf(stderr, "KIRI_LIBKRUN_REPORTING_MODE must be default or replace\n");
+        return 2;
+    }
+    const uint32_t mode = strcmp(mode_name, "replace") == 0 ? 1u : 0u;
+    const char *workload = getenv("KIRI_LIBKRUN_WORKLOAD");
+    if (workload == NULL || workload[0] == '\0') { workload = "tmpfs"; }
+    if (strcmp(workload, "tmpfs") != 0 &&
+        strcmp(workload, "anon-zram") != 0) {
+        fprintf(stderr, "KIRI_LIBKRUN_WORKLOAD must be tmpfs or anon-zram\n");
+        return 2;
+    }
     // Never permit a "convenience" path to the user's existing writable
     // Kiri VM data disk. This runner has NO block-device API at all.
     void *lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
@@ -83,6 +98,9 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    // libkrun sends hvc0 to the log target when stdout is redirected
+    // (the measurement harness runs without a host TTY). Enable that sink.
+    uint64_t (*krun_init_log)(int, uint32_t, uint32_t, uint32_t, Handle *) = NULL;
     Handle (*krun_mmio_device_manager_new)(void) = NULL;
     void (*krun_mmio_device_manager_add)(Handle, Handle) = NULL;
     Handle (*krun_console_device_builder)(void) = NULL;
@@ -103,6 +121,7 @@ int main(int argc, char **argv) {
     Handle (*krun_vmm_builder_build)(Handle *, Handle *) = NULL;
     void (*krun_vmm_run)(Handle) = NULL;
 
+    REQUIRE(krun_init_log);
     REQUIRE(krun_mmio_device_manager_new);
     REQUIRE(krun_mmio_device_manager_add);
     REQUIRE(krun_console_device_builder);
@@ -121,6 +140,16 @@ int main(int argc, char **argv) {
     REQUIRE(krun_vmm_run);
 
     Handle error = NULL;
+    // Log level ERROR also captures kernel/Guest hvc0 lines: libkrun's
+    // non-TTY console routes them to target "init_or_kernel" at ERROR level.
+    // Without krun_init_log(), guest.log contains only this runner's stderr.
+    // NO_ENV=1 keeps RUST_LOG from silently suppressing console output.
+    uint64_t log_result = krun_init_log(-1, 1u, 2u, 1u, &error);
+    if (failed(error, "console logger setup") || log_result != 0) {
+        fprintf(stderr, "Could not enable libkrun hvc0 log sink (result=%llu)\n",
+                (unsigned long long)log_result);
+        return 1;
+    }
     Handle devices = krun_mmio_device_manager_new();
     if (devices == NULL) {
         fprintf(stderr, "Could not create MMIO device manager\n");
@@ -137,7 +166,7 @@ int main(int argc, char **argv) {
     Handle balloon = krun_balloon_device_new(&error);
     if (failed(error, "balloon create") || balloon == NULL) { return 1; }
     krun_balloon_device_set_free_page_reporting_mode(
-        balloon, MACOS_FREE_PAGE_REPLACE);
+        balloon, mode);
     krun_mmio_device_manager_add(devices, balloon); // takes ownership
 
     Handle rng = krun_rng_device_new(&error);
@@ -146,8 +175,9 @@ int main(int argc, char **argv) {
 
     // No storage or networking devices are attached. The initrd must have
     // its own /init executable and in-RAM root, not Kiri's ext4 /dev/vda init.
-    const char *cmdline =
-        "console=hvc0 rdinit=/init panic=-1 loglevel=5";
+    const char *cmdline = strcmp(workload, "anon-zram") == 0
+        ? "console=hvc0 rdinit=/init panic=-1 loglevel=5 zswap.enabled=0 kiri.lab.workload=anon-zram"
+        : "console=hvc0 rdinit=/init panic=-1 loglevel=5";
     Handle payload = krun_payload_load_external(
         KRUN_STR(argv[2]), RAW_ARM64_IMAGE, KRUN_STR(argv[3]),
         KRUN_STR(cmdline), &error);
@@ -165,10 +195,10 @@ int main(int argc, char **argv) {
     if (failed(error, "VMM build") || vmm == NULL) { return 1; }
 
     fprintf(stderr,
-        "Experimental isolated libkrun2 VM: pid=%ld, 2048MiB max, free-page mode=Replace.\n"
-        "Compare macOS process RSS before, during and after Guest allocation.\n"
+        "Experimental isolated libkrun2 VM: pid=%ld, 2048MiB max, free-page mode=%s, workload=%s.\n"
+        "Compare macOS Physical footprint before, during and after Guest allocation.\n"
         "No Kiri Docker VM disk or container state is mounted.\n",
-        (long)getpid());
+        (long)getpid(), mode_name, workload);
     fflush(stderr);
     krun_vmm_run(vmm);
     fprintf(stderr, "libkrun2 VM exited without a memory reclamation result.\n");

@@ -44,14 +44,17 @@ Kiri Moby — macOS Apple Silicon
 3. 升级时，先停止 Kiri Moby VM，再用新版 .app 覆盖旧版。
    Stop the Kiri Moby VM before replacing the app on an upgrade.
 
-个人开发构建采用 Ad-hoc 签名，不是 Apple 公证的正式版本。
-macOS 可能要求首次通过“隐私与安全性”允许打开。
-每次从网络下载的新开发版本可能再次提示；
-标准 DMG 本身不能消除 Gatekeeper 的签名要求。
+请检查下载产物名称中的签名类型：
+- DeveloperID-notarized：已使用 Apple Developer ID 签名并通过公证。
+- DEV-ADHOC：仅供开发测试，不是 Apple 公证版本；下载后可能被 Gatekeeper 拦截。
+  这不是应用本身损坏，标准 DMG 也不能代替 Apple 公证。
+不要为了运行开发版而全局禁用 macOS 安全保护。
 
-Personal-use builds are ad-hoc signed, NOT Apple-notarized.
-Gatekeeper may require approval for a newly downloaded build.
-Use trusted GitHub builds only. Do not disable macOS security globally.
+Check the artifact's SIGNING CLASS in its filename:
+- DeveloperID-notarized: Apple Developer ID signed, notarized and stapled.
+- DEV-ADHOC: code-signed for development only, not notarized;
+  macOS Gatekeeper may block launching a freshly downloaded copy.
+Do not disable system-wide macOS security to run a development build.
 
 Docker 数据存于 ~/.kiri-moby/，不会随着 App 的替换而删除。
 The existing Docker VM disk and container data are stored separately.
