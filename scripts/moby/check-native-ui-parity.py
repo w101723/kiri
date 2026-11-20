@@ -109,6 +109,22 @@ checks = [
 for key, label in checks:
     has(NEW, key, label)
 
+# The AppKit Table's visual column order should remain metadata first and
+# actions at the far right, independent of the other Compose table.
+native_table = NEW.split('return Table(sorted, selection:', 1)[-1].split(
+    '.contextMenu(forSelectionType:', 1)[0]
+native_columns = re.findall(r'TableColumn\("([^"]+)"', native_table)
+expected_columns = [
+    "名称", "镜像", "状态", "CPU / 内存", "端口", "创建时间", "操作"
+]
+if native_columns != expected_columns:
+    errors.append(
+        f"Container native Table columns out of order: {native_columns!r}")
+
+# SwiftUI LocalizedStringKey interpolates Int with grouping separators.
+if 'Button("localhost:\\(published)' in NEW:
+    errors.append("localhost labels must interpolate String(port), not Int")
+
 for label in ("Containers", "Images", "Volumes", "Networks", "Compose", "Builds", "Settings"):
     has(OLD, label, "Original navigation")
     has(NEW, label, "Native navigation")
