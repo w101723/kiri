@@ -725,7 +725,7 @@ pub(super) fn native_command(args: &[String]) -> io::Result<()> {
             }
             "action" => {
                 let encoded = args.get(1).ok_or_else(|| io::Error::other("JSON action required"))?;
-                let input: Value = serde_json::from_str(encoded)?;
+                let input: Value = serde_json::from_str(encoded).map_err(io::Error::other)?;
                 json!({"message":execute(&input)?})
             }
             _ => return Err(io::Error::new(io::ErrorKind::InvalidInput,
