@@ -64,7 +64,7 @@ checks = [
     ('VSplitView {', "Resizable vertical workspace splitter"),
     ('UnifiedConsoleDrawer(', "Unified bottom console"),
     ('WindowGroup("容器控制台", id: "container-console"', "Real macOS console windows"),
-    ('openWindow(id: "container-console", value: selected)', "Pop-out from drawer"),
+    ('openWindow(id: "container-console", value: session)', "Pop-out from drawer"),
     ('tabbingMode = .preferred', "AppKit native window tabbing"),
     ('ConsoleSession: Codable, Hashable, Identifiable', "Stable typed sessions"),
     ('NativeLogTextView: NSViewRepresentable', "Incremental NSTextView log renderer"),
