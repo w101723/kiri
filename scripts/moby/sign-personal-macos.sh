@@ -140,7 +140,11 @@ if ! security find-identity -p codesigning "$keychain" | grep -Fqi "$identity"; 
   exit 2
 fi
 sign() {
-  codesign --force --sign "$identity" --keychain "$keychain" --timestamp=none --options runtime "$@" 
+  # Hardened Runtime is needed for Apple notarization, but not for a private
+  # local-only build. Private PKI identities can be rejected by macOS while
+  # constructing an Apple-style chain when --options runtime is requested.
+  # Developer ID notarization is handled separately in sign-notarize-macos.sh.
+  codesign --force --sign "$identity" --keychain "$keychain" --timestamp=none "$@"
 }
 res="$app/Contents/Resources"
 sign --entitlements crates/kiri/kiri.entitlements "$res/bin/kiri-moby-host"
