@@ -78,7 +78,7 @@ fi
 python3 - "$work/issuer-chain.pem" "$work" <<'PY'
 import pathlib, re, sys
 chain = pathlib.Path(sys.argv[1]).read_text(errors="replace")
-certs = re.findall(r"-----BEGIN CERTIFICATE-----[\\s\\S]*?-----END CERTIFICATE-----", chain)
+certs = re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", chain, re.S)
 for index, cert in enumerate(certs):
     (pathlib.Path(sys.argv[2]) / ("issuer-%d.pem" % index)).write_text(cert + "\n")
 print("Available CA certificates:", len(certs))
@@ -97,7 +97,13 @@ if [[ "$leaf_subject" != "$leaf_issuer" ]]; then
     [[ "$ca_subject" == "$leaf_issuer" ]] || continue
     # Check the leaf is actually signed by this issuer before giving it trust.
     openssl verify -partial_chain -CAfile "$ca" "$work/leaf.pem"
-    security add-trusted-cert -r trustAsRoot -p codeSign -k "$keychain" "$ca"
+    ca_issuer="$(openssl x509 -in "$ca" -noout -issuer | sed 's/^issuer[ =]*//')"
+    if [[ "$ca_issuer" == "$ca_subject" ]]; then
+      trust_result=trustRoot
+    else
+      trust_result=trustAsRoot
+    fi
+    security add-trusted-cert -r "$trust_result" -p codeSign -k "$keychain" "$ca"
     matched_issuer=true
     echo "Private code-signing intermediate CA trusted in ephemeral CI keychain."
     break
