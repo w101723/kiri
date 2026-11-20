@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/swap.h>
 #include <unistd.h>
 
 #ifndef MADV_PAGEOUT
@@ -60,6 +61,12 @@ static uint8_t pattern(size_t page) {
 
 int main(void) {
     setvbuf(stdout, NULL, _IOLBF, 0);
+    // Alpine's BusyBox includes mkswap but omits swapon; use Linux syscall
+    // directly so the RAM-only initrd needs no additional shared libraries.
+    if (swapon("/dev/zram0", 0) != 0) {
+        fprintf(stderr, "swapon /dev/zram0 failed: %s\\n", strerror(errno));
+        return 2;
+    }
     const unsigned long initial_swap = swap_free_kib();
     if (initial_swap < ALLOC_MIB * 1024u) {
         fprintf(stderr, "Not enough zram swap: %lu KiB\n", initial_swap);
