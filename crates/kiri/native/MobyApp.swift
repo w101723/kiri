@@ -577,7 +577,7 @@ private struct ContainerLogWindow: View {
                 Button {
                     session.clear()
                 } label: {
-                    Label("清空", systemImage: "clear")
+                    Label("清空", systemImage: "trash")
                 }
             }
             .font(.system(size: 12))
@@ -711,7 +711,14 @@ private final class ExecTerminalSession: ObservableObject {
     }
 
     private func append(_ text: String) {
-        output.append(text)
+        // The current view is a line terminal, not a VT100 screen emulator.
+        // Remove ANSI SGR/control sequences instead of displaying garbage.
+        let printable = text.replacingOccurrences(
+            of: "\u{001B}\\[[0-9;?]*[ -/]*[@-~]", with: "",
+            options: .regularExpression)
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        output.append(printable)
         if output.count > maxCharacters {
             output.removeFirst(output.count - maxCharacters)
         }
@@ -742,53 +749,86 @@ private final class ExecTerminalSession: ObservableObject {
 private struct ExecTerminalView: View {
     @StateObject private var terminal = ExecTerminalSession()
     let containerID: String
+    let containerName: String
+
     var body: some View {
-        VStack(spacing: 10) {
-            HStack {
-                Label("容器终端", systemImage: "terminal")
-                    .font(.system(size: 14, weight: .semibold))
-                Text(String(containerID.prefix(12)))
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
                 Spacer()
-                Text(terminal.running ? "已连接" : "已断开")
-                    .foregroundStyle(terminal.running ? .green : .secondary)
-                Button("Ctrl+C") { terminal.interrupt() }
-                    .disabled(!terminal.running)
-                Button("清屏") { terminal.output = "" }
+                HStack(spacing: 6) {
+                    Circle().fill(terminal.running ? Color.green : Color.gray)
+                        .frame(width: 8, height: 8)
+                    Text(terminal.running ? "已连接" : "已断开")
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(terminal.running ? Color.green : .secondary)
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(terminal.output, forType: .string)
+                } label: {
+                    Label("复制", systemImage: "doc.on.doc")
+                }
+                Button {
+                    terminal.output = ""
+                } label: {
+                    Label("清屏", systemImage: "paintbrush")
+                }
+                Button {
+                    terminal.interrupt()
+                } label: {
+                    Label("中断 (Ctrl+C)", systemImage: "stop.fill")
+                }
+                .disabled(!terminal.running)
+                .foregroundStyle(.red)
             }
-            ScrollView {
-                Text(terminal.output)
+            .font(.system(size: 11))
+            .padding(.horizontal, 13)
+            .frame(height: 50)
+            ScrollViewReader { proxy in
+                ScrollView([.vertical, .horizontal]) {
+                    Text(terminal.output.isEmpty ? "正在连接容器…" : terminal.output)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .padding(14)
+                    Color.clear.frame(height: 1).id("terminal-bottom")
+                }
+                .onChange(of: terminal.output) { _, _ in
+                    proxy.scrollTo("terminal-bottom", anchor: .bottom)
+                }
+            }
+            HStack(spacing: 10) {
+                Text("❯").foregroundStyle(Color.green)
+                TextField("输入命令，Return 执行", text: $terminal.input)
+                    .textFieldStyle(.plain)
                     .font(.system(size: 12, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.black.opacity(0.85))
-            HStack {
-                TextField("输入命令，按 Return 发送", text: $terminal.input)
-                    .textFieldStyle(.roundedBorder)
+                    .foregroundStyle(.white)
                     .onSubmit { terminal.submit() }
                     .disabled(!terminal.running)
                 Button("发送") { terminal.submit() }
                     .disabled(!terminal.running)
+                    .buttonStyle(.borderless)
             }
+            .padding(.horizontal, 14)
+            .frame(height: 34)
         }
-        .padding(16)
-        .frame(minWidth: 600, minHeight: 400)
+        .background(Color(red: 0.055, green: 0.061, blue: 0.07))
+        .frame(minWidth: 650, minHeight: 390)
         .onAppear { terminal.start(containerID: containerID) }
         .onDisappear { terminal.close() }
     }
 }
 
 @MainActor
-private func openExecTerminal(_ containerID: String) {
+private func openExecTerminal(_ containerID: String, name: String) {
     let window = NSWindow(
         contentRect: NSRect(x: 0, y: 0, width: 800, height: 550),
         styleMask: [.titled, .closable, .miniaturizable, .resizable],
         backing: .buffered, defer: false)
-    window.title = "Kiri Moby · Exec · " + String(containerID.prefix(12))
-    window.contentView = NSHostingView(rootView: ExecTerminalView(containerID: containerID))
+    window.title = "Exec: " + name + " (交互式终端)"
+    window.contentView = NSHostingView(rootView: ExecTerminalView(
+        containerID: containerID, containerName: name))
     window.center()
     window.makeKeyAndOrderFront(nil)
 }
@@ -1440,7 +1480,7 @@ private struct RootView: View {
             }
             .disabled(container.State != "running")
             iconAction("交互式 Exec", icon: "terminal") {
-                openExecTerminal(container.Id)
+                openExecTerminal(container.Id, name: container.title)
             }
             .disabled(container.State != "running")
             iconAction("实时日志", icon: "doc.text") {
@@ -1640,13 +1680,6 @@ private struct RootView: View {
                         .background(selectedContainerIDs.contains(item.Id) ?
                             KiriPalette.blue.opacity(0.105) : .clear)
                         .contentShape(Rectangle())
-                        .onTapGesture {
-                            if selectedContainerIDs.contains(item.Id) {
-                                selectedContainerIDs.remove(item.Id)
-                            } else {
-                                selectedContainerIDs.insert(item.Id)
-                            }
-                        }
                         tableDivider
                     }
                 }
