@@ -18,6 +18,18 @@ private enum Page: String, CaseIterable, Hashable, Identifiable {
     case settings = "Settings"
 
     var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .overview: "虚拟机 (Moby)"
+        case .containers: "容器"
+        case .images: "镜像"
+        case .volumes: "Volume"
+        case .networks: "网络"
+        case .compose: "Compose"
+        case .builds: "构建 (Buildx)"
+        case .settings: "设置"
+        }
+    }
     var symbol: String {
         switch self {
         case .overview: "square.grid.2x2"
@@ -253,7 +265,7 @@ private final class MobyModel: ObservableObject {
     @Published var buildPlatform = "linux/arm64"
     @Published var resourceCPUs = 4
     @Published var resourceMemoryMiB = 4096
-    @Published var isLight = false
+    @Published var isLight = true
     @Published var sidebarCollapsed = false
     @Published var containerFilter: ContainerFilter = .all
     @Published var collapsedProjects = Set<String>()
@@ -638,7 +650,7 @@ private struct RootView: View {
             titleStrip
             Rectangle().fill(KiriPalette.border(model.isLight)).frame(height: 1)
             HStack(spacing: 0) {
-                sidebar.frame(width: model.sidebarCollapsed ? 60 : 212)
+                sidebar.frame(width: model.sidebarCollapsed ? 60 : 258)
                 Rectangle().fill(KiriPalette.border(model.isLight)).frame(width: 1)
                 VStack(spacing: 0) {
                     pageHeader
@@ -774,36 +786,83 @@ private struct RootView: View {
         }
     }
 
+    // Native titlebar follows the reference image: branding at left, live VM
+    // counters and settings at right. Values come from Docker/Guest telemetry,
+    // never from a fabricated preview or hard-coded example containers.
+    private var diskFreeLabel: String {
+        guard let attrs = try? FileManager.default.attributesOfFileSystem(
+            forPath: NSHomeDirectory()),
+              let free = attrs[.systemFreeSize] as? NSNumber else { return "—" }
+        return sizeLabel(free.int64Value)
+    }
+
+    private var liveMemoryLabel: String {
+        guard model.online,
+              let info = model.snapshot?.memory,
+              let limit = info.vm_memory_ceiling_mib else { return "—" }
+        let total = info.guest_total_kib ?? 0
+        let available = info.guest_available_kib ?? 0
+        let usedMiB = max(0, total - available) / 1024
+        return String(format: "%.1f GB / %.1f GB",
+                      Double(usedMiB) / 1024, Double(limit) / 1024)
+    }
+
     private var titleStrip: some View {
-        HStack(spacing: 8) {
-            // Leave space for AppKit's red/yellow/green window controls.
-            Color.clear.frame(width: 64, height: 1)
-            Button { model.sidebarCollapsed.toggle() } label: {
-                Image(systemName: "sidebar.left")
-            }.help("折叠侧边栏")
-            Button {} label: { Image(systemName: "chevron.left") }.disabled(true)
-            Button {} label: { Image(systemName: "chevron.right") }.disabled(true)
-            Spacer(minLength: 24)
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(KiriPalette.muted(model.isLight))
-                TextField("Search containers, images…", text: $model.search)
-                    .textFieldStyle(.plain)
-                Text("⌘K").font(.system(size: 11))
-                    .foregroundStyle(KiriPalette.faint(model.isLight))
+        HStack(spacing: 12) {
+            Color.clear.frame(width: 68, height: 1) // native traffic lights
+            Image(systemName: "shippingbox.fill")
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(KiriPalette.blue)
+            Text("Kiri – Moby")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(KiriPalette.title(model.isLight))
+            Spacer(minLength: 12)
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(model.online ? Color.green : Color.gray)
+                    .frame(width: 9, height: 9)
+                Text(model.online ? "VM 运行中" : "VM 未连接")
             }
-            .padding(.horizontal, 10).frame(width: 285, height: 28)
-            .background(KiriPalette.panel(model.isLight))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8)
-                .stroke(KiriPalette.border(model.isLight)))
-            Button { model.page = .settings } label: { Image(systemName: "gearshape") }
-                .help("Settings")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(model.online ? Color(red: 0.08, green: 0.49, blue: 0.18) :
+                KiriPalette.muted(model.isLight))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(model.online ? Color.green.opacity(0.11) :
+                KiriPalette.raised(model.isLight))
+            .clipShape(Capsule())
+            Rectangle().fill(KiriPalette.border(model.isLight))
+                .frame(width: 1, height: 16)
+            Text("CPU \(model.snapshot?.info?.NCPU ?? model.snapshot?.vm_config?.cpus ?? 0) 核")
+            Rectangle().fill(KiriPalette.border(model.isLight))
+                .frame(width: 1, height: 16)
+            Text("内存 \(liveMemoryLabel)")
+            Rectangle().fill(KiriPalette.border(model.isLight))
+                .frame(width: 1, height: 16)
+            Text("磁盘 \(diskFreeLabel) 可用")
+            Button { model.page = .settings } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 17))
+                    .frame(width: 36, height: 32)
+            }
+            .help("设置")
+            Button {
+                let alert = NSAlert()
+                alert.messageText = "Kiri Moby"
+                alert.informativeText = "Apple Silicon 原生 Docker 虚拟机管理器。\nCompose 项目按容器标签自动分组，资源限制在设置中调整。"
+                alert.runModal()
+            } label: {
+                Image(systemName: "questionmark.circle")
+                    .font(.system(size: 17))
+                    .frame(width: 32, height: 32)
+            }
+            .help("帮助")
         }
-        .font(.system(size: 13))
+        .font(.system(size: 12))
+        .foregroundStyle(KiriPalette.muted(model.isLight))
         .buttonStyle(.plain)
         .padding(.horizontal, 12)
-        .frame(height: 44)
+        .frame(height: 58)
         .background(KiriPalette.side(model.isLight))
     }
 
