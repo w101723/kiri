@@ -47,6 +47,16 @@ Docker context, or duplicated container metadata database.
   toolbar, searchable navigation, VM-resource popover and menu bar icon.
   Containers are shown in a native sortable multi-select SwiftUI Table
   (NSTableView on macOS), with context-menu batch actions and compact buttons.
+- Mac HIG UI refinements: explicit non-localized `localhost:8080` links (no
+  locale thousands separators), a system-titlebar application brand and VM
+  status pill, primary-color sidebar labels including Chinese “存储卷”, and
+  right-aligned Table actions after creation time. Rows keep only CPU% and
+  active RAM plus a thin usage indicator; network/block I/O, PIDs and RAM
+  limit are available from the per-row info popover.
+- The charcoal console uses a single 34pt compact tab/action strip
+  (`#1F1F23`) and a consistent `#141414` canvas in the AppKit log view and
+  SwiftTerm terminal. Log follow and tail-length actions stay in that shared
+  strip; detached windows use the actual macOS toolbar instead.
 - A draggable vertical split embeds Exec and Logs into a dark console drawer.
   Sessions can be detached into real macOS WindowGroup windows which opt into
   native AppKit window tabbing. Detaching creates a new terminal process; it is
