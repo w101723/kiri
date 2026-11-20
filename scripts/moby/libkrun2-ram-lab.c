@@ -136,7 +136,8 @@ int main(int argc, char **argv) {
     // Log level ERROR also captures kernel/Guest hvc0 lines: libkrun's
     // non-TTY console routes them to target "init_or_kernel" at ERROR level.
     // Without krun_init_log(), guest.log contains only this runner's stderr.
-    uint64_t log_result = krun_init_log(-1, 1u, 2u, 0u, &error);
+    // NO_ENV=1 keeps RUST_LOG from silently suppressing console output.
+    uint64_t log_result = krun_init_log(-1, 1u, 2u, 1u, &error);
     if (failed(error, "console logger setup") || log_result != 0) {
         fprintf(stderr, "Could not enable libkrun hvc0 log sink (result=%llu)\n",
                 (unsigned long long)log_result);
