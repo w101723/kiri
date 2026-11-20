@@ -8,6 +8,30 @@ mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mkdir -p /tmp
 mount -t tmpfs -o size=512m tmpfs /tmp
+# KIRI_LIBKRUN_WORKLOAD=anon-zram is injected as an explicit guest kernel arg.
+# Never enable swap or change production Kiri's Guest defaults.
+for arg in $(cat /proc/cmdline); do
+  case "$arg" in
+    kiri.lab.workload=anon-zram)
+      [ -f /sys/block/zram0/disksize ] || {
+        echo 'KIRI-LIBKRUN-MEMLAB FAILED missing /sys/block/zram0'
+        exit 3
+      }
+      # The runner disables zswap on this throwaway Guest. Otherwise a
+      # zswap+zram stack could hide where page bytes were actually stored.
+      if [ -f /sys/module/zswap/parameters/enabled ]; then
+        [ "$(cat /sys/module/zswap/parameters/enabled)" = N ] || {
+          echo 'KIRI-LIBKRUN-MEMLAB FAILED zswap still enabled'
+          exit 4
+        }
+      fi
+      echo 805306368 > /sys/block/zram0/disksize
+      mkswap /dev/zram0 >/dev/null || exit 5
+      swapon /dev/zram0 || exit 6
+      exec /bin/kiri-lab-anon
+      ;;
+  esac
+done
 echo 'KIRI-LIBKRUN-MEMLAB READY'
 grep -E 'MemTotal|MemFree|MemAvailable|Balloon' /proc/meminfo || true
 sleep 10
