@@ -6,6 +6,7 @@ import AppKit
 import Darwin
 import Foundation
 import SwiftUI
+import Charts
 #if canImport(SwiftTerm)
 import SwiftTerm
 #endif
@@ -828,10 +829,10 @@ private struct NativeLogTextView: NSViewRepresentable {
 
 /// Consistent charcoal console across tabs, renderer and controls.
 private enum ConsoleAppearance {
-    static let canvas = Color(red: 20 / 255, green: 20 / 255, blue: 20 / 255)
-    static let toolbar = Color(red: 31 / 255, green: 31 / 255, blue: 35 / 255)
-    static let canvasNS = NSColor(calibratedRed: 20 / 255,
-                                  green: 20 / 255, blue: 20 / 255, alpha: 1)
+    static let canvas = Color(red: 24 / 255, green: 24 / 255, blue: 27 / 255)
+    static let toolbar = Color(red: 34 / 255, green: 34 / 255, blue: 38 / 255)
+    static let canvasNS = NSColor(calibratedRed: 24 / 255,
+                                  green: 24 / 255, blue: 27 / 255, alpha: 1)
 }
 private enum ConsoleCommand: String {
     case copy, clear, interrupt, toggleFollow
@@ -1059,40 +1060,28 @@ private struct ExecTerminalView: View {
             #if canImport(SwiftTerm) && !KIRI_UI_PREVIEW
             NativeSwiftTermExecView(containerID: containerID,
                                     controls: swiftTermControls)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
                 .frame(minHeight: 150)
             #else
-            VStack(spacing: 0) {
-                ScrollViewReader { proxy in
-                    ScrollView(.vertical) {
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(terminal.output.isEmpty ?
-                                 "正在连接容器…" : terminal.output)
-                                .font(.system(size: 12, design: .monospaced))
-                                .foregroundStyle(.white)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(12)
-                            Color.clear.frame(height: 1).id("terminal-bottom")
-                        }
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(terminal.output.isEmpty ?
+                             "正在连接容器…" : terminal.output)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                        Color.clear.frame(height: 1).id("terminal-bottom")
                     }
-                    .onChange(of: terminal.output) { _, _ in
-                        proxy.scrollTo("terminal-bottom", anchor: .bottom)
-                    }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
-                HStack(spacing: 6) {
-                    TextField("输入命令，Return 执行", text: $terminal.input)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(.white)
-                        .onSubmit { terminal.submit() }
-                        .disabled(!terminal.running)
-                    Button("发送") { terminal.submit() }
-                        .disabled(!terminal.running)
-                        .buttonStyle(.plain)
+                .onChange(of: terminal.output) { _, _ in
+                    proxy.scrollTo("terminal-bottom", anchor: .bottom)
                 }
-                .padding(.horizontal, 14)
-                .frame(height: 30)
             }
             .onAppear { terminal.start(containerID: containerID) }
             .onDisappear { terminal.close() }
