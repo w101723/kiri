@@ -60,7 +60,7 @@ checks = [
     ('containerResourceCell(container)', "Compose resource cells"),
     ('model.refreshContainerStats()', "Periodic Docker stats refresh"),
     ('TableColumn("端口"', "Ports column"),
-    ('TableColumn("SHARE"', "Local port link column"),
+    ('Button("localhost:', "Native localhost port link in Ports column"),
     ('TableColumn("创建时间"', "Sortable creation date"),
     ('TableColumn("操作"', "Native operations column"),
     ('.contextMenu(forSelectionType: String.self)', "Native batch context menu"),
