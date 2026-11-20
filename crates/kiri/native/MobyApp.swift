@@ -1771,6 +1771,8 @@ private struct ContainerRowView: View {
 
 /// Native 32pt console tab surface; actual PTY capture/keyboard work
 /// exclusively inside SwiftTerm on production builds, never a chat input.
+/// Actual PTY keyboard input is owned by SwiftTerm. This is a pure
+/// macOS 32pt tab/action strip and a full-bleed graphite terminal surface.
 private struct UnifiedConsoleDrawer: View {
     @EnvironmentObject private var model: MobyModel
     @Environment(\.openWindow) private var openWindow
@@ -1783,147 +1785,151 @@ private struct UnifiedConsoleDrawer: View {
     @ViewBuilder
     private func consoleBody(_ session: ConsoleSession) -> some View {
         if session.kind == .exec {
-            ExecTerminalView(containerID: session.containerID, containerName: session.name)
+            ExecTerminalView(containerID: session.containerID,
+                             containerName: session.name)
         } else {
-            ContainerLogWindow(containerID: session.containerID, containerName: session.name)
+            ContainerLogWindow(containerID: session.containerID,
+                               containerName: session.name)
         }
+    }
+
+    private func tab(_ session: ConsoleSession) -> some View {
+        let active = session.id == selectedID
+        return HStack(spacing: 7) {
+            Button {
+                selectedID = session.id
+            } label: {
+                Label(session.label, systemImage:
+                      session.kind == .exec ? "terminal" : "doc.text")
+                    .lineLimit(1)
+                    .font(.system(size: 11,
+                                  weight: active ? .medium : .regular))
+                    .foregroundStyle(active ? .white : .secondary)
+            }
+            .buttonStyle(.plain)
+            Button { onClose(session) } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("关闭 \(session.label)")
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 8)
+        .frame(height: 29)
+        .background(active ? ConsoleAppearance.canvas :
+                    Color.white.opacity(0.025))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .padding(.top, 3)
+        .contextMenu {
+            Button("复制选中文本") { onCommand(.copy, session) }
+            if session.kind == .logs {
+                Button(followedLogIDs.contains(session.id) ?
+                       "暂停日志跟随" : "继续日志跟随") {
+                    if followedLogIDs.contains(session.id) {
+                        followedLogIDs.remove(session.id)
+                    } else {
+                        followedLogIDs.insert(session.id)
+                    }
+                    onCommand(.toggleFollow, session)
+                }
+                Menu("日志行数") {
+                    Button("最近 200 行") { onCommand(.last200, session) }
+                    Button("最近 1,000 行") { onCommand(.last1000, session) }
+                    Button("最近 5,000 行") { onCommand(.last5000, session) }
+                }
+            }
+        }
+    }
+
+    private var tabs: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 3) {
+                ForEach(sessions) { session in
+                    tab(session)
+                }
+            }
+            .padding(.leading, 7)
+        }
+        .frame(minWidth: 110, maxWidth: 540)
+    }
+
+    private func actionBar(_ session: ConsoleSession) -> some View {
+        HStack(spacing: 11) {
+            Circle()
+                .fill(model.containers.first(where: {
+                    $0.Id == session.containerID
+                })?.State == "running" ? Color.green : Color.gray)
+                .frame(width: 7, height: 7)
+                .help("容器连接状态")
+            Rectangle()
+                .fill(Color.white.opacity(0.14))
+                .frame(width: 1, height: 13)
+            Button { onCommand(.clear, session) } label: {
+                Image(systemName: "paintbrush")
+            }
+            .help("清屏")
+            if session.kind == .exec {
+                Button { onCommand(.interrupt, session) } label: {
+                    Image(systemName: "stop.fill")
+                }
+                .help("中断 (Ctrl+C)")
+            }
+            Button {
+                openWindow(id: "container-console", value: session)
+                onClose(session)
+            } label: {
+                Image(systemName: "rectangle.portrait.and.arrow.up")
+            }
+            .help("弹出原生独立窗口")
+            Button {
+                sessions.removeAll()
+                selectedID = nil
+                followedLogIDs.removeAll()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .help("关闭控制台面板")
+        }
+        .font(.system(size: 11))
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+    }
+
+    private var consoleTabs: some View {
+        HStack(spacing: 0) {
+            tabs
+            Spacer(minLength: 6)
+            if let selected = sessions.first(where: { $0.id == selectedID }) {
+                actionBar(selected)
+            }
+        }
+        .frame(height: 32)
+        .background(ConsoleAppearance.toolbar)
+    }
+
+    private var canvas: some View {
+        ZStack {
+            ForEach(sessions) { session in
+                consoleBody(session)
+                    .opacity(selectedID == session.id ? 1 : 0)
+                    .allowsHitTesting(selectedID == session.id)
+                    .accessibilityHidden(selectedID != session.id)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ConsoleAppearance.canvas)
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 3) {
-                        ForEach(sessions) { session in
-                            let active = session.id == selectedID
-                            HStack(spacing: 7) {
-                                Button {
-                                    selectedID = session.id
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: session.kind == .exec ?
-                                            "terminal" : "doc.text")
-                                        Text(session.label)
-                                            .lineLimit(1)
-                                            .fontWeight(active ? .medium : .regular)
-                                    }
-                                    .foregroundStyle(active ? .white : .secondary)
-                                }
-                                .buttonStyle(.plain)
-                                Button {
-                                    onClose(session)
-                                } label: {
-                                    Image(systemName: "xmark")
-                                        .font(.system(size: 9, weight: .semibold))
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(.secondary)
-                                .help("关闭 \(session.label)")
-                            }
-                            .font(.system(size: 11))
-                            .padding(.leading, 12)
-                            .padding(.trailing, 8)
-                            .frame(height: 29)
-                            .background(active ? ConsoleAppearance.canvas :
-                                Color.white.opacity(0.025))
-                            .clipShape(RoundedRectangle(cornerRadius: 5))
-                            .padding(.top, 3)
-                            .contextMenu {
-                                Button("复制选中文本") {
-                                    onCommand(.copy, session)
-                                }
-                                if session.kind == .logs {
-                                    Button(followedLogIDs.contains(session.id) ?
-                                           "暂停日志跟随" : "继续日志跟随") {
-                                        if followedLogIDs.contains(session.id) {
-                                            followedLogIDs.remove(session.id)
-                                        } else {
-                                            followedLogIDs.insert(session.id)
-                                        }
-                                        onCommand(.toggleFollow, session)
-                                    }
-                                    Menu("日志行数") {
-                                        Button("最近 200 行") {
-                                            onCommand(.last200, session)
-                                        }
-                                        Button("最近 1,000 行") {
-                                            onCommand(.last1000, session)
-                                        }
-                                        Button("最近 5,000 行") {
-                                            onCommand(.last5000, session)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    .padding(.leading, 7)
-                }
-                .frame(minWidth: 120, maxWidth: 565)
-                Spacer(minLength: 6)
-                if let selected = sessions.first(where: { $0.id == selectedID }) {
-                    HStack(spacing: 9) {
-                        Circle()
-                            .fill(model.containers.first(where: {
-                                $0.Id == selected.containerID
-                            })?.State == "running" ? Color.green : Color.gray)
-                            .frame(width: 6, height: 6)
-                        Rectangle().fill(Color.white.opacity(0.13))
-                            .frame(width: 1, height: 13)
-                        Button {
-                            onCommand(.clear, session: selected)
-                        } label: {
-                            Image(systemName: "paintbrush")
-                        }
-                        .help("清屏")
-                        if selected.kind == .exec {
-                            Button {
-                                onCommand(.interrupt, session: selected)
-                            } label: {
-                                Image(systemName: "stop.fill")
-                            }
-                            .help("中断 (Ctrl+C)")
-                        }
-                        Rectangle().fill(Color.white.opacity(0.15))
-                            .frame(width: 1, height: 14)
-                        Button {
-                            openWindow(id: "container-console", value: selected)
-                            onClose(selected)
-                        } label: {
-                            Image(systemName: "rectangle.portrait.and.arrow.up")
-                        }
-                        .help("在原生独立窗口打开")
-                        Button {
-                            sessions.removeAll()
-                            selectedID = nil
-                            followedLogIDs.removeAll()
-                        } label: {
-                            Image(systemName: "xmark")
-                        }
-                        .help("关闭全部控制台")
-                    }
-                    .font(.system(size: 11))
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 12)
-                }
-            }
-            .frame(height: 32)
-            .background(ConsoleAppearance.toolbar)
-            ZStack {
-                ForEach(sessions) { session in
-                    consoleBody(session)
-                        .opacity(selectedID == session.id ? 1 : 0)
-                        .allowsHitTesting(selectedID == session.id)
-                        .accessibilityHidden(selectedID != session.id)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(ConsoleAppearance.canvas)
+            consoleTabs
+            canvas
         }
         .background(ConsoleAppearance.canvas)
     }
-
 }
 
 private struct RootView: View {
