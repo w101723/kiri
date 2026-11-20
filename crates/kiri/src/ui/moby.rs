@@ -363,6 +363,131 @@ fn memory_status() -> Value {
     }
 }
 
+/// Translate one Docker Engine /containers/{id}/stats?stream=false sample
+/// into a compact, UI-safe object. Docker's CPU usage is a fraction of the
+/// machine's elapsed CPU time and may exceed 100% on multi-core hosts.
+fn summarize_container_resource_stats(raw: &Value) -> Value {
+    let current_cpu = raw.pointer("/cpu_stats/cpu_usage/total_usage").and_then(Value::as_u64);
+    let previous_cpu = raw.pointer("/precpu_stats/cpu_usage/total_usage").and_then(Value::as_u64);
+    let current_system = raw.pointer("/cpu_stats/system_cpu_usage").and_then(Value::as_u64);
+    let previous_system = raw.pointer("/precpu_stats/system_cpu_usage").and_then(Value::as_u64);
+    let cores = raw.pointer("/cpu_stats/online_cpus").and_then(Value::as_u64)
+        .filter(|count| *count > 0)
+        .or_else(|| raw.pointer("/cpu_stats/cpu_usage/percpu_usage")
+            .and_then(Value::as_array).map(|cores| cores.len() as u64))
+        .unwrap_or(1);
+    let cpu_percent = match (current_cpu, previous_cpu, current_system, previous_system) {
+        (Some(cpu), Some(prev_cpu), Some(system), Some(prev_system)) => {
+            match (cpu.checked_sub(prev_cpu), system.checked_sub(prev_system)) {
+                (Some(cpu_delta), Some(system_delta)) if system_delta > 0 => {
+                    let percent = cpu_delta as f64 / system_delta as f64 * cores as f64 * 100.0;
+                    percent.is_finite().then_some(percent)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+
+    // Match the Docker CLI's Linux working-set interpretation, excluding
+    // reclaimable inactive file cache rather than overstating RAM usage.
+    let memory_usage = raw.pointer("/memory_stats/usage").and_then(Value::as_u64);
+    let inactive_file = raw.pointer("/memory_stats/stats/inactive_file")
+        .or_else(|| raw.pointer("/memory_stats/stats/total_inactive_file"))
+        .and_then(Value::as_u64).unwrap_or(0);
+    let memory_bytes = memory_usage.map(|bytes| bytes.saturating_sub(inactive_file));
+    let memory_limit_bytes = raw.pointer("/memory_stats/limit")
+        .and_then(Value::as_u64).filter(|limit| *limit > 0);
+    let memory_percent = match (memory_bytes, memory_limit_bytes) {
+        (Some(used), Some(limit)) => Some(
+            (used as f64 / limit as f64 * 100.0).clamp(0.0, 100.0)),
+        _ => None,
+    };
+
+    // Cumulative I/O counters since container start, NOT bytes per second.
+    let mut net_rx_bytes = 0_u64;
+    let mut net_tx_bytes = 0_u64;
+    if let Some(networks) = raw.get("networks").and_then(Value::as_object) {
+        for iface in networks.values() {
+            net_rx_bytes = net_rx_bytes.saturating_add(
+                iface["rx_bytes"].as_u64().unwrap_or(0));
+            net_tx_bytes = net_tx_bytes.saturating_add(
+                iface["tx_bytes"].as_u64().unwrap_or(0));
+        }
+    }
+
+    let mut block_read_bytes = 0_u64;
+    let mut block_write_bytes = 0_u64;
+    if let Some(entries) = raw.pointer("/blkio_stats/io_service_bytes_recursive")
+        .and_then(Value::as_array)
+    {
+        for entry in entries {
+            let count = entry["value"].as_u64().unwrap_or(0);
+            match entry["op"].as_str().unwrap_or("").to_ascii_lowercase().as_str() {
+                "read" => block_read_bytes = block_read_bytes.saturating_add(count),
+                "write" => block_write_bytes = block_write_bytes.saturating_add(count),
+                _ => {}
+            }
+        }
+    }
+
+    json!({
+        "cpu_percent": cpu_percent,
+        "memory_bytes": memory_bytes,
+        "memory_limit_bytes": memory_limit_bytes,
+        "memory_percent": memory_percent,
+        "net_rx_bytes": net_rx_bytes,
+        "net_tx_bytes": net_tx_bytes,
+        "block_read_bytes": block_read_bytes,
+        "block_write_bytes": block_write_bytes,
+        "pids": raw.pointer("/pids_stats/current").and_then(Value::as_u64),
+    })
+}
+
+/// Fetch active container telemetry independently of the heavyweight VM
+/// snapshot. Bound concurrency, list size, and per-socket read timeouts so
+/// one unresponsive Docker stats endpoint never blocks the UI indefinitely.
+fn container_resource_snapshot() -> io::Result<Value> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    const MAX_CONTAINERS: usize = 64;
+    const MAX_WORKERS: usize = 6;
+    const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+    let list = client::get_background_timeout(
+        "/containers/json?all=0", REQUEST_TIMEOUT)?;
+    let mut ids: Vec<String> = list.as_array().into_iter().flatten()
+        .filter(|item| item["State"] == "running")
+        .filter_map(|item| item["Id"].as_str())
+        .filter(|id| !id.is_empty() && id.len() <= 64 &&
+            id.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_owned).collect();
+    let truncated = ids.len() > MAX_CONTAINERS;
+    ids.truncate(MAX_CONTAINERS);
+    let next = AtomicUsize::new(0);
+    let results = std::sync::Mutex::new(serde_json::Map::new());
+
+    thread::scope(|scope| {
+        for _ in 0..ids.len().min(MAX_WORKERS) {
+            let ids = &ids;
+            let next = &next;
+            let results = &results;
+            scope.spawn(move || loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(id) = ids.get(index) else { break };
+                let path = format!("/containers/{}/stats?stream=false", path_escape(id));
+                if let Ok(raw) = client::get_background_timeout(&path, REQUEST_TIMEOUT) {
+                    let compact = summarize_container_resource_stats(&raw);
+                    results.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .insert(id.clone(), compact);
+                }
+            });
+        }
+    });
+
+    let stats = results.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner());
+    Ok(json!({"stats":stats,"truncated":truncated}))
+}
+
 fn refresh() {
     let snapshot = (|| -> io::Result<Value> {
         let containers = client::get("/containers/json?all=1")?;
@@ -794,6 +919,13 @@ pub(super) fn native_command(args: &[String]) -> io::Result<()> {
                         "vm_config":vm_resource_snapshot()?})
                 }
             }
+            "stats" => {
+                if !client::alive() {
+                    json!({"stats":{}, "truncated":false})
+                } else {
+                    container_resource_snapshot()?
+                }
+            }
             "configure" => {
                 let cpu = args.get(1).ok_or_else(||
                     io::Error::new(io::ErrorKind::InvalidInput, "CPU count required"))?
@@ -890,7 +1022,7 @@ pub(super) fn native_command(args: &[String]) -> io::Result<()> {
                 json!({"message":execute(&input)?})
             }
             _ => return Err(io::Error::new(io::ErrorKind::InvalidInput,
-                "moby-native: expected snapshot/configure/start/stop/restart/pull/run/rmi/rmvol/rmnet/container/action")),
+                "moby-native: expected snapshot/stats/configure/start/stop/restart/pull/run/rmi/rmvol/rmnet/container/action")),
         };
         Ok(value)
     })();
