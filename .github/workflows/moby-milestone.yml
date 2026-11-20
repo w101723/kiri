@@ -3,6 +3,7 @@ name: Kiri Moby unified macOS ARM64 milestone bundle
 on:
   workflow_dispatch:
   # Primary install artifact: Finder-mounted DMG containing Kiri Moby.app and Applications.
+  # Release validation: rebuild merged moby-engine DMG as a complete same-commit bundle.
   # Build a single integrated artifact automatically when this milestone
   # workflow changes, without re-building the 90-minute kernel every push.
   push:
