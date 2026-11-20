@@ -35,7 +35,7 @@ private struct PublishedPort: Decodable {
     let IP: String?
     let PrivatePort: Int?
     let PublicPort: Int?
-    let Type: String?
+    let `Type`: String?
 }
 
 private struct ContainerItem: Decodable, Identifiable {
