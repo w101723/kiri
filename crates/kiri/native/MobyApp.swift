@@ -25,19 +25,19 @@ private enum Page: String, CaseIterable, Hashable, Identifiable {
     var id: String { rawValue }
     var displayName: String {
         switch self {
-        case .overview: "虚拟机 (Moby)"
+        case .overview: "虚拟机"
         case .containers: "容器"
         case .images: "镜像"
         case .volumes: "存储卷"
         case .networks: "网络"
         case .compose: "Compose"
-        case .builds: "构建 (Buildx)"
+        case .builds: "构建"
         case .settings: "设置"
         }
     }
     var symbol: String {
         switch self {
-        case .overview: "square.grid.2x2"
+        case .overview: "cpu"
         case .containers: "shippingbox"
         case .images: "square.stack.3d.up"
         case .volumes: "externaldrive"
@@ -1251,6 +1251,8 @@ private struct DetachedConsoleView: View {
 private struct RootView: View {
     @EnvironmentObject private var model: MobyModel
     @State private var selectedContainerIDs = Set<String>()
+    @State private var selectedInspectorID: String?
+    @State private var showInspector = true
     @State private var tableSortOrder = [KeyPathComparator(\ContainerItem.title)]
     @State private var sessions: [ConsoleSession] = []
     @State private var selectedSessionID: String?
@@ -1278,7 +1280,8 @@ private struct RootView: View {
                 }
             }
             .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 180, ideal: 218, max: 270)
+            .safeAreaInset(edge: .bottom, spacing: 0) { sidebarEngineStatus }
+            .navigationSplitViewColumnWidth(min: 185, ideal: 215, max: 250)
             .navigationTitle("Kiri - Moby")
         } detail: {
             VSplitView {
@@ -1305,16 +1308,16 @@ private struct RootView: View {
                         .environment(\.colorScheme, .dark)
                 }
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) { footer }
             .navigationTitle(model.page.displayName)
+            .inspector(isPresented: $showInspector) {
+                ContainerInspectorView(
+                    item: model.containers.first(where: { $0.Id == selectedInspectorID }))
+                    .environmentObject(model)
+                    .inspectorColumnWidth(min: 260, ideal: 305, max: 355)
+            }
         }
         .searchable(text: $model.search, placement: .toolbar, prompt: "搜索容器、镜像…")
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Label("Kiri - Moby", systemImage: "shippingbox.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.primary)
-            }
             ToolbarItem(placement: .automatic) {
                 Button { showVMPopover.toggle() } label: {
                     HStack(spacing: 7) {
@@ -1334,14 +1337,19 @@ private struct RootView: View {
                 .popover(isPresented: $showVMPopover) { vmResourcePopover }
             }
             ToolbarItem(placement: .automatic) {
-                Menu {
-                    ForEach(ContainerFilter.allCases) { filter in
-                        Button(filter.rawValue) { model.containerFilter = filter }
+                if model.page == .containers {
+                    Menu {
+                        ForEach(ContainerFilter.allCases) { filter in
+                            Button(filter.rawValue) { model.containerFilter = filter }
+                        }
+                    } label: {
+                        Label("容器状态筛选", systemImage: "line.3.horizontal.decrease")
                     }
-                } label: {
-                    Label("容器状态筛选", systemImage: "line.3.horizontal.decrease")
+                    Button { showInspector.toggle() } label: {
+                        Label("检查器", systemImage: "sidebar.right")
+                    }
+                    .help(showInspector ? "隐藏容器检查器" : "显示容器检查器")
                 }
-                .disabled(model.page != .containers)
             }
             ToolbarItem(placement: .primaryAction) {
                 if model.page == .containers {
@@ -1393,6 +1401,22 @@ private struct RootView: View {
             }
         }
         .onChange(of: model.page) { _, _ in model.search = "" }
+        .onChange(of: selectedContainerIDs) { old, new in
+            if let added = new.subtracting(old).first {
+                selectedInspectorID = added
+                showInspector = true
+            } else if new.isEmpty {
+                selectedInspectorID = nil
+            } else if let current = selectedInspectorID, !new.contains(current) {
+                selectedInspectorID = new.first
+            }
+        }
+        .onChange(of: model.containers.map(\.Id)) { _, ids in
+            if let current = selectedInspectorID, !ids.contains(current) {
+                selectedContainerIDs.remove(current)
+                selectedInspectorID = nil
+            }
+        }
         .task(id: model.liveLogContainerID) {
             guard let id = model.liveLogContainerID else { return }
             while !Task.isCancelled {
@@ -2206,7 +2230,7 @@ private struct RootView: View {
                 }
             }
         }
-        .tableStyle(.inset(alternatesRowBackgrounds: true))
+        .tableStyle(.inset(alternatesRowBackgrounds: false))
     }
 
     // Same columns, row density and inline controls as moby.html.
@@ -2724,6 +2748,7 @@ private struct KiriMobyNativeApp: App {
             RootView().environmentObject(model)
         }
         .defaultSize(width: 1440, height: 900)
+        .windowToolbarStyle(.unified)
 
         .commands {
             CommandMenu("Moby") {
