@@ -11,7 +11,7 @@ let package = Package(
         .executable(name: "kiri-moby-ui", targets: ["KiriMobyUI"])
     ],
     dependencies: [
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.99.3")
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.20.0")
     ],
     targets: [
         .executableTarget(
