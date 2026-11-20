@@ -145,6 +145,31 @@ private struct ContainerStatsReply: Decodable {
     let error: String?
 }
 
+/// Typed, read-only Docker inspect payload for the selected container.
+private struct ContainerInspectDetails: Decodable {
+    struct Configuration: Decodable {
+        let Env: [String]?
+        let Image: String?
+        let WorkingDir: String?
+        let User: String?
+    }
+    struct Mount: Decodable, Identifiable {
+        let Type: String?
+        let Source: String?
+        let Destination: String?
+        let RW: Bool?
+        var id: String { (Destination ?? "") + "\u{1F}" + (Source ?? "") }
+    }
+    let Config: Configuration?
+    let Mounts: [Mount]?
+}
+private struct ContainerHistoryPoint: Identifiable {
+    let timestamp: Date
+    let cpuPercent: Double?
+    let memoryPercent: Double?
+    var id: Date { timestamp }
+}
+
 private struct Snapshot: Decodable {
     let ok: Bool?
     let online: Bool?
@@ -310,6 +335,7 @@ private final class MobyModel: ObservableObject {
     @Published var search = ""
     @Published var snapshot: Snapshot?
     @Published private(set) var containerStats: [String: ContainerResourceUsage] = [:]
+    @Published private(set) var statsHistory: [String: [ContainerHistoryPoint]] = [:]
     @Published private(set) var statsUpdatedAt: Date?
     @Published private(set) var statsError: String?
     @Published private(set) var statsTruncated = false
@@ -464,6 +490,7 @@ private final class MobyModel: ObservableObject {
             fetchingStats = false
             guard online else {
                 containerStats = [:]
+                statsHistory = [:]
                 statsUpdatedAt = nil
                 return
             }
@@ -473,6 +500,17 @@ private final class MobyModel: ObservableObject {
                     // Replace the entire set each round, including evicting stopped
                     // and deleted containers. Never display a stale live CPU rate.
                     containerStats = reply.stats ?? [:]
+                    let now = Date()
+                    statsHistory = statsHistory.filter { containerStats[$0.key] != nil }
+                    for (id, stats) in containerStats {
+                        guard stats.cpu_percent != nil || stats.memory_percent != nil else { continue }
+                        var points = statsHistory[id] ?? []
+                        points.append(ContainerHistoryPoint(
+                            timestamp: now, cpuPercent: stats.cpu_percent,
+                            memoryPercent: stats.memory_percent))
+                        if points.count > 60 { points.removeFirst(points.count - 60) }
+                        statsHistory[id] = points
+                    }
                     statsUpdatedAt = .now
                     statsTruncated = reply.truncated ?? false
                     statsError = nil
