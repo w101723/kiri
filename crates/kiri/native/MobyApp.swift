@@ -1404,15 +1404,14 @@ private struct InspectorEnvironmentRow: View {
     let entry: String
     @State private var revealed = false
 
-    private var parts: [String] {
-        entry.components(separatedBy: "=").count > 1
-            ? [String(entry.prefix(while: { $0 != "=" })),
-               String(entry.dropFirst((entry.firstIndex(of: "=")
-                   .map { entry.distance(from: entry.startIndex, to: $0) } ?? 0) + 1))]
-            : [entry, ""]
+    private var key: String {
+        guard let separator = entry.firstIndex(of: "=") else { return entry }
+        return String(entry[..<separator])
     }
-    private var key: String { parts[0] }
-    private var value: String { parts[1] }
+    private var value: String {
+        guard let separator = entry.firstIndex(of: "=") else { return "" }
+        return String(entry[entry.index(after: separator)...])
+    }
     private var sensitive: Bool {
         let name = key.uppercased()
         return ["PASSWORD", "PASSWD", "SECRET", "TOKEN", "KEY",
@@ -1733,7 +1732,7 @@ private struct ContainerRowView: View {
         let descriptor = (item.title + " " + (item.Image ?? "")).lowercased()
         if ["mysql", "postgres", "mariadb", "mongo", "redis", "database"]
             .contains(where: descriptor.contains) {
-            return "externaldrive.fill.badge.person.crop"
+            return "externaldrive.fill"
         }
         if ["nginx", "apache", "traefik", "caddy", "web", "http"]
             .contains(where: descriptor.contains) {
@@ -1947,6 +1946,7 @@ private struct RootView: View {
     @EnvironmentObject private var model: MobyModel
     @State private var selectedContainerIDs = Set<String>()
     @State private var selectedInspectorID: String?
+    @State private var hoveredActionRowID: String?
     @State private var showInspector = true
     @State private var tableSortOrder = [KeyPathComparator(\ContainerItem.title)]
     @State private var sessions: [ConsoleSession] = []
@@ -2636,6 +2636,11 @@ private struct RootView: View {
             .menuStyle(.borderlessButton)
             .frame(width: 24)
             .help("更多操作")
+        }
+        .opacity(hoveredActionRowID == container.Id ? 1 : 0.65)
+        .onHover { inside in
+            if inside { hoveredActionRowID = container.Id }
+            else if hoveredActionRowID == container.Id { hoveredActionRowID = nil }
         }
     }
 
