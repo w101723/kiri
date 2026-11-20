@@ -72,9 +72,31 @@ mkdir -p "$(dirname "$output")"
 tmp="$output.partial.dmg"
 [[ ! -e "$tmp" ]] || { echo "Incomplete previous DMG found: $tmp" >&2; exit 2; }
 trap 'rm -rf -- "$stage"; rm -f -- "$tmp"' EXIT
-hdiutil create -quiet -fs HFS+ -volname "Kiri Moby" \
-  -srcfolder "$stage/volume" -format UDZO -ov "$tmp"
-hdiutil verify "$tmp" >/dev/null
+# GitHub-hosted macOS runners can intermittently refuse to allocate a
+# diskimages-helper while other jobs are running. Do not suppress diagnostics:
+# retry a transient create failure, but never publish a partial archive.
+created=false
+for attempt in 1 2 3; do
+  rm -f -- "$tmp"
+  if hdiutil create -fs HFS+ -volname "Kiri Moby" \
+      -srcfolder "$stage/volume" -format UDZO -ov "$tmp" \
+      > "$stage/hdi-create.log" 2>&1; then
+    created=true
+    break
+  fi
+  echo "hdiutil create failed (attempt $attempt/3):" >&2
+  cat "$stage/hdi-create.log" >&2
+  sleep 3
+done
+if [[ "$created" != true ]]; then
+  echo "DMG creation failed after retry; no unsigned/partial DMG published." >&2
+  exit 1
+fi
+if ! hdiutil verify "$tmp" > "$stage/hdi-verify.log" 2>&1; then
+  echo "DMG verify failed:" >&2
+  cat "$stage/hdi-verify.log" >&2
+  exit 1
+fi
 # Verify the Finder experience and nested signature from the image itself.
 # Use an explicit private mountpoint so other mounted Kiri DMGs are untouched.
 mountpoint="$stage/mounted"
@@ -88,7 +110,23 @@ detach_on_exit() {
   rm -f -- "$tmp"
 }
 trap detach_on_exit EXIT
-hdiutil attach -quiet -readonly -nobrowse -mountpoint "$mountpoint" "$tmp"
+attached=false
+for attempt in 1 2 3; do
+  if hdiutil attach -readonly -nobrowse -mountpoint "$mountpoint" "$tmp" \
+      > "$stage/hdi-attach.log" 2>&1; then
+    attached=true
+    break
+  fi
+  echo "hdiutil attach failed (attempt $attempt/3):" >&2
+  cat "$stage/hdi-attach.log" >&2
+  # Reclaim an orphaned private mountpoint only, never other Kiri volumes.
+  hdiutil detach -quiet "$mountpoint" >/dev/null 2>&1 || :
+  sleep 3
+done
+[[ "$attached" == true ]] || {
+  echo "Could not verify mounted DMG after retry; refusing to publish." >&2
+  exit 1
+}
 mounted=true
 [[ -L "$mountpoint/Applications" ]] &&
   [[ "$(readlink "$mountpoint/Applications")" == "/Applications" ]] &&
