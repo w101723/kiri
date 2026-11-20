@@ -30,6 +30,13 @@ jobs:
           bash -n scripts/moby/upgrade-host-macos.sh
           bash -n scripts/moby/install-milestone-macos.sh
           bash -n scripts/moby/sign-notarize-macos.sh
+          bash -n scripts/moby/install-local-macos.sh
+          # On Linux the opt-in command must refuse to authorize a Mac app.
+          bash scripts/moby/install-local-macos.sh --status
+          if bash scripts/moby/install-local-macos.sh --trust-local-builds; then
+            echo "Local trust must require macOS interactive approval" >&2
+            exit 1
+          fi
           # The fallback cannot claim trusted signing. Incomplete secret
           # configuration must fail closed before touching macOS Keychain.
           output="$RUNNER_TEMP/kiri-signing-mode"

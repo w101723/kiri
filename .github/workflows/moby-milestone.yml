@@ -268,6 +268,11 @@ jobs:
           tar -czf Kiri-Moby-macos-arm64-app.tgz -C packaged "Kiri Moby.app"
           shasum -a 256 Kiri-Moby-macos-arm64-app.tgz > Kiri-Moby-macos-arm64-app.tgz.sha256
           ls -lh Kiri-Moby-macos-arm64-app.tgz
+      - name: Verify ad-hoc app package and bundle local-only installer
+        run: |
+          bash -n scripts/moby/install-local-macos.sh
+          bash scripts/moby/install-local-macos.sh --verify Kiri-Moby-macos-arm64-app.tgz
+          cp scripts/moby/install-local-macos.sh Kiri-Moby-install-local.sh
       - name: Label unsigned/ad-hoc artifact as development-only
         run: |
           printf '%s\n' "Ad-hoc development build only; do not use for Gatekeeper-trusted updates." > DEV-ADHOC-ONLY.txt
@@ -298,6 +303,7 @@ jobs:
             Kiri-Moby-macos-arm64-app.tgz
             Kiri-Moby-macos-arm64-app.tgz.sha256
             DEV-ADHOC-ONLY.txt
+            Kiri-Moby-install-local.sh
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
