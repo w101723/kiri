@@ -38,8 +38,16 @@ for ((i=1; i<=28; i++)); do
     cat "$log" >&2
     exit 1
   fi
-  stage="$(grep 'KIRI-LIBKRUN-MEMLAB' "$log" | tail -n 1 | sed 's/^.*KIRI-LIBKRUN-MEMLAB /LAB-/' || true)"
-  [[ -n "$stage" ]] || stage="BOOTING"
+  # libkrun may write CRLF console lines. Never embed raw CR/newlines in CSV.
+  # Extract only known, single-token phase names.
+  stage="$(grep -E 'KIRI-LIBKRUN-MEMLAB (READY|ALLOCATING|ALLOCATED|FREED)' "$log" |
+    tail -n 1 |
+    sed -E 's/^.*KIRI-LIBKRUN-MEMLAB (READY|ALLOCATING|ALLOCATED|FREED).*$/\1/' |
+    tr -d '\r' || true)"
+  case "$stage" in
+    READY|ALLOCATING|ALLOCATED|FREED) stage="LAB-$stage" ;;
+    *) stage="BOOTING" ;;
+  esac
   physical="$(vmmap -summary "$pid" 2>/dev/null | awk '/^Physical footprint:/ {print $3; exit}' || true)"
   [[ -n "$physical" ]] || physical="unavailable"
   printf '%s,"%s",%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$stage" "$physical" | tee -a "$csv"
