@@ -86,46 +86,44 @@ PY
 leaf_subject="$(openssl x509 -in "$work/leaf.pem" -noout -subject | sed 's/^subject[ =]*//')"
 leaf_issuer="$(openssl x509 -in "$work/leaf.pem" -noout -issuer | sed 's/^issuer[ =]*//')"
 if [[ "$leaf_subject" != "$leaf_issuer" ]]; then
-  matched_issuer=false
+  # An intermediate trusted "as root" is insufficient for some macOS
+  # codesign policies: the entire chain must reach the genuine self-signed
+  # private CA ROOT. The P12 normally embeds the intermediate but not root.
+  # The additional public root PEM can be passed with
+  # KIRI_PERSONAL_SIGN_CA_PEM_BASE64 (private root key is NOT required).
+  root_cert=""
   for ca in "$work"/issuer-*.pem; do
     [[ -s "$ca" ]] || continue
-    # Only a real issuing CA (CA:TRUE + matching issuer DN) may be an anchor.
-    if ! openssl x509 -in "$ca" -noout -text | grep -Fq 'CA:TRUE'; then
-      continue
-    fi
+    openssl x509 -in "$ca" -noout -text | grep -Fq 'CA:TRUE' || continue
     ca_subject="$(openssl x509 -in "$ca" -noout -subject | sed 's/^subject[ =]*//')"
-    [[ "$ca_subject" == "$leaf_issuer" ]] || continue
-    # Check the leaf is actually signed by this issuer before giving it trust.
-    openssl verify -partial_chain -CAfile "$ca" "$work/leaf.pem"
     ca_issuer="$(openssl x509 -in "$ca" -noout -issuer | sed 's/^issuer[ =]*//')"
-    if [[ "$ca_issuer" == "$ca_subject" ]]; then
-      trust_result=trustRoot
-    else
-      trust_result=trustAsRoot
+    [[ "$ca_subject" == "$ca_issuer" ]] || continue
+    # Only trust a root cryptographically confirmed to anchor THIS leaf
+    # through the included intermediate(s).
+    if openssl verify -CAfile "$ca" \
+        -untrusted "$work/issuer-chain.pem" "$work/leaf.pem" >/dev/null 2>&1; then
+      root_cert="$ca"
+      break
     fi
-    # User-domain trust on hosted macOS can block waiting for a GUI consent
-    # dialog. The disposable CI macOS runner supports passwordless sudo.
-    # Admin-domain trust is limited to the exact code-signing CA and this
-    # ephemeral runner; no trust change is performed on the owner's Mac.
-    if [[ "${GITHUB_ACTIONS:-}" != true ]]; then
-      echo "Private CA trust requires an ephemeral GitHub macOS runner; refusing to alter this Mac's trust settings." >&2
-      exit 2
-    fi
-    perl -e 'alarm 20; exec @ARGV' \
-      sudo -n security add-trusted-cert -d -r "$trust_result" \
-        -p codeSign -k /Library/Keychains/System.keychain "$ca" || {
-      echo "Could not trust issuer CA in the CI runner's administrator trust store." >&2
-      exit 2
-    }
-    matched_issuer=true
-    echo "Private code-signing intermediate CA trusted in ephemeral CI keychain."
-    break
   done
-  if [[ "$matched_issuer" != true ]]; then
-    echo "CODE SIGNING CHAIN INCOMPLETE: no trusted issuing CA in P12." >&2
-    echo "Include the intermediate CA when exporting P12 (-certfile), or set KIRI_PERSONAL_SIGN_CA_PEM_BASE64 to its PUBLIC PEM certificate." >&2
+  if [[ -z "$root_cert" ]]; then
+    echo "PRIVATE CA ROOT MISSING: P12 contains the signer and issuing intermediate but not a trusted self-signed root." >&2
+    echo "Provide only the PUBLIC root CA PEM via KIRI_PERSONAL_SIGN_CA_PEM_BASE64. Do not upload the root private key." >&2
     exit 2
   fi
+  if [[ "${GITHUB_ACTIONS:-}" != true ]]; then
+    echo "Automatic private-root trust is restricted to disposable GitHub macOS runners; cannot alter trust on this Mac." >&2
+    exit 2
+  fi
+  # Explicit admin trust for code signing, inside this disposable CI VM only.
+  # macOS codesign must be able to find the actual root in System.keychain.
+  perl -e 'alarm 20; exec @ARGV' \
+    sudo -n security add-trusted-cert -d -r trustRoot \
+      -p codeSign -k /Library/Keychains/System.keychain "$root_cert" || {
+    echo "Cannot install trusted code-signing root in temporary macOS CI runner." >&2
+    exit 2
+  }
+  echo "Verified complete private-CA chain; trusted its public root in ephemeral CI System.keychain."
 fi
 # Self-signed code identities are discoverable without -v even if no
 # system-wide trust policy recognizes them. Never change the user's trust.
