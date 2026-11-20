@@ -1429,34 +1429,126 @@ private struct RootView: View {
                 .stroke(KiriPalette.border(model.isLight)))
     }
 
-    private var compose: some View {
-        ScrollView {
-            panelCard {
-                Text("Docker Compose").font(.system(size: 14, weight:.semibold))
-                fieldLabel("Compose 文件路径")
-                styledField("/Users/you/project/compose.yaml", text: $model.composeFile)
-                HStack(spacing: 8) {
-                    Button("选择 Compose 文件") { model.chooseFile() }
-                    Button("Up -d") { composeAction("compose_up") }
-                        .buttonStyle(.borderedProminent)
-                    Button("查看状态") { composeAction("compose_ps") }
-                    Button("查看日志") { composeAction("compose_logs") }
-                    Button("Down") {
-                        if model.confirm("停止并删除 Compose 项目的容器？",
-                                         detail:"使用 docker compose down；持久化命名数据卷不自动删除。") {
-                            composeAction("compose_down")
-                        }
-                    }.foregroundStyle(KiriPalette.red)
-                }
-                Text("使用标准 Docker Compose CLI，通过 Kiri Moby 独立 Socket 运行，不修改默认 Docker Context。")
-                    .foregroundStyle(KiriPalette.muted(model.isLight))
-            }
-            .padding(20)
-        }
+    // Compose is an inventory of Docker projects, not a Compose command runner.
+    // Docker's canonical compose.project/service labels are the source of truth;
+    // no Compose YAML path is needed to discover existing deployments.
+    private var composeProjects: [String] {
+        Array(Set(model.containers.compactMap { $0.composeProject }
+            .filter { !$0.isEmpty })).sorted()
     }
 
-    private func composeAction(_ operation: String) {
-        model.action(operation, fields:["path":model.composeFile], title:operation)
+    private var compose: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Text("Compose 项目")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("\(composeProjects.count) 个项目")
+                    .foregroundStyle(KiriPalette.muted(model.isLight))
+                    .font(.system(size: 11))
+                Spacer()
+                Text("按 Docker Compose 项目分组 · 展开查看容器")
+                    .foregroundStyle(KiriPalette.muted(model.isLight))
+                    .font(.system(size: 11))
+                Button("刷新") { model.refresh() }
+            }
+            .padding(.horizontal, 20)
+            .frame(height: 52)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if composeProjects.isEmpty {
+                        VStack(spacing: 9) {
+                            Image(systemName: "square.3.layers.3d")
+                                .font(.system(size: 28))
+                            Text("暂无 Compose 项目")
+                                .font(.system(size: 14, weight: .medium))
+                            Text("使用 Docker Compose 创建的容器会自动按项目归类显示。")
+                                .font(.system(size: 12))
+                        }
+                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                        .frame(maxWidth: .infinity, minHeight: 220)
+                    }
+                    ForEach(composeProjects, id: \.self) { project in
+                        let members = model.containers.filter { $0.composeProject == project }
+                        let running = members.filter { $0.State == "running" }.count
+                        let expanded = !model.collapsedProjects.contains(project)
+                        VStack(spacing: 0) {
+                            Button {
+                                if expanded {
+                                    model.collapsedProjects.insert(project)
+                                } else {
+                                    model.collapsedProjects.remove(project)
+                                }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .frame(width: 14)
+                                    Image(systemName: "square.3.layers.3d")
+                                        .font(.system(size: 17))
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(project)
+                                            .font(.system(size: 14, weight: .semibold))
+                                        Text("\(members.count) 个容器 · \(running) 个运行中")
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(KiriPalette.muted(model.isLight))
+                                    }
+                                    Spacer()
+                                    Text(running == members.count ? "运行中" :
+                                         running == 0 ? "已停止" : "部分运行")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(running > 0 ? KiriPalette.mint :
+                                            KiriPalette.muted(model.isLight))
+                                }
+                                .padding(.horizontal, 16)
+                                .frame(height: 64)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            if expanded {
+                                tableDivider
+                                HStack(spacing: 0) {
+                                    tableTitle("服务 / 容器", width: 260)
+                                    tableTitle("状态", width: 135)
+                                    tableTitle("端口", width: 165)
+                                    tableTitle("操作", width: 280)
+                                }
+                                tableDivider
+                                ForEach(members) { container in
+                                    HStack(spacing: 0) {
+                                        tableValue(
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text(container.Labels?["com.docker.compose.service"]
+                                                     ?? container.title)
+                                                    .fontWeight(.semibold)
+                                                    .foregroundStyle(KiriPalette.link(model.isLight))
+                                                Text(container.title + " · " + (container.Image ?? ""))
+                                                    .font(.system(size: 10))
+                                                    .foregroundStyle(KiriPalette.muted(model.isLight))
+                                                    .lineLimit(1)
+                                            }, width: 260)
+                                        tableValue(
+                                            Text(container.Status ?? container.State ?? "—"),
+                                            width: 135)
+                                        tableValue(portLinks(container.Ports), width: 165)
+                                        tableValue(containerButtons(container), width: 280)
+                                    }
+                                    .frame(minHeight: 56)
+                                    tableDivider
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(KiriPalette.panel(model.isLight))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10)
+                            .stroke(KiriPalette.border(model.isLight)))
+                    }
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .background(KiriPalette.bg(model.isLight))
     }
 
     private var builds: some View {
