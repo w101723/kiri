@@ -114,6 +114,7 @@ private struct BalloonInfo: Decodable {
     let vm_memory_ceiling_mib: Int?
     let balloon_target_mib: Int?
     let guest_available_kib: Int?
+    let guest_total_kib: Int?
 }
 
 private struct Snapshot: Decodable {
@@ -867,33 +868,37 @@ private struct RootView: View {
     }
 
     private func navButton(_ page: Page) -> some View {
-        Button {
-            model.page = page
-        } label: {
-            HStack(spacing: 9) {
+        let active = model.page == page
+        return Button { model.page = page } label: {
+            HStack(spacing: 12) {
                 Image(systemName: page.symbol)
-                    .frame(width: 18)
-                    .foregroundStyle(model.page == page ?
-                        KiriPalette.blue : KiriPalette.muted(model.isLight))
+                    .font(.system(size: 16, weight: .medium))
+                    .frame(width: 22)
                 if !model.sidebarCollapsed {
-                    Text(page.rawValue).lineLimit(1)
+                    Text(page.displayName).lineLimit(1)
+                        .font(.system(size: 13, weight: active ? .semibold : .medium))
                     Spacer(minLength: 2)
                     if let count = navCount(page) {
                         Text("\(count)")
-                            .foregroundStyle(KiriPalette.faint(model.isLight))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(active ? .white : KiriPalette.muted(model.isLight))
+                            .frame(minWidth: 20, minHeight: 20)
+                            .padding(.horizontal, 2)
+                            .background(active ? Color.black.opacity(0.14) :
+                                KiriPalette.raised(model.isLight))
+                            .clipShape(Capsule())
                     }
                 }
             }
-            .padding(.horizontal, model.sidebarCollapsed ? 10 : 9)
-            .frame(maxWidth: .infinity, minHeight: 31, alignment: .leading)
-            .background(model.page == page ?
-                KiriPalette.raised(model.isLight) : .clear)
+            .foregroundStyle(active ? .white : KiriPalette.title(model.isLight))
+            .padding(.horizontal, 13)
+            .frame(maxWidth: .infinity, minHeight: 43, alignment: .leading)
+            .background(active ? KiriPalette.blue : .clear)
             .clipShape(RoundedRectangle(cornerRadius: 7))
-            .overlay(RoundedRectangle(cornerRadius: 7)
-                .stroke(model.page == page ? KiriPalette.border(model.isLight) : .clear))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(page.rawValue)
+        .help(page.displayName)
     }
 
     private func navCount(_ page: Page) -> Int? {
@@ -902,41 +907,85 @@ private struct RootView: View {
         case .images: model.images.count
         case .volumes: model.volumes.count
         case .networks: model.networks.count
+        case .compose: Set(model.containers.compactMap(\.composeProject)).count
         default: nil
         }
     }
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                if !model.sidebarCollapsed {
-                    Text("DOCKER")
-                        .font(.system(size: 11, weight: .semibold))
-                        .tracking(0.8)
-                        .foregroundStyle(KiriPalette.faint(model.isLight))
-                    Spacer()
-                    Button { model.isLight.toggle() } label: {
-                        Image(systemName: model.isLight ? "moon" : "sun.max")
-                    }.buttonStyle(.plain).help("切换浅色/深色主题")
-                }
-            }.padding(.horizontal, 8).frame(height: 30)
-            ForEach([Page.containers, .compose, .images, .volumes, .networks, .builds],
-                    id: \.self) { navButton($0) }
             if !model.sidebarCollapsed {
-                Text("KIRI").font(.system(size: 11, weight: .semibold))
-                    .tracking(0.8)
+                Text("资源")
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(KiriPalette.faint(model.isLight))
-                    .padding(.horizontal, 8).padding(.top, 14).padding(.bottom, 4)
-            } else {
-                Rectangle().fill(KiriPalette.border(model.isLight))
-                    .frame(height: 1).padding(.vertical, 12)
+                    .padding(.horizontal, 11)
+                    .frame(height: 29, alignment: .leading)
             }
+            ForEach([Page.containers, .images, .volumes, .networks, .compose, .builds],
+                    id: \.self) { page in
+                navButton(page)
+            }
+            if !model.sidebarCollapsed {
+                Text("系统")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(KiriPalette.faint(model.isLight))
+                    .padding(.horizontal, 11)
+                    .padding(.top, 24)
+                    .frame(height: 46, alignment: .bottomLeading)
+            } else {
+                Divider().padding(.vertical, 12)
+            }
+            Button { model.page = .overview } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "desktopcomputer")
+                        .font(.system(size: 16))
+                        .frame(width: 22)
+                    if !model.sidebarCollapsed {
+                        Text("虚拟机 (Moby)")
+                            .font(.system(size: 13, weight: .medium))
+                        Spacer(minLength: 2)
+                        Circle()
+                            .fill(model.online ? Color.green : Color.gray)
+                            .frame(width: 9, height: 9)
+                    }
+                }
+                .foregroundStyle(model.page == .overview ? .white :
+                    KiriPalette.title(model.isLight))
+                .padding(.horizontal, 13)
+                .frame(maxWidth: .infinity, minHeight: 43, alignment: .leading)
+                .background(model.page == .overview ? KiriPalette.blue : .clear)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+            }
+            .buttonStyle(.plain)
+            .help("虚拟机")
             navButton(.settings)
-            Spacer(minLength: 15)
-            vmCard
+            Spacer(minLength: 14)
+            HStack {
+                Button { model.isLight.toggle() } label: {
+                    Image(systemName: model.isLight ? "moon.stars" : "sun.max")
+                }
+                .help("切换外观")
+                if !model.sidebarCollapsed {
+                    Spacer()
+                    Button { model.sidebarCollapsed.toggle() } label: {
+                        Image(systemName: "sidebar.left")
+                    }
+                    .help("折叠侧边栏")
+                } else {
+                    Button { model.sidebarCollapsed.toggle() } label: {
+                        Image(systemName: "sidebar.right")
+                    }
+                    .help("展开侧边栏")
+                }
+            }
+            .foregroundStyle(KiriPalette.muted(model.isLight))
+            .buttonStyle(.plain)
+            .padding(.horizontal, 15)
+            .frame(height: 30)
         }
-        .padding(.horizontal, model.sidebarCollapsed ? 9 : 12)
-        .padding(.top, 8).padding(.bottom, 14)
+        .padding(.horizontal, model.sidebarCollapsed ? 7 : 14)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
         .background(KiriPalette.side(model.isLight))
     }
 
@@ -1005,38 +1054,47 @@ private struct RootView: View {
     }
 
     private var pageHeader: some View {
-        HStack(spacing: 12) {
-            Text(model.page.rawValue).font(.system(size: 15, weight: .semibold))
-            Text(model.online ? "Docker Engine 已连接" : "VM 未连接")
-                .foregroundStyle(KiriPalette.muted(model.isLight))
-                .lineLimit(1)
-            Spacer(minLength: 10)
+        HStack(spacing: 16) {
+            Text(model.page.displayName)
+                .font(.system(size: 25, weight: .bold))
+                .foregroundStyle(KiriPalette.title(model.isLight))
+            Spacer(minLength: 18)
             if model.page == .containers {
-                HStack(spacing: 5) {
-                    ForEach(ContainerFilter.allCases) { selected in
-                        let count = model.containers.filter { selected.includes($0) }.count
-                        Button("\(selected.rawValue)  \(count)") {
-                            model.containerFilter = selected
-                        }
-                        .font(.system(size: 11))
-                        .padding(.horizontal, 9).frame(height: 28)
-                        .background(model.containerFilter == selected ?
-                            KiriPalette.blue.opacity(0.15) : .clear)
-                        .foregroundStyle(model.containerFilter == selected ?
-                            KiriPalette.link(model.isLight) : KiriPalette.muted(model.isLight))
-                        .clipShape(Capsule())
-                        .overlay(Capsule().stroke(model.containerFilter == selected ?
-                            KiriPalette.blue : KiriPalette.border(model.isLight)))
-                        .buttonStyle(.plain)
-                    }
+                HStack(spacing: 9) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                    TextField("搜索容器…", text: $model.search)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
                 }
-            }
-            Button("刷新") { model.refresh() }
+                .padding(.horizontal, 13)
+                .frame(width: 272, height: 37)
+                .background(KiriPalette.panel(model.isLight))
+                .clipShape(RoundedRectangle(cornerRadius: 9))
+                .overlay(RoundedRectangle(cornerRadius: 9)
+                    .stroke(KiriPalette.border(model.isLight)))
+                Button {
+                    if let image = model.ask("输入要创建的容器镜像", placeholder: "nginx:alpine") {
+                        model.perform(["run", image], title: "新建容器", showResult: false)
+                    }
+                } label: {
+                    Label("新建容器", systemImage: "plus")
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 12)
+                        .frame(height: 37)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(KiriPalette.blue)
+            } else {
+                Button { model.refresh() } label: {
+                    Label("刷新", systemImage: "arrow.clockwise")
+                }
                 .buttonStyle(.bordered)
                 .font(.system(size: 12))
+            }
         }
         .padding(.horizontal, 20)
-        .frame(height: 55)
+        .frame(height: 78)
         .background(KiriPalette.bg(model.isLight))
     }
 
