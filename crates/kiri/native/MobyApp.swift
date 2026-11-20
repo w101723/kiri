@@ -117,6 +117,26 @@ private struct BalloonInfo: Decodable {
     let guest_total_kib: Int?
 }
 
+/// Aggregated from Docker /containers/{id}/stats, read-only and bounded.
+private struct ContainerResourceUsage: Decodable {
+    let cpu_percent: Double?
+    let memory_bytes: Int64?
+    let memory_limit_bytes: Int64?
+    let memory_percent: Double?
+    let net_rx_bytes: Int64?
+    let net_tx_bytes: Int64?
+    let block_read_bytes: Int64?
+    let block_write_bytes: Int64?
+    let pids: Int?
+}
+
+private struct ContainerStatsReply: Decodable {
+    let ok: Bool
+    let stats: [String: ContainerResourceUsage]?
+    let truncated: Bool?
+    let error: String?
+}
+
 private struct Snapshot: Decodable {
     let ok: Bool?
     let online: Bool?
@@ -281,6 +301,11 @@ private final class MobyModel: ObservableObject {
     @Published var page: Page = .containers
     @Published var search = ""
     @Published var snapshot: Snapshot?
+    @Published private(set) var containerStats: [String: ContainerResourceUsage] = [:]
+    @Published private(set) var statsUpdatedAt: Date?
+    @Published private(set) var statsError: String?
+    @Published private(set) var statsTruncated = false
+    private var fetchingStats = false
     // Keep unrelated Docker operations responsive; only deduplicate identical requests.
     @Published private(set) var activeOperations = Set<String>()
     private var vmTransitionInProgress = false
@@ -380,7 +405,56 @@ private final class MobyModel: ObservableObject {
                     }
                 }
                 snapshot = value
+                if value.online != true {
+                    containerStats = [:]
+                    statsUpdatedAt = nil
+                    statsError = nil
+                    statsTruncated = false
+                }
             case .failure(let failure): error = failure.localizedDescription
+            }
+        }
+    }
+
+    /// Refresh CPU/RAM/IO independently from snapshot so Docker container
+    /// management and status badges remain responsive during stats sampling.
+    func refreshContainerStats() {
+        #if KIRI_UI_PREVIEW
+        if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+            return
+        }
+        #endif
+        guard !fetchingStats, online,
+              page == .containers || page == .compose else { return }
+        fetchingStats = true
+        Task {
+            let answer = await Task.detached(priority: .utility) {
+                Result { try request(["stats"], as: ContainerStatsReply.self) }
+            }.value
+            fetchingStats = false
+            guard online else {
+                containerStats = [:]
+                statsUpdatedAt = nil
+                return
+            }
+            switch answer {
+            case .success(let reply):
+                if reply.ok {
+                    // Replace the entire set each round, including evicting stopped
+                    // and deleted containers. Never display a stale live CPU rate.
+                    containerStats = reply.stats ?? [:]
+                    statsUpdatedAt = .now
+                    statsTruncated = reply.truncated ?? false
+                    statsError = nil
+                } else {
+                    statsError = reply.error ?? "容器资源读取失败"
+                    containerStats = [:]
+                    statsUpdatedAt = nil
+                }
+            case .failure(let failure):
+                statsError = failure.localizedDescription
+                containerStats = [:]
+                statsUpdatedAt = nil
             }
         }
     }
@@ -1027,6 +1101,14 @@ private struct RootView: View {
                 try? await Task.sleep(for: .seconds(10))
                 if Task.isCancelled { break }
                 model.refresh()
+            }
+        }
+        .task(id: model.page) {
+            guard model.page == .containers || model.page == .compose else { return }
+            while !Task.isCancelled {
+                model.refreshContainerStats()
+                do { try await Task.sleep(for: .seconds(5)) }
+                catch { break }
             }
         }
         .onChange(of: model.page) { _, _ in model.search = "" }
