@@ -711,6 +711,69 @@ private final class ContainerLogSession: ObservableObject {
     }
 }
 
+/// NSTextView keeps the native find bar, selection and text system and can
+/// apply deltas without rebuilding a SwiftUI Text layout on each log update.
+private struct NativeLogTextView: NSViewRepresentable {
+    let content: String
+    let following: Bool
+
+    final class Coordinator {
+        var rendered = ""
+    }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroller = NSScrollView()
+        scroller.hasVerticalScroller = true
+        scroller.hasHorizontalScroller = true
+        scroller.autohidesScrollers = true
+        scroller.drawsBackground = true
+        scroller.backgroundColor = NSColor(calibratedWhite: 0.09, alpha: 1)
+        let view = NSTextView(frame: .zero)
+        view.isEditable = false
+        view.isSelectable = true
+        view.isRichText = false
+        view.usesFindBar = true
+        view.isAutomaticQuoteSubstitutionEnabled = false
+        view.isAutomaticDashSubstitutionEnabled = false
+        view.isAutomaticTextReplacementEnabled = false
+        view.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        view.textColor = .white
+        view.backgroundColor = scroller.backgroundColor
+        view.textContainerInset = NSSize(width: 12, height: 10)
+        view.isHorizontallyResizable = true
+        view.isVerticallyResizable = true
+        view.autoresizingMask = [.width]
+        view.textContainer?.widthTracksTextView = false
+        view.textContainer?.containerSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude)
+        scroller.documentView = view
+        return scroller
+    }
+    func updateNSView(_ scroller: NSScrollView, context: Context) {
+        guard let view = scroller.documentView as? NSTextView,
+              let storage = view.textStorage else { return }
+        let previous = context.coordinator.rendered
+        guard previous != content else { return }
+        if content.hasPrefix(previous) {
+            let suffix = String(content.dropFirst(previous.count))
+            storage.append(NSAttributedString(string: suffix, attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                .foregroundColor: NSColor.white
+            ]))
+        } else {
+            storage.setAttributedString(NSAttributedString(string: content, attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                .foregroundColor: NSColor.white
+            ]))
+        }
+        context.coordinator.rendered = content
+        if following {
+            view.scrollRangeToVisible(NSRange(location: storage.length, length: 0))
+        }
+    }
+}
+
 private struct ContainerLogWindow: View {
     @StateObject private var session = ContainerLogSession()
     let containerID: String
@@ -745,28 +808,8 @@ private struct ContainerLogWindow: View {
             .font(.system(size: 12))
             .padding(.horizontal, 13)
             .frame(height: 50)
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal) {
-                    ScrollView(.vertical) {
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(session.content.isEmpty ? "等待容器日志…" : session.content)
-                                .font(.system(size: 13, design: .monospaced))
-                                .foregroundStyle(.white)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(12)
-                            Color.clear.frame(height: 1).id("log-bottom")
-                        }
-                        .frame(minWidth: 700, alignment: .topLeading)
-                    }
-                }
-                .background(Color(red: 0.07, green: 0.08, blue: 0.10))
-                .onChange(of: session.content) { _, _ in
-                    if session.following {
-                        proxy.scrollTo("log-bottom", anchor: .bottom)
-                    }
-                }
-            }
+            NativeLogTextView(content: session.content, following: session.following)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             HStack(spacing: 8) {
                 Circle()
                     .fill(session.error == nil ? Color.green : Color.red)
@@ -782,7 +825,7 @@ private struct ContainerLogWindow: View {
             .padding(.horizontal, 13)
             .frame(height: 35)
         }
-        .frame(minWidth: 650, minHeight: 390)
+        .frame(minHeight: 180)
         .task(id: session.tailLines) {
             while !Task.isCancelled {
                 if session.following {
