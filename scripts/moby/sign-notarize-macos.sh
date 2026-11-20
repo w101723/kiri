@@ -84,6 +84,9 @@ for item in "$resource/bin/docker" \
   sign "$item"
 done
 sign "$gui" --entitlements crates/kiri/kiri.entitlements
+if [[ -f "$app/Contents/MacOS/kiri-moby-ui" ]]; then
+  sign "$app/Contents/MacOS/kiri-moby-ui"
+fi
 sign "$app" --entitlements crates/kiri/kiri.entitlements
 codesign --verify --deep --strict --verbose=2 "$app"
 
