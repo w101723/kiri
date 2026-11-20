@@ -1118,6 +1118,82 @@ private struct ExecTerminalView: View {
     }
 }
 
+/// The table must stay one-line-dense: network and block I/O live in a
+/// dedicated native popover instead of tiny 9pt numbers in every cell.
+private struct CompactContainerMetrics: View {
+    let stats: ContainerResourceUsage
+    let isLight: Bool
+    @State private var showingDetails = false
+
+    private var cpuText: String {
+        stats.cpu_percent.map { String(format: "%.1f%%", $0) } ?? "—"
+    }
+    private var memoryText: String {
+        sizeLabel(stats.memory_bytes) + " / " + sizeLabel(stats.memory_limit_bytes)
+    }
+    private var fraction: CGFloat {
+        CGFloat(min(1, max(0, (stats.memory_percent ?? 0) / 100)))
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 7) {
+                Text("CPU")
+                    .foregroundStyle(KiriPalette.muted(isLight))
+                Text(cpuText)
+                    .fontWeight(.medium)
+                    .monospacedDigit()
+                Spacer(minLength: 4)
+                Text("内存")
+                    .foregroundStyle(KiriPalette.muted(isLight))
+                Text(sizeLabel(stats.memory_bytes))
+                    .fontWeight(.medium)
+                    .monospacedDigit()
+                Button { showingDetails.toggle() } label: {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16, height: 18)
+                }
+                .buttonStyle(.plain)
+                .help("查看网络、磁盘 I/O、进程数及内存限制")
+                .popover(isPresented: $showingDetails, arrowEdge: .trailing) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("容器资源详情").font(.headline)
+                        Divider()
+                        LabeledContent("CPU 使用率", value: cpuText)
+                        LabeledContent("内存工作集", value: memoryText)
+                        LabeledContent("内存占比", value:
+                            stats.memory_percent.map { String(format: "%.1f%%", $0) } ?? "—")
+                        Divider()
+                        LabeledContent("网络接收（累计）", value: sizeLabel(stats.net_rx_bytes))
+                        LabeledContent("网络发送（累计）", value: sizeLabel(stats.net_tx_bytes))
+                        LabeledContent("磁盘读取（累计）", value: sizeLabel(stats.block_read_bytes))
+                        LabeledContent("磁盘写入（累计）", value: sizeLabel(stats.block_write_bytes))
+                        LabeledContent("进程数", value: stats.pids.map(String.init) ?? "—")
+                    }
+                    .padding(16)
+                    .frame(width: 300)
+                }
+            }
+            .font(.system(size: 11, design: .rounded))
+            .lineLimit(1)
+            GeometryReader { proxy in
+                Capsule()
+                    .fill(KiriPalette.raised(isLight))
+                    .overlay(alignment: .leading) {
+                        Capsule()
+                            .fill(fraction > 0.85 ? Color.orange : KiriPalette.blue)
+                            .frame(width: proxy.size.width * fraction)
+                    }
+            }
+            .frame(height: 3)
+        }
+        .foregroundStyle(KiriPalette.title(isLight))
+        .padding(.vertical, 2)
+        .help("CPU \(cpuText)，内存 \(memoryText)；点击 ⓘ 查看 I/O")
+    }
+}
+
 private struct ConsoleSession: Codable, Hashable, Identifiable {
     enum Kind: String, Codable { case exec, logs }
     let kind: Kind
@@ -1899,51 +1975,7 @@ private struct RootView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(KiriPalette.faint(model.isLight))
         } else if let stats = model.containerStats[item.Id] {
-            let cpu = stats.cpu_percent.map {
-                String(format: "%.1f%%", $0)
-            } ?? "—"
-            let used = sizeLabel(stats.memory_bytes)
-            let limit = sizeLabel(stats.memory_limit_bytes)
-            let usedFraction = min(1.0, max(0.0,
-                (stats.memory_percent ?? 0) / 100.0))
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 6) {
-                    Text("CPU")
-                        .foregroundStyle(KiriPalette.muted(model.isLight))
-                    Text(cpu)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(KiriPalette.title(model.isLight))
-                    Spacer(minLength: 6)
-                    Text("内存")
-                        .foregroundStyle(KiriPalette.muted(model.isLight))
-                    Text("\(used) / \(limit)")
-                        .fontWeight(.medium)
-                        .foregroundStyle(KiriPalette.title(model.isLight))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
-                }
-                .font(.system(size: 10, design: .monospaced))
-                GeometryReader { proxy in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(KiriPalette.raised(model.isLight))
-                        Capsule().fill(usedFraction > 0.85 ?
-                            Color.orange : KiriPalette.blue)
-                            .frame(width: proxy.size.width * usedFraction)
-                    }
-                }
-                .frame(height: 4)
-                HStack(spacing: 6) {
-                    Text("网络 ↓\(sizeLabel(stats.net_rx_bytes)) ↑\(sizeLabel(stats.net_tx_bytes))")
-                    Spacer(minLength: 3)
-                    Text("磁盘 ↓\(sizeLabel(stats.block_read_bytes)) ↑\(sizeLabel(stats.block_write_bytes))")
-                }
-                .font(.system(size: 9))
-                .foregroundStyle(KiriPalette.muted(model.isLight))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-            }
-            .padding(.vertical, 5)
-            .help("CPU：\(cpu)（可超过 100%，表示使用多个核心）\n内存工作集：\(used) / \(limit)\n网络收发（累计）：↓\(sizeLabel(stats.net_rx_bytes)) ↑\(sizeLabel(stats.net_tx_bytes))\n磁盘读写（累计）：↓\(sizeLabel(stats.block_read_bytes)) ↑\(sizeLabel(stats.block_write_bytes))\n进程数：\(stats.pids.map(String.init) ?? "—")")
+            CompactContainerMetrics(stats: stats, isLight: model.isLight)
         } else {
             Text(model.statsUpdatedAt != nil ? "暂无统计" :
                  (model.statsError != nil ? "读取失败" : "采集中…"))
