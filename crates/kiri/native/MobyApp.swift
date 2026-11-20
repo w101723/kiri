@@ -1133,104 +1133,153 @@ private struct RootView: View {
         }
     }
 
+    private func panelCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 14, content: content)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+            .background(KiriPalette.panel(model.isLight))
+            .clipShape(RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11)
+                .stroke(KiriPalette.border(model.isLight)))
+    }
+
+    private func fieldLabel(_ label: String) -> some View {
+        Text(label).font(.system(size: 12))
+            .foregroundStyle(KiriPalette.muted(model.isLight))
+    }
+
+    private func styledField(_ hint: String, text: Binding<String>) -> some View {
+        TextField(hint, text: text)
+            .textFieldStyle(.plain)
+            .padding(.horizontal, 10)
+            .frame(height: 33)
+            .background(KiriPalette.raised(model.isLight))
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7)
+                .stroke(KiriPalette.border(model.isLight)))
+    }
+
     private var compose: some View {
-        Form {
-            Section("Docker Compose") {
-                HStack {
-                    TextField("Compose .yaml/.yml 文件", text:$model.composeFile)
-                        .textFieldStyle(.roundedBorder)
-                    Button("选择…") { model.chooseFile() }
-                }
-                HStack {
+        ScrollView {
+            panelCard {
+                Text("Docker Compose").font(.system(size: 14, weight:.semibold))
+                fieldLabel("Compose 文件路径")
+                styledField("/Users/you/project/compose.yaml", text: $model.composeFile)
+                HStack(spacing: 8) {
+                    Button("选择 Compose 文件") { model.chooseFile() }
                     Button("Up -d") { composeAction("compose_up") }
                         .buttonStyle(.borderedProminent)
+                    Button("查看状态") { composeAction("compose_ps") }
+                    Button("查看日志") { composeAction("compose_logs") }
                     Button("Down") {
-                        if model.confirm("停止 Compose 项目？",detail:"将停止并删除项目容器。") {
+                        if model.confirm("停止并删除 Compose 项目的容器？",
+                                         detail:"使用 docker compose down；持久化命名数据卷不自动删除。") {
                             composeAction("compose_down")
                         }
-                    }
-                    Button("PS") { composeAction("compose_ps") }
-                    Button("Logs") { composeAction("compose_logs") }
+                    }.foregroundStyle(KiriPalette.red)
                 }
-                Text("通过已安装的 Docker Compose 插件执行；不会修改默认 Docker Context。")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text("使用标准 Docker Compose CLI，通过 Kiri Moby 独立 Socket 运行，不修改默认 Docker Context。")
+                    .foregroundStyle(KiriPalette.muted(model.isLight))
             }
-        }.formStyle(.grouped)
+            .padding(20)
+        }
     }
 
     private func composeAction(_ operation: String) {
-        model.action(operation,fields:["path":model.composeFile],title:operation)
+        model.action(operation, fields:["path":model.composeFile], title:operation)
     }
 
     private var builds: some View {
-        Form {
-            Section("Docker Buildx") {
-                HStack {
-                    TextField("构建目录",text:$model.buildFolder)
-                        .textFieldStyle(.roundedBorder)
-                    Button("选择…") { model.chooseBuildFolder() }
+        ScrollView {
+            panelCard {
+                Text("Dockerfile / BuildKit").font(.system(size:14,weight:.semibold))
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment:.leading,spacing:7) {
+                        fieldLabel("构建目录")
+                        styledField("/Users/you/project",text:$model.buildFolder)
+                        Button("选择构建目录…") { model.chooseBuildFolder() }
+                            .font(.system(size:11))
+                    }
+                    VStack(alignment:.leading,spacing:7) {
+                        fieldLabel("镜像 Tag")
+                        styledField("my-app:latest",text:$model.buildTag)
+                    }
                 }
-                TextField("镜像标签",text:$model.buildTag,prompt:Text("my-app:latest"))
-                Picker("目标架构",selection:$model.buildPlatform) {
+                fieldLabel("目标架构")
+                Picker("",selection:$model.buildPlatform) {
                     Text("linux/arm64").tag("linux/arm64")
                     Text("linux/amd64").tag("linux/amd64")
                 }
+                .labelsHidden().frame(width:165)
                 Button("构建镜像") {
                     model.action("build",fields:[
                         "path":model.buildFolder,
                         "name":model.buildTag,
                         "platform":model.buildPlatform
-                    ],title:"Buildx")
+                    ],title:"build")
                 }.buttonStyle(.borderedProminent)
-                Text("使用标准 Docker Buildx --load。")
-                    .font(.caption).foregroundStyle(.secondary)
             }
-        }.formStyle(.grouped)
+            .padding(20)
+        }
     }
 
     private var settings: some View {
-        Form {
-            Section("Kiri Moby VM") {
-                HStack {
-                    Button("启动 VM") { model.perform(["start"],title:"Start VM",showResult:false) }
-                    Button("停止 VM") {
-                        if model.confirm("停止 VM？",detail:"将停止正在运行的容器。") {
-                            model.perform(["stop"],title:"Stop VM")
-                        }
+        ScrollView {
+            VStack(spacing: 14) {
+                panelCard {
+                    Text("Kiri Moby VM").font(.system(size:14,weight:.semibold))
+                    Text("使用独立标准 Docker Engine、ext4 数据盘和私有 Docker Socket。不会覆盖 OrbStack。")
+                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                    HStack(spacing:8) {
+                        Button("启动 VM") {
+                            model.perform(["start"], title:"Start VM",showResult:false)
+                        }.buttonStyle(.borderedProminent)
+                        Button("停止 VM") {
+                            if model.confirm("停止 VM 和正在运行的容器？",
+                                             detail:"Docker 容器会被停止。") {
+                                model.perform(["stop"],title:"Stop VM",showResult:false)
+                            }
+                        }.foregroundStyle(KiriPalette.red)
                     }
-                    Button("重启 VM") {
-                        if model.confirm("重启 VM？",detail:"正在运行的容器会暂时中断。") {
-                            model.perform(["restart"],title:"Restart VM")
+                }
+                panelCard {
+                    Text("Mac 目录共享").font(.system(size:14,weight:.semibold))
+                    Text("选择允许 Docker 容器访问的 Mac 项目目录；未经授权不会共享整个 /Users 或 /Volumes。更改后需要重启 VM 才能生效。")
+                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                    if model.shares.isEmpty {
+                        Text("尚未授权目录")
+                            .foregroundStyle(KiriPalette.muted(model.isLight))
+                    }
+                    ForEach(model.shares,id:\.self) { share in
+                        HStack {
+                            Text(share).font(.system(size:11,design:.monospaced))
+                                .textSelection(.enabled)
+                            Spacer(minLength:8)
+                            smallAction("移除",destructive:true) {
+                                if model.confirm("移除对 \(share) 的共享授权？",
+                                                 detail:"生效前请重新启动 VM。") {
+                                    model.action("remove_share",
+                                                 fields:["path":share],title:"Remove share")
+                                }
+                            }
+                        }.padding(.vertical,3)
+                    }
+                    HStack(spacing: 8) {
+                        Button("选择共享目录…") { model.chooseShare() }
+                            .buttonStyle(.borderedProminent)
+                        Button("应用更改并重启 VM") {
+                            if model.confirm("重启 Moby VM 以应用目录授权？",
+                                             detail:"运行中的容器会被中断。") {
+                                model.action("apply_shares",title:"Apply shares")
+                            }
                         }
                     }
                 }
-                LabeledContent("VM 状态",value:model.online ? "Running" : "Stopped")
-                LabeledContent("Balloon 目标",
-                    value:model.snapshot?.memory?.balloon_target_mib.map { "\($0) MiB" } ?? "—")
             }
-            Section("Mac 目录共享") {
-                ForEach(model.shares,id:\.self) { share in
-                    HStack {
-                        Text(share).textSelection(.enabled)
-                        Spacer()
-                        Button("移除",role:.destructive) {
-                            model.action("remove_share",fields:["path":share],title:"Remove share")
-                        }
-                    }
-                }
-                HStack {
-                    Button("授权目录…") { model.chooseShare() }
-                    Button("应用共享变更（重启 VM）") {
-                        if model.confirm("应用目录共享？",detail:"将重启 Linux VM。") {
-                            model.action("apply_shares",title:"Apply shares")
-                        }
-                    }
-                }
-                Text("只共享显式授权的 /Users 或 /Volumes 项目目录；不会自动共享整个 Mac。")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }.formStyle(.grouped)
+            .padding(20)
+        }
     }
+
 }
 
 @main
