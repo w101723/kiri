@@ -13,6 +13,7 @@ on:
       - "scripts/moby/build-libkrun-lab-guest.sh"
       - "scripts/moby/measure-libkrun-lab-macos.sh"
       - "scripts/moby/measure-libkrun-cold-anon-macos.sh"
+      - "scripts/moby/summarize-libkrun-cold-anon.py"
       - "guest/kernel/**"
       - ".github/workflows/moby-libkrun-lab.yml"
   pull_request:
@@ -25,6 +26,7 @@ on:
       - "scripts/moby/build-libkrun-lab-guest.sh"
       - "scripts/moby/measure-libkrun-lab-macos.sh"
       - "scripts/moby/measure-libkrun-cold-anon-macos.sh"
+      - "scripts/moby/summarize-libkrun-cold-anon.py"
       - "guest/kernel/**"
       - ".github/workflows/moby-libkrun-lab.yml"
 
@@ -46,6 +48,7 @@ jobs:
           bash -n scripts/moby/measure-libkrun-lab-macos.sh
           bash -n scripts/moby/measure-libkrun-cold-anon-macos.sh
           sh -n scripts/moby/libkrun-lab-init
+          python3 -m py_compile scripts/moby/summarize-libkrun-cold-anon.py
       - name: Build isolated virtio-mmio kernel and RAM-only initramfs
         run: |
           mkdir -p "$RUNNER_TEMP/kiri-libkrun-guest"
@@ -89,6 +92,7 @@ jobs:
           cp docs/MOBY_LIBKRUN_MEMORY.md target/libkrun-lab/README.md
           cp scripts/moby/measure-libkrun-lab-macos.sh target/libkrun-lab/measure-libkrun-lab-macos.sh
           cp scripts/moby/measure-libkrun-cold-anon-macos.sh target/libkrun-lab/measure-libkrun-cold-anon-macos.sh
+          cp scripts/moby/summarize-libkrun-cold-anon.py target/libkrun-lab/summarize-libkrun-cold-anon.py
           chmod +x target/libkrun-lab/measure-libkrun-lab-macos.sh
           chmod +x target/libkrun-lab/measure-libkrun-cold-anon-macos.sh
           tar -C target/libkrun-lab -czf target/kiri-libkrun2-memory-lab-arm64.tgz .
