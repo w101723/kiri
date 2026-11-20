@@ -43,7 +43,20 @@ Docker context, or duplicated container metadata database.
   line tail, copy, clear. Logs are polled every two seconds, not streamed.
 - Exec: floating PTY-backed `docker exec -it` shell with repeatable input,
   copy, clear and Ctrl-C. Line-oriented display is **not** a full VT100 emulator.
-- Native macOS menus, alerts, sidebar, searchable lists and menu bar icon.
+- Native macOS NavigationSplitView / system sidebar material, standard titlebar
+  toolbar, searchable navigation, VM-resource popover and menu bar icon.
+  Containers are shown in a native sortable multi-select SwiftUI Table
+  (NSTableView on macOS), with context-menu batch actions and compact buttons.
+- A draggable vertical split embeds Exec and Logs into a dark console drawer.
+  Sessions can be detached into real macOS WindowGroup windows which opt into
+  native AppKit window tabbing. Detaching creates a new terminal process; it is
+  **not** a seamless PTY migration.
+- Logs use an AppKit NSTextView via NSViewRepresentable, with native find bar,
+  disabled smart substitutions and incremental text updates. The bounded log
+  fetching is still poll-based; no true stream has been implemented.
+- Exec continues to use a signed Kiri CLI-backed openpty transport and a
+  SwiftUI Text **line-oriented** renderer, NOT SwiftTerm or VT100/xterm emulation.
+  It does not yet support full-screen TUIs, ANSI cursor controls or PTY resize.
 
 The Docker engine remains upstream Moby, and user state remains in
 ~/.kiri-moby/vm/data.img. The Host process and Apple VZ backend remain
