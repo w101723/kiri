@@ -65,3 +65,65 @@ jobs:
             exit 1
           fi
           echo "PASS: fail-closed missing-secrets case."
+
+      - name: Verify CA-issued personal identity without Apple trusted root
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/private-ca-test"
+          mkdir -p "$work"
+          cat > "$work/root.cnf" <<'CONF'
+          [ req ]
+          prompt = no
+          distinguished_name = dn
+          x509_extensions = ca
+          [ dn ]
+          CN = Kiri CI Temporary Root CA
+          [ ca ]
+          basicConstraints = critical, CA:TRUE
+          keyUsage = critical, keyCertSign, cRLSign
+          subjectKeyIdentifier = hash
+          CONF
+          openssl req -new -x509 -nodes -newkey rsa:2048 -sha256 -days 2 \
+            -config "$work/root.cnf" -keyout "$work/root.key" -out "$work/root.pem" 2>/dev/null
+          openssl req -new -nodes -newkey rsa:2048 -sha256 \
+            -subj "/CN=Kiri CI Issued Code Signing" \
+            -keyout "$work/leaf.key" -out "$work/leaf.csr" 2>/dev/null
+          cat > "$work/leaf.ext" <<'CONF'
+          basicConstraints = critical, CA:FALSE
+          keyUsage = critical, digitalSignature
+          extendedKeyUsage = codeSigning
+          CONF
+          openssl x509 -req -in "$work/leaf.csr" -CA "$work/root.pem" \
+            -CAkey "$work/root.key" -CAcreateserial -days 2 \
+            -extfile "$work/leaf.ext" -out "$work/leaf.pem"
+          openssl pkcs12 -export -inkey "$work/leaf.key" -in "$work/leaf.pem" \
+            -certfile "$work/root.pem" -name "Kiri CI Issued Code Signing" \
+            -passout pass:CI-only-test-password -out "$work/issued.p12"
+          export KIRI_PERSONAL_SIGN_P12_BASE64="$(base64 < "$work/issued.p12" | tr -d '\r\n')"
+          export KIRI_PERSONAL_SIGN_P12_PASSWORD=CI-only-test-password
+          export KIRI_PERSONAL_SIGN_CERT_SHA256="$(openssl x509 -in "$work/leaf.pem" -outform DER | shasum -a 256 | awk '{print $1}')"
+          export KIRI_REQUIRE_PERSONAL_SIGNING=true
+          bash scripts/moby/sign-personal-macos.sh "packaged/Kiri Moby.app"
+          codesign --verify --deep --strict --verbose=2 "packaged/Kiri Moby.app"
+          echo "PASS: Private-CA-issued leaf signed using its bundled CA certificate."
+
+      - name: Verify repository's actual configured P12 without building Linux kernel
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        env:
+          KIRI_PERSONAL_SIGN_P12_BASE64: ${{ secrets.KIRI_PERSONAL_SIGN_P12_BASE64 }}
+          KIRI_PERSONAL_SIGN_P12_PASSWORD: ${{ secrets.KIRI_PERSONAL_SIGN_P12_PASSWORD }}
+          KIRI_PERSONAL_SIGN_CERT_SHA256: ${{ secrets.KIRI_PERSONAL_SIGN_CERT_SHA256 }}
+          KIRI_PERSONAL_SIGN_CA_PEM_BASE64: ${{ secrets.KIRI_PERSONAL_SIGN_CA_PEM_BASE64 }}
+          KIRI_REQUIRE_PERSONAL_SIGNING: "true"
+        run: |
+          set -euo pipefail
+          if [[ -z "${KIRI_PERSONAL_SIGN_CA_PEM_BASE64:-}" ]]; then
+            echo "SKIP REAL P12: private-root public PEM secret KIRI_PERSONAL_SIGN_CA_PEM_BASE64 not yet configured."
+            echo "The dummy CA-issued signing test above still validates the complete root-chain code path."
+            exit 0
+          fi
+          bash scripts/moby/sign-personal-macos.sh "packaged/Kiri Moby.app"
+          codesign --verify --deep --strict --verbose=2 "packaged/Kiri Moby.app"
+          echo "PASS: repository's actual P12 and private root CA sign an App."

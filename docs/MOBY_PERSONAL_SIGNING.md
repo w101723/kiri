@@ -77,3 +77,41 @@ The Docker data disk at ~/.kiri-moby is never modified by this installer.
 The certificate-signed CI path cannot be fully verified until the owner
 actually supplies the required private GitHub Secrets and a Mac verifies
 a resulting build.
+
+
+## Private CA-issued signing identities (Kiri Moby Code Signing)
+
+If the existing P12 was issued by a custom intermediate CA, the P12 usually
+contains the leaf key/certificate and intermediate CA, but NOT the original
+self-signed **root CA public certificate**. On a new macOS GitHub runner,
+codesign requires a complete path to the actual private root; merely trusting
+the intermediate as root is not sufficient.
+
+Configure a *fourth* GitHub Actions Secret named
+`KIRI_PERSONAL_SIGN_CA_PEM_BASE64`. Its value is the Base64
+encoding of the root CA's **PUBLIC X.509 certificate in PEM format**. This
+certificate has no private keys; do NOT upload `root.key` or a
+root CA P12. On the Mac where the original CA was created:
+
+    ROOT_CRT="/absolute/path/to/your/root-ca.crt"
+    openssl x509 -in "$ROOT_CRT" -noout -subject -issuer -text
+    openssl x509 -in "$ROOT_CRT" -outform PEM |
+      base64 | tr -d '\r\n' |
+      gh secret set KIRI_PERSONAL_SIGN_CA_PEM_BASE64 -R w101723/kiri
+
+The output of the first command should contain `CA:TRUE`;
+the root's `subject` and `issuer` should be equal.
+If the original certificate was not saved to a file but is installed in
+macOS Keychain, export its **public certificate only** from Keychain Access.
+
+The CI script extracts the intermediate(s) already contained in the P12,
+cryptographically verifies the full chain to this public root, then
+trusts that root for code signing **only on GitHub's disposable macOS
+runner**. It never modifies trust settings on your own Mac, nor changes
+your existing signing key or leaf certificate. Only the leaf certificate
+SHA256 is pinned for stable version-to-version identity.
+
+The full Kiri Moby build runs a quick real-P12 signing preflight before it
+compiles the expensive Linux Guest kernel and macOS GUI. If the root
+certificate is missing or mismatched, the workflow fails immediately with
+an actionable error rather than recompiling all artifacts and failing late.

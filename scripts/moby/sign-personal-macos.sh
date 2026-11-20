@@ -58,19 +58,91 @@ printf '%s' "$KIRI_PERSONAL_SIGN_P12_PASSWORD" > "$work/p12-password"
 openssl pkcs12 -in "$work/personal.p12" -clcerts -nokeys \
   -passin "file:$work/p12-password" -out "$work/chain.pem"
 openssl x509 -in "$work/chain.pem" -out "$work/leaf.pem"
+
+# Certificates issued by our private CA need a trusted issuer *on this CI
+# runner*. A valid imported identity is not sufficient: codesign attempts to
+# build a chain to a trusted anchor, and otherwise fails errSecInternalComponent.
+# The P12 may contain its issuing intermediate CA from -certfile. Extract CA
+# certs only: NEVER trust the non-CA leaf as a root, which macOS can reject.
+openssl pkcs12 -in "$work/personal.p12" -cacerts -nokeys \
+  -passin "file:$work/p12-password" -out "$work/issuer-chain.pem"
+if [[ -n "${KIRI_PERSONAL_SIGN_CA_PEM_BASE64:-}" ]]; then
+  python3 - "$work/extra-chain.pem" <<'PY'
+import base64, os, pathlib, sys
+pathlib.Path(sys.argv[1]).write_bytes(
+    base64.b64decode(os.environ["KIRI_PERSONAL_SIGN_CA_PEM_BASE64"], validate=True)
+)
+PY
+  cat "$work/extra-chain.pem" >> "$work/issuer-chain.pem"
+fi
+python3 - "$work/issuer-chain.pem" "$work" <<'PY'
+import pathlib, re, sys
+chain = pathlib.Path(sys.argv[1]).read_text(errors="replace")
+certs = re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", chain, re.S)
+for index, cert in enumerate(certs):
+    (pathlib.Path(sys.argv[2]) / ("issuer-%d.pem" % index)).write_text(cert + "\n")
+print("Available CA certificates:", len(certs))
+PY
+leaf_subject="$(openssl x509 -in "$work/leaf.pem" -noout -subject | sed 's/^subject[ =]*//')"
+leaf_issuer="$(openssl x509 -in "$work/leaf.pem" -noout -issuer | sed 's/^issuer[ =]*//')"
+if [[ "$leaf_subject" != "$leaf_issuer" ]]; then
+  # An intermediate trusted "as root" is insufficient for some macOS
+  # codesign policies: the entire chain must reach the genuine self-signed
+  # private CA ROOT. The P12 normally embeds the intermediate but not root.
+  # The additional public root PEM can be passed with
+  # KIRI_PERSONAL_SIGN_CA_PEM_BASE64 (private root key is NOT required).
+  root_cert=""
+  for ca in "$work"/issuer-*.pem; do
+    [[ -s "$ca" ]] || continue
+    openssl x509 -in "$ca" -noout -text | grep -Fq 'CA:TRUE' || continue
+    ca_subject="$(openssl x509 -in "$ca" -noout -subject | sed 's/^subject[ =]*//')"
+    ca_issuer="$(openssl x509 -in "$ca" -noout -issuer | sed 's/^issuer[ =]*//')"
+    [[ "$ca_subject" == "$ca_issuer" ]] || continue
+    # Only trust a root cryptographically confirmed to anchor THIS leaf
+    # through the included intermediate(s).
+    if openssl verify -CAfile "$ca" \
+        -untrusted "$work/issuer-chain.pem" "$work/leaf.pem" >/dev/null 2>&1; then
+      root_cert="$ca"
+      break
+    fi
+  done
+  if [[ -z "$root_cert" ]]; then
+    echo "PRIVATE CA ROOT MISSING: P12 contains the signer and issuing intermediate but not a trusted self-signed root." >&2
+    echo "Provide only the PUBLIC root CA PEM via KIRI_PERSONAL_SIGN_CA_PEM_BASE64. Do not upload the root private key." >&2
+    exit 2
+  fi
+  if [[ "${GITHUB_ACTIONS:-}" != true ]]; then
+    echo "Automatic private-root trust is restricted to disposable GitHub macOS runners; cannot alter trust on this Mac." >&2
+    exit 2
+  fi
+  # Explicit admin trust for code signing, inside this disposable CI VM only.
+  # macOS codesign must be able to find the actual root in System.keychain.
+  perl -e 'alarm 20; exec @ARGV' \
+    sudo -n security add-trusted-cert -d -r trustRoot \
+      -p codeSign -k /Library/Keychains/System.keychain "$root_cert" || {
+    echo "Cannot install trusted code-signing root in temporary macOS CI runner." >&2
+    exit 2
+  }
+  echo "Verified complete private-CA chain; trusted its public root in ephemeral CI System.keychain."
+fi
 # Self-signed code identities are discoverable without -v even if no
 # system-wide trust policy recognizes them. Never change the user's trust.
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_pw" "$keychain" >/dev/null
-# One dedicated personal P12 should contain exactly one code-signing identity.
-identity_list="$(security find-identity -p codesigning "$keychain" | awk '/^[[:space:]]*[0-9]+\)/ {print $2}')"
-count="$(printf '%s\n' "$identity_list" | grep -Ec '^[0-9A-Fa-f]{40}$' || :)"
-if [[ "$count" != 1 ]]; then
-  echo "Expected one valid personal code-signing identity in the P12, got $count." >&2
+# Keychains may contain other imported identities (for example, when
+# signing with two test certificates on the same ephemeral runner). Select
+# the exact SHA-1 certificate identity from this P12; NEVER choose the first
+# available signer by display name or assume there is only one identity.
+identity="$(openssl x509 -in "$work/leaf.pem" -outform DER | shasum -a 1 | awk '{print toupper($1)}')"
+if ! security find-identity -p codesigning "$keychain" | grep -Fqi "$identity"; then
+  echo "P12 leaf certificate does not have a usable code-signing private key in the ephemeral Keychain." >&2
   exit 2
 fi
-identity="$(printf '%s\n' "$identity_list" | grep -E '^[0-9A-Fa-f]{40}$')"
 sign() {
-  codesign --force --sign "$identity" --keychain "$keychain" --timestamp=none --options runtime "$@" 
+  # Hardened Runtime is needed for Apple notarization, but not for a private
+  # local-only build. Private PKI identities can be rejected by macOS while
+  # constructing an Apple-style chain when --options runtime is requested.
+  # Developer ID notarization is handled separately in sign-notarize-macos.sh.
+  codesign --force --sign "$identity" --keychain "$keychain" --timestamp=none "$@"
 }
 res="$app/Contents/Resources"
 sign --entitlements crates/kiri/kiri.entitlements "$res/bin/kiri-moby-host"
