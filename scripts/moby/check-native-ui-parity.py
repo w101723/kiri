@@ -39,8 +39,15 @@ checks = [
     ('.windowToolbarStyle(.unified)', "Unified native macOS toolbar"),
     ('sidebarEngineStatus', "Engine status inset in native sidebar"),
     ('.inspector(isPresented: Binding(', "Right native macOS inspector scoped to Containers"),
-    ('ContainerInspectorView(', "Selected container inspector content"),
-    ('InspectorSparkline(', "Real stats time-series visualizations"),
+    ('ModernInspectorView(', "Selected container inspector content"),
+    ('ModernInspectorCard {', "Four grouped inspector cards"),
+    ('InspectorMetricTile(', "Compact inspector dashboard metrics"),
+    ('LinearGradient(', "Gradient area charts"),
+    ('CopyableInspectorTag(', "Copyable native port and mount tags"),
+    ('InspectorEnvironmentRow(entry:', "Per-key secret masking controls"),
+    ('ContainerRowView(item:', "Two-line service identity cell"),
+
+    ('InspectorAreaChart(', "Real stats time-series visualizations"),
     ('statsHistory', "Bounded history from live Docker stats"),
     ('ContainerInspectDetails: Decodable', "Read-only Docker inspect details"),
     ('Text("Kiri 私有 Docker · 默认 Context 不变")', "Private Docker context in sidebar"),
@@ -55,7 +62,7 @@ checks = [
     ('.popover(isPresented: $showVMPopover)', "Compact VM popover"),
     ('vmResourcePopover', "VM resource and restart popover"),
     ('VSplitView {', "Resizable vertical workspace splitter"),
-    ('nativeConsoleDrawer', "Unified bottom console"),
+    ('UnifiedConsoleDrawer(', "Unified bottom console"),
     ('WindowGroup("容器控制台", id: "container-console"', "Real macOS console windows"),
     ('openWindow(id: "container-console", value: selected)', "Pop-out from drawer"),
     ('tabbingMode = .preferred', "AppKit native window tabbing"),
@@ -71,11 +78,8 @@ checks = [
     ('view.usesFindBar = true', "AppKit native find bar"),
     ('storage.append(NSAttributedString(', "Incremental log text insertion"),
     ('Table(sorted, selection: $selectedContainerIDs, sortOrder: $tableSortOrder)', "Native NSTableView backed container table"),
-    ('TableColumn("名称"', "Sortable container name"),
-    ('TableColumn("镜像"', "Sortable container image"),
+    ('TableColumn("容器"', "Sortable container name"),
     ('TableColumn("状态"', "Sortable container state"),
-    ('TableColumn("CPU / 内存"', "Live container resource column"),
-    ('containerResourceCell(item)', "Docker stats resource cells"),
     ('containerResourceCell(container)', "Compose resource cells"),
     ('model.refreshContainerStats()', "Periodic Docker stats refresh"),
     ('TableColumn("端口"', "Ports column"),
@@ -92,10 +96,10 @@ checks = [
     ('containerOp("remove"', "Remove container"),
     ('openConsole(.exec', "Exec opens console drawer"),
     ('openConsole(.logs', "Logs opens console drawer"),
-    ('sendConsoleCommand(.toggleFollow', "Live log follow control"),
+    ('onCommand(.toggleFollow', "Live log follow control"),
     ('Button("最近 1,000 行")', "Log tail options"),
-    ('sendConsoleCommand(.clear', "Clear logs"),
-    ('sendConsoleCommand(.interrupt', "Exec interrupt"),
+    ('onCommand(.clear', "Clear logs"),
+    ('onCommand(.interrupt', "Exec interrupt"),
     ('Button("拉取镜像")', "Docker image pull"),
     ('Button("创建 Volume")', "Docker volume creation"),
     ('Button("创建网络")', "Docker network creation"),
@@ -132,7 +136,7 @@ native_table = NEW.split('return Table(sorted, selection:', 1)[-1].split(
     '.contextMenu(forSelectionType:', 1)[0]
 native_columns = re.findall(r'TableColumn\("([^"]+)"', native_table)
 expected_columns = [
-    "名称", "镜像", "状态", "CPU / 内存", "端口", "创建时间", "操作"
+    "容器", "状态", "端口", "创建时间", "操作"
 ]
 if native_columns != expected_columns:
     errors.append(
