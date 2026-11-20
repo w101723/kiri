@@ -3,6 +3,7 @@
 // Docker/VM operations are delegated to the existing Rust Moby adapter
 // through an exact-path, local short-lived JSON command bridge.
 import AppKit
+import Darwin
 import Foundation
 import SwiftUI
 
@@ -514,7 +515,7 @@ private final class ExecTerminalSession: ObservableObject {
     func interrupt() { send("\u{03}") }
     func close() {
         if running { send("exit\r") }
-        process?.terminate()
+        if process?.isRunning == true { process?.terminate() }
         master?.closeFile()
         master = nil
         slave?.closeFile()
