@@ -628,6 +628,35 @@ private struct ContainerLogWindow: View {
     }
 }
 
+// NSWindow instances must be retained while visible: retaining only a local
+// variable causes sporadic window/session loss under AppKit lifetime rules.
+@MainActor
+private final class FloatingWindowRegistry: NSObject, NSWindowDelegate {
+    static let shared = FloatingWindowRegistry()
+    private var windows: [String: NSWindow] = [:]
+
+    func show(_ window: NSWindow, key: String) {
+        if let existing = windows[key] {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        windows[key] = window
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let closing = notification.object as? NSWindow else { return }
+        if let entry = windows.first(where: { $0.value === closing }) {
+            windows.removeValue(forKey: entry.key)
+        }
+    }
+}
+
 @MainActor
 private func openContainerLogs(_ containerID: String, name: String) {
     let window = NSWindow(
@@ -637,8 +666,7 @@ private func openContainerLogs(_ containerID: String, name: String) {
     window.title = "日志: " + name
     window.contentView = NSHostingView(rootView: ContainerLogWindow(
         containerID: containerID, containerName: name))
-    window.center()
-    window.makeKeyAndOrderFront(nil)
+    FloatingWindowRegistry.shared.show(window, key: "logs:" + containerID)
 }
 
 // Dedicated macOS PTY session. The child runs the signed Kiri CLI which
@@ -829,8 +857,7 @@ private func openExecTerminal(_ containerID: String, name: String) {
     window.title = "Exec: " + name + " (交互式终端)"
     window.contentView = NSHostingView(rootView: ExecTerminalView(
         containerID: containerID, containerName: name))
-    window.center()
-    window.makeKeyAndOrderFront(nil)
+    FloatingWindowRegistry.shared.show(window, key: "exec:" + containerID)
 }
 
 private struct RootView: View {
