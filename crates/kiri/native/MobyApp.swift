@@ -1840,24 +1840,36 @@ private struct RootView: View {
             .stroke(KiriPalette.border(model.isLight)))
     }
 
-    private var footer: some View {
-        HStack(spacing: 0) {
-            Text("Kiri Moby  ·  \(model.snapshot?.version?.Version.map { "Docker \($0)" } ?? "Linux VM")"
-                + "  ·  \(model.containers.filter {$0.State == "running"}.count)"
-                + " of \(model.containers.count) containers running"
-                + "  ·  \(model.online ? "Linux VM running" : "Linux VM offline")"
-                + "  ·  OrbStack/default Docker context unchanged")
-                .foregroundStyle(KiriPalette.faint(model.isLight))
-                .lineLimit(1).truncationMode(.tail)
-            Spacer(minLength: 0)
+    // The Engine status lives in the native sidebar rather than beneath the
+    // detail pane: dark Exec/Logs can touch the bottom of the main window.
+    private var sidebarEngineStatus: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+            HStack(spacing: 7) {
+                Circle().fill(model.online ? Color.green : Color.secondary)
+                    .frame(width: 7, height: 7)
+                Text(model.online ? "Engine 运行中" : "Engine 已停止")
+                    .font(.system(size: 11, weight: .medium))
+                Spacer(minLength: 0)
+                if let version = model.snapshot?.version?.Version {
+                    Text("v" + version)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Text("Kiri 私有 Docker · 默认 Context 不变")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("\(model.containers.filter { $0.State == "running" }.count) / \(model.containers.count) 个容器运行中")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 25)
-        .background(KiriPalette.side(model.isLight))
-        .overlay(alignment: .top) {
-            Rectangle().fill(KiriPalette.border(model.isLight)).frame(height: 1)
-        }
-        .font(.system(size: 11))
+        .padding(.horizontal, 13)
+        .padding(.bottom, 12)
+        .padding(.top, 6)
     }
 
     @ViewBuilder private var content: some View {
@@ -2006,13 +2018,9 @@ private struct RootView: View {
             Image(systemName: icon)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(destructive ? Color.red : KiriPalette.title(model.isLight))
-                .frame(width: 30, height: 29)
-                .background(KiriPalette.panel(model.isLight))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6)
-                    .stroke(KiriPalette.border(model.isLight)))
+                .frame(width: 27, height: 26)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.borderless)
         .help(tooltip)
         .accessibilityLabel(tooltip)
     }
@@ -2020,9 +2028,9 @@ private struct RootView: View {
     private func containerButtons(_ container: ContainerItem) -> some View {
         HStack(spacing: 5) {
             if container.State == "running" {
-                iconAction("停止", icon: "stop.fill") { containerOp("stop", container) }
+                iconAction("停止", icon: "stop.circle") { containerOp("stop", container) }
             } else {
-                iconAction("启动", icon: "play.fill") { containerOp("start", container) }
+                iconAction("启动", icon: "play.circle") { containerOp("start", container) }
             }
             iconAction("Exec", icon: "terminal") {
                 openConsole(.exec, containerID: container.Id, name: container.title)
@@ -2051,8 +2059,9 @@ private struct RootView: View {
                     }
                 }
             } label: {
-                Image(systemName: "ellipsis")
-                    .frame(width: 28, height: 29)
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 14))
+                    .frame(width: 25, height: 26)
             }
             .menuStyle(.borderlessButton)
             .frame(width: 28)
@@ -2116,16 +2125,21 @@ private struct RootView: View {
     private func containerStateBadge(_ item: ContainerItem) -> some View {
         let state = item.State ?? "unknown"
         let running = state == "running"
-        return Text(running ? "运行中" : (state == "paused" ? "已暂停" :
-                    (state == "exited" || state == "created" ? "已停止" : state)))
+        return Label {
+            Text(running ? "运行中" : (state == "paused" ? "已暂停" :
+                 (state == "exited" || state == "created" ? "已停止" : state)))
+        } icon: {
+            Image(systemName: "circle.fill")
+                .font(.system(size: 7))
+        }
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(running ? Color(red: 0.08, green: 0.53, blue: 0.21) :
                 KiriPalette.muted(model.isLight))
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(running ? Color.green.opacity(0.15) :
-                KiriPalette.raised(model.isLight))
-            .clipShape(RoundedRectangle(cornerRadius: 7))
+            .background(running ? Color.green.opacity(0.12) :
+                Color.secondary.opacity(0.07))
+            .clipShape(Capsule())
     }
 
     // Compact dashboard cell shared by the Containers table and the nested
