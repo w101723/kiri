@@ -1,0 +1,21 @@
+#!/bin/sh
+# Disposable RAM-only libkrun Guest. No disks, networks, Docker or host shares.
+set -eu
+export PATH=/bin:/sbin
+mount -t devtmpfs devtmpfs /dev
+exec >/dev/console 2>&1
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mkdir -p /tmp
+mount -t tmpfs -o size=512m tmpfs /tmp
+echo 'KIRI-LIBKRUN-MEMLAB READY'
+grep -E 'MemTotal|MemFree|MemAvailable|Balloon' /proc/meminfo || true
+sleep 10
+echo 'KIRI-LIBKRUN-MEMLAB ALLOCATING'
+dd if=/dev/zero of=/tmp/blob bs=1M count=256 2>/dev/null
+echo 'KIRI-LIBKRUN-MEMLAB ALLOCATED'
+sleep 20
+rm -f /tmp/blob
+echo 'KIRI-LIBKRUN-MEMLAB FREED'
+grep -E 'MemFree|MemAvailable|Balloon' /proc/meminfo || true
+while :; do sleep 30; done
