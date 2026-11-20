@@ -13,6 +13,7 @@ on:
       - ".github/workflows/moby-milestone.yml"
       - "scripts/moby/install-local-macos.sh"
       - "scripts/moby/package-dmg-macos.sh"
+      - "crates/kiri-moby-bridge/src/memory.rs"
 
 concurrency:
   group: moby-milestone-${{ github.ref }}

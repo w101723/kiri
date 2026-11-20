@@ -10,11 +10,19 @@ memory may remain high after Guest pages are freed.
 - Linux Guest serves read-only MemTotal/MemAvailable/Cached samples over a
   private AF_VSOCK:2378; the standard Docker API stays byte-transparent.
 - The Host polls every ~2 seconds **off the Docker API accept thread**. It
-  cautiously lowers the balloon target in 256 MiB increments, after three
-  stable samples, preserving at least 1 GiB of estimated headroom.
+  cautiously lowers the balloon target by up to 256 MiB per sample after
+  three stable samples. The live-VM floor remains 1 GiB, the estimated reserve
+  is 768 MiB, and shrink never leaves less than 512 MiB Guest MemAvailable.
+  This fixes a measured post-container idle dead zone at target 1536 MiB:
+  the older 1 GiB headroom + full-step requirement could refuse any further
+  reduction despite ~279 MiB estimated live use.
 - Docker stop/die/destroy/oom events ask for an immediate memory sample when
   the normal event/port watcher is active; a full low-frequency scan remains
   the fallback. The actual reduction still requires safe Guest headroom.
+- Guest low-memory pressure (<512 MiB MemAvailable) expands the target promptly;
+  Docker Engine and its running containers are never deliberately restarted.
+  New regression tests exercise captured Apple Silicon post-container memory
+  statistics (1536 -> 1280 -> 1047 MiB) and rapid pressure reinflation.
 - Under low Guest MemAvailable, the Host expands the target promptly. Max
   remains KIRI_MOBY_MEMORY_MIB (default 4096), floor 1024 MiB.
 - Telemetry loss never drives the balloon blindly; VM stays online and Docker
@@ -32,6 +40,30 @@ memory may remain high after Guest pages are freed.
 Opt out without reverting the code: KIRI_MOBY_MEMORY_POLICY=off on the Host.
 Turn off on production workloads if large instantaneous allocations OOM before
 the next sample. A governor cannot prevent every guest OOM.
+
+## 2026-11-20: captured Mac post-container regression
+
+An empty Docker `ps` after creating/removing several containers showed the
+Apple VZ virtualization service at 684.6 MB (previous idle screenshot 440.5
+MB). The local control endpoint returned:
+
+```json
+{"balloon_target_mib":1536,"guest_total_kib":4030296,"guest_available_kib":1123264,"host_reclaimed_bytes":null}
+```
+
+At the default 4096 MiB ceiling, balloon inflation accounts for 2560 MiB.
+The estimated working set is `4030296/1024 - 1123264/1024 - 2560`,
+roughly 279 MiB. The old governor's contraction predicates required both
+`desired + 256 < target` and `available > 1280`: both were false, so the
+guest could remain stuck at 1536 MiB indefinitely. The new policy uses a
+768 MiB reserve, 128 MiB hysteresis, partial-step contraction and a
+post-shrink 512 MiB safety floor. Simulation of **this** telemetry predicts
+a target of about 1047 MiB, but only a real Mac retest can establish a
+decrease in Activity Monitor's physical-memory figure.
+
+The user must compare `STAT` before/after an idle interval and macOS
+virtualization service resident memory. This is **not a measured memory win**
+and is **not a change of VMM backend**.
 
 ## What is still needed for OrbStack-like memory return
 
