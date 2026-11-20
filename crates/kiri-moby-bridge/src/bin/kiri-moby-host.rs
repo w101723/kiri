@@ -335,7 +335,7 @@ fn main() -> std::io::Result<()> {
                         let (target, total, available) = *control_memory.lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner());
                         let output = format!(
-                            "{{\"balloon_target_mib\":{target},\"guest_total_kib\":{total},\"guest_available_kib\":{available},\"host_reclaimed_bytes\":null}}\n"
+                            "{{\"balloon_target_mib\":{target},\"vm_memory_ceiling_mib\":{memory_mib},\"guest_total_kib\":{total},\"guest_available_kib\":{available},\"host_reclaimed_bytes\":null}}\n"
                         );
                         let _ = client.write_all(output.as_bytes());
                     } else if &request == b"STOP\n" {
