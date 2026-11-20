@@ -200,3 +200,65 @@ throwaway libkrun Guest with block-device persistence, NAT/port forwarding,
 vsock, per-folder VirtioFS and amd64 emulation parity. Do **not** replace
 production Apple VZ or attach the original writable `~/.kiri-moby` data disk
 until the complete gates above have been verified on a disposable copy.
+
+
+## Adaptive-memory stage: cold anonymous pages in the RAM-only lab
+
+The independent adaptive-memory-lab branch extends the verified 256 MiB
+*free-after-use* experiment. New question: can a still-running process
+retain anonymous pages, compress them to Guest zram, release their Host
+physical mappings, and fault them back without data loss?
+
+The isolated MMIO kernel adds CONFIG_ZRAM=y, CONFIG_ZRAM_BACKEND_LZ4=y,
+and CONFIG_ZRAM_DEF_COMP_LZ4=y. The production Kiri VZ kernel, Docker,
+GUI and data.img remain unchanged.
+
+KIRI_LIBKRUN_WORKLOAD=anon-zram adds the kernel arguments
+zswap.enabled=0 and kiri.lab.workload=anon-zram. The throwaway Guest
+disables zswap to avoid it intercepting swap writes before the 768 MiB
+zram device can measure them.
+
+The Guest starts a static C test process that:
+1. Writes 384 MiB anonymous RAM while retaining its mapping.
+2. Invokes MADV_PAGEOUT explicitly.
+3. Checks that at least 64 MiB of zram swap is occupied, and logs mm_stat.
+4. Holds the process/mapping alive through ANON_IDLE.
+5. Faults and validates three locations on each page, then logs ANON_RESTORED.
+6. Frees the mapping, logs ANON_FREED, and stays alive.
+
+**Scope:** MADV_PAGEOUT is a deliberate request by the synthetic process;
+it is NOT a production idle page-scanner for ordinary Docker containers.
+zram uses some RAM to retain compressed pages. The macOS compressor counter
+is global, not attributable specifically to Kiri. This stage does not
+implement Docker engine integration or background policies.
+
+### Run with freshly built artifacts
+
+Get both experimental-libkrun2-guest-mmio-arm64 and
+experimental-libkrun2-ram-lab-arm64 from a successful
+adaptive-memory-lab workflow. Both artifacts have changed; do not reuse
+the earlier 256 MiB-only Guest and runner. Reuse the locally trusted
+libkrun v2 dylib from the successful memory-reporting experiment.
+
+    LAB="$HOME/kiri-lab"
+    LIB="$LAB/libkrun/target/release/libkrun.dylib"
+    for mode in default replace; do
+      KIRI_LIBKRUN_REPORTING_MODE="$mode" \
+      KIRI_LIBKRUN_LAB_RESULTS="$LAB/cold-anon-$mode" \
+      bash "$LAB/runner/measure-libkrun-cold-anon-macos.sh" \
+        "$LAB/runner/kiri-libkrun2-ram-lab" "$LIB" \
+        "$LAB/guest/Image" "$LAB/guest/initramfs.cpio"
+    done
+
+The host sampler collects 45 four-second samples per mode (~3 minutes),
+then stops the VM automatically. Logs are guest.log and host-memory.csv
+with the exact VM process footprint, RSS and global macOS compressor
+page count. Missing Guest phases, insufficient swap, early exit and
+unavailable Host samples are **invalid runs**, not accepted evidence.
+
+Success requires meaningful swap usage while the mapping remains alive,
+a sustained Host footprint/RSS drop in Replace relative to Default,
+correct restoration of all bytes, and stable operation. Even success
+does NOT establish automatic cold-process reclaim. The next experiment
+must separately validate an activity-gated, rate-limited cgroup reclaim
+controller and its effect on real Docker workloads before product use.
