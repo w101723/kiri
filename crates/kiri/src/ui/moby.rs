@@ -77,7 +77,7 @@ fn save_vm_resources(config: VmResources) -> io::Result<()> {
     let destination = vm_resources_file()?;
     let staging = destination.with_extension(format!("json.{}.tmp", std::process::id()));
     let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&staging)?;
-    file.write_all(&serde_json::to_vec_pretty(&config)?)?;
+    file.write_all(&serde_json::to_vec_pretty(&config).map_err(io::Error::other)?)?;
     file.write_all(b"\n")?;
     file.sync_all()?;
     drop(file);
@@ -287,11 +287,14 @@ fn start_vm() -> io::Result<()> {
     fs::set_permissions(&logfile, fs::Permissions::from_mode(0o600))?;
     let stderr = stdout.try_clone()?;
     let authorized_shares = read_shares()?;
+    let resources = read_vm_resources()?;
     let mut child = Command::new(binary);
     // The GUI's explicit authorization list is the only source of Mac
     // directory access: never inherit legacy broad share or manual-port
     // overrides from a terminal that happened to launch the app.
     child.env("KIRI_MOBY_DATA_DIR", &data)
+        .env("KIRI_MOBY_CPUS", resources.cpus.to_string())
+        .env("KIRI_MOBY_MEMORY_MIB", resources.memory_mib.to_string())
         .env_remove("KIRI_MOBY_SHARE_MAC")
         .env_remove("KIRI_MOBY_SHARE_DIRS")
         .env_remove("KIRI_MOBY_TCP_PORTS")
@@ -371,7 +374,8 @@ fn refresh() {
             "type":"snapshot", "online":true,
             "containers":containers, "images":images,
             "volumes":volumes["Volumes"], "networks":networks,
-            "info":info, "version":version, "memory": memory_status(), "shares": read_shares().unwrap_or_default()
+            "info":info, "version":version, "memory": memory_status(), "shares": read_shares().unwrap_or_default(),
+            "vm_config": vm_resource_snapshot()?
         }))
     })();
     match snapshot {
@@ -401,7 +405,8 @@ fn refresh() {
             drop(menu);
             emit(json!({"type":"snapshot","online":false,"error":error.to_string(),
                 "containers":[],"images":[],"volumes":[],"networks":[],
-                "shares": read_shares().unwrap_or_default()}).to_string());
+                "shares": read_shares().unwrap_or_default(),
+                "vm_config":vm_resource_snapshot().unwrap_or(Value::Null)}).to_string());
         }
     }
 }
@@ -749,7 +754,8 @@ pub(super) fn native_command(args: &[String]) -> io::Result<()> {
             "snapshot" => {
                 if !client::alive() {
                     json!({"online":false, "containers":[], "images":[], "volumes":[],
-                        "networks":[], "shares":read_shares()?, "memory":Value::Null})
+                        "networks":[], "shares":read_shares()?, "memory":Value::Null,
+                        "vm_config":vm_resource_snapshot()?})
                 } else {
                     let containers = client::get("/containers/json?all=1")?;
                     let images = client::get("/images/json")?;
@@ -760,7 +766,8 @@ pub(super) fn native_command(args: &[String]) -> io::Result<()> {
                     json!({"online":true, "containers":containers, "images":images,
                         "volumes":volumes["Volumes"], "networks":networks,
                         "info":info, "version":version,
-                        "memory":memory_status(), "shares":read_shares()?})
+                        "memory":memory_status(), "shares":read_shares()?,
+                        "vm_config":vm_resource_snapshot()?})
                 }
             }
             "start" => {
