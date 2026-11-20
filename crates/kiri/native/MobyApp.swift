@@ -91,7 +91,15 @@ private struct DockerVersion: Decodable {
     let Version: String?
 }
 
+private struct VmResourceSettings: Decodable {
+    let cpus: Int
+    let memory_mib: Int
+    let max_cpus: Int
+    let max_memory_mib: Int
+}
+
 private struct BalloonInfo: Decodable {
+    let vm_memory_ceiling_mib: Int?
     let balloon_target_mib: Int?
     let guest_available_kib: Int?
 }
@@ -108,6 +116,7 @@ private struct Snapshot: Decodable {
     let version: DockerVersion?
     let memory: BalloonInfo?
     let shares: [String]?
+    let vm_config: VmResourceSettings?
 }
 
 private struct Reply: Decodable {
@@ -242,6 +251,8 @@ private final class MobyModel: ObservableObject {
     @Published var buildFolder = ""
     @Published var buildTag = ""
     @Published var buildPlatform = "linux/arm64"
+    @Published var resourceCPUs = 4
+    @Published var resourceMemoryMiB = 4096
     @Published var isLight = false
     @Published var sidebarCollapsed = false
     @Published var containerFilter: ContainerFilter = .all
@@ -255,6 +266,33 @@ private final class MobyModel: ObservableObject {
     var volumes: [VolumeItem] { snapshot?.volumes ?? [] }
     var networks: [NetworkItem] { snapshot?.networks ?? [] }
     var shares: [String] { snapshot?.shares ?? [] }
+    var resourceEditsPending: Bool {
+        guard let saved = snapshot?.vm_config else { return false }
+        return resourceCPUs != saved.cpus || resourceMemoryMiB != saved.memory_mib
+    }
+    var resourceRestartRequired: Bool {
+        guard online, let saved = snapshot?.vm_config else { return false }
+        // Compare boot-time VM settings, NOT the balloon's live target.
+        guard let actualCPUs = snapshot?.info?.NCPU,
+              let actualMemory = snapshot?.memory?.vm_memory_ceiling_mib else { return false }
+        return actualCPUs != saved.cpus || actualMemory != saved.memory_mib
+    }
+    func saveResources(apply: Bool) {
+        guard let limit = snapshot?.vm_config else {
+            notify("无法读取虚拟机资源限制", error: true)
+            return
+        }
+        guard (1...max(1, limit.max_cpus)).contains(resourceCPUs),
+              (1024...max(1024, limit.max_memory_mib)).contains(resourceMemoryMiB),
+              resourceMemoryMiB % 256 == 0 else {
+            notify("CPU 或内存超出允许范围；内存必须按 256 MiB 调整", error: true)
+            return
+        }
+        perform(["configure", String(resourceCPUs), String(resourceMemoryMiB),
+                 apply ? "apply" : "save"],
+                title: apply ? "Apply VM resources" : "Save VM resources",
+                showResult: false)
+    }
 
     func begin() {
         guard !bootRequested else { return }
@@ -273,7 +311,19 @@ private final class MobyModel: ObservableObject {
             }.value
             refreshing = false
             switch answer {
-            case .success(let value): snapshot = value
+            case .success(let value):
+                // Preserve unsaved edits while polling other Docker state.
+                if let config = value.vm_config {
+                    let previous = snapshot?.vm_config
+                    let hasUnsavedEdits = previous.map {
+                        resourceCPUs != $0.cpus || resourceMemoryMiB != $0.memory_mib
+                    } ?? false
+                    if !hasUnsavedEdits {
+                        resourceCPUs = config.cpus
+                        resourceMemoryMiB = config.memory_mib
+                    }
+                }
+                snapshot = value
             case .failure(let failure): error = failure.localizedDescription
             }
         }
@@ -293,7 +343,7 @@ private final class MobyModel: ObservableObject {
     func perform(_ args: [String], title: String, showResult: Bool = true) {
         let operationKey = args.joined(separator: "\u{1F}")
         let vmTransition = args.first == "start" || args.first == "stop"
-            || args.first == "restart"
+            || args.first == "restart" || (args.first == "configure" && args.last == "apply")
         guard !activeOperations.contains(operationKey) else {
             notify("\(title): 操作正在执行，请稍候")
             return
