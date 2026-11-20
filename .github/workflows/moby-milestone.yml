@@ -8,7 +8,7 @@ on:
   # The isolated memory lab must build its own matching Guest and Host;
   # reusing a moby-engine Guest would silently omit its experimental flag.
   push:
-    branches: [moby-engine, native-swiftui-moby]
+    branches: [moby-engine, apple-silicon-native-parity]
     paths:
       - ".github/workflows/moby-milestone.yml"
       - "scripts/moby/sign-notarize-macos.sh"
@@ -27,6 +27,8 @@ on:
       - "guest/kernel/**"
       - "xtask/src/main.rs"
       - "Cargo.lock"
+      - "Cargo.toml"
+      - "scripts/moby/check-native-ui-parity.py"
 
 concurrency:
   group: moby-milestone-${{ github.ref }}
@@ -49,6 +51,8 @@ jobs:
       KIRI_REQUIRE_PERSONAL_SIGNING: ${{ vars.KIRI_REQUIRE_PERSONAL_SIGNING || 'true' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Guard original Moby UI feature parity on Apple Silicon
+        run: python3 scripts/moby/check-native-ui-parity.py
       - name: Verify real private certificate and full CA chain
         shell: bash
         run: |
