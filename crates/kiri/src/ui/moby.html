@@ -2521,6 +2521,16 @@ nav button.active{color:var(--text)}
 #statusbar{font-size:11px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 #content .cmdline{font:11px var(--mono-font)}
 #content .btn:disabled{opacity:.35;cursor:default}
+/* Upstream Kiri's rail/theme controls remain functional in the Moby page. */
+body.rail #power{display:none}
+#theme-toggle svg{display:none}
+#theme-toggle::after{content:"☼";font-size:16px;color:var(--muted)}
+html[data-moby-theme="light"]{
+  --bg:#F9FBFD;--side:#F0F4F8;--panel:#FFFFFF;--raised:#E8EEF5;
+  --line:#CFD9E3;--text:#17212E;--muted:#536273;--faint:#667588;
+  --row-hover:rgba(0,0,0,.035);--blue-light:#2672CF;--moss:#138B62;
+  color-scheme:light
+}
 @media(max-width:950px){#content .buttons{max-width:220px}#filter-tabs button{padding:4px 8px}}
 </style>
 </head>
@@ -2547,7 +2557,7 @@ nav button.active{color:var(--text)}
     <button data-page="images"><svg class="i" viewBox="0 0 256 256" data-ph="stack"></svg><span class="lbl" data-i18n="Images">Images</span><span class="count" id="count-images">0</span></button>
     <button data-page="volumes"><svg class="i" viewBox="0 0 256 256" data-ph="database"></svg><span class="lbl" data-i18n="Volumes">Volumes</span><span class="count" id="count-volumes">0</span></button>
     <button data-page="networks"><svg class="i" viewBox="0 0 256 256" data-ph="network"></svg><span class="lbl" data-i18n="Networks">Networks</span><span class="count" id="count-networks">0</span></button>
-    <button data-page="builds"><svg class="i" viewBox="0 0 256 256" data-ph="hammer"></svg><span class="lbl" data-i18n="Builds">Builds</span></button>
+    <button data-page="build"><svg class="i" viewBox="0 0 256 256" data-ph="hammer"></svg><span class="lbl" data-i18n="Builds">Builds</span></button>
   </nav>
   <div class="navlabel">KIRI</div>
   <nav>
