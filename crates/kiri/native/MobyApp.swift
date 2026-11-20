@@ -451,13 +451,25 @@ private struct RootView: View {
                     Color.black.opacity(0.52).ignoresSafeArea()
                         .onTapGesture { model.result = nil }
                     VStack(alignment: .leading, spacing: 14) {
-                        HStack {
+                        HStack(spacing: 12) {
                             Text(result.title).font(.system(size: 14, weight: .semibold))
                             Spacer()
+                            Text("\(result.body.utf8.count) bytes")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(KiriPalette.muted(model.isLight))
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(result.body, forType: .string)
+                                model.notify("已复制到剪贴板")
+                            } label: {
+                                Label("复制", systemImage: "doc.on.doc")
+                            }
+                            .keyboardShortcut("c", modifiers: [.command, .shift])
                             Button("关闭") { model.result = nil }
+                                .keyboardShortcut(.escape, modifiers: [])
                         }
                         Divider()
-                        ScrollView {
+                        ScrollView([.vertical, .horizontal]) {
                             Text(result.body)
                                 .font(.system(size: 12, design: .monospaced))
                                 .textSelection(.enabled)
