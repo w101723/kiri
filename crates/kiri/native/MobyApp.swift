@@ -1496,7 +1496,7 @@ private struct ContainerInspectorView: View {
                                         Text(mount.Source ?? "—")
                                             .font(.system(size: 10))
                                             .foregroundStyle(.secondary)
-                                        Text("\(mount.Type ?? "volume") · \(mount.RW == true ? "读写" : "只读")")
+                                        Text("\(mount.`Type` ?? "volume") · \(mount.RW == true ? "读写" : "只读")")
                                             .font(.system(size: 10))
                                             .foregroundStyle(.secondary)
                                     }
