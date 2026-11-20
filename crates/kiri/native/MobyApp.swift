@@ -1657,7 +1657,7 @@ private struct RootView: View {
                 .help("查看虚拟机 CPU、内存及快捷操作")
                 .popover(isPresented: $showVMPopover) { vmResourcePopover }
             }
-            ToolbarItem(placement: .automatic) {
+            ToolbarItemGroup(placement: .automatic) {
                 if model.page == .containers {
                     Menu {
                         ForEach(ContainerFilter.allCases) { filter in
