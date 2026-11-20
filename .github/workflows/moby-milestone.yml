@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   # Primary install artifact: Finder-mounted DMG containing Kiri Moby.app and Applications.
   # Release validation: rebuild merged moby-engine DMG as a complete same-commit bundle.
+  # Fork Actions re-enabled: request a fresh ARM64 DMG artifact build.
   # Build a single integrated artifact automatically when this milestone
   # workflow changes, without re-building the 90-minute kernel every push.
   push:
