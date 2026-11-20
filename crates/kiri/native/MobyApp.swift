@@ -1602,6 +1602,179 @@ private struct ContainerRowView: View {
     }
 }
 
+/// Native 32pt console tab surface; actual PTY capture/keyboard work
+/// exclusively inside SwiftTerm on production builds, never a chat input.
+private struct UnifiedConsoleDrawer: View {
+    @EnvironmentObject private var model: MobyModel
+    @Environment(\.openWindow) private var openWindow
+    @Binding var sessions: [ConsoleSession]
+    @Binding var selectedID: String?
+    @Binding var followedLogIDs: Set<String>
+    let onCommand: (ConsoleCommand, ConsoleSession) -> Void
+    let onClose: (ConsoleSession) -> Void
+
+    @ViewBuilder
+    private func consoleBody(_ session: ConsoleSession) -> some View {
+        if session.kind == .exec {
+            ExecTerminalView(containerID: session.containerID, containerName: session.name)
+        } else {
+            ContainerLogWindow(containerID: session.containerID, containerName: session.name)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 3) {
+                        ForEach(sessions) { session in
+                            let active = session.id == selectedID
+                            HStack(spacing: 7) {
+                                Button {
+                                    selectedID = session.id
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: session.kind == .exec ?
+                                            "terminal" : "doc.text")
+                                        Text(session.label)
+                                            .lineLimit(1)
+                                            .fontWeight(active ? .medium : .regular)
+                                    }
+                                    .foregroundStyle(active ? .white : .secondary)
+                                }
+                                .buttonStyle(.plain)
+                                Button {
+                                    onClose(session)
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 9, weight: .semibold))
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                                .help("关闭 \(session.label)")
+                            }
+                            .font(.system(size: 11))
+                            .padding(.leading, 12)
+                            .padding(.trailing, 8)
+                            .frame(height: 29)
+                            .background(active ? ConsoleAppearance.canvas :
+                                Color.white.opacity(0.025))
+                            .clipShape(RoundedRectangle(cornerRadius: 5))
+                            .padding(.top, 3)
+                        }
+                    }
+                    .padding(.leading, 7)
+                }
+                .frame(minWidth: 120, maxWidth: 565)
+                Spacer(minLength: 6)
+                if let selected = sessions.first(where: { $0.id == selectedID }) {
+                    HStack(spacing: 9) {
+                        Circle()
+                            .fill(model.containers.first(where: {
+                                $0.Id == selected.containerID
+                            })?.State == "running" ? Color.green : Color.gray)
+                            .frame(width: 6, height: 6)
+                        Text(model.containers.first(where: {
+                            $0.Id == selected.containerID
+                        })?.State == "running" ? "容器运行中" : "容器已停止")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Rectangle().fill(Color.white.opacity(0.15))
+                            .frame(width: 1, height: 14)
+                        if selected.kind == .logs {
+                            Button {
+                                if followedLogIDs.contains(selected.id) {
+                                    followedLogIDs.remove(selected.id)
+                                } else {
+                                    followedLogIDs.insert(selected.id)
+                                }
+                                onCommand(.toggleFollow, session: selected)
+                            } label: {
+                                Image(systemName: followedLogIDs.contains(selected.id) ?
+                                      "pause.fill" : "play.fill")
+                            }
+                            .help(followedLogIDs.contains(selected.id) ?
+                                  "暂停日志跟随" : "继续日志跟随")
+                            Menu {
+                                Button("最近 200 行") {
+                                    onCommand(.last200, session: selected)
+                                }
+                                Button("最近 1,000 行") {
+                                    onCommand(.last1000, session: selected)
+                                }
+                                Button("最近 5,000 行") {
+                                    onCommand(.last5000, session: selected)
+                                }
+                            } label: {
+                                Image(systemName: "line.3.horizontal.decrease")
+                            }
+                            .menuStyle(.borderlessButton)
+                            .frame(width: 18)
+                            .help("日志行数")
+                        }
+                        Button {
+                            onCommand(.copy, session: selected)
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                        }
+                        .help("复制\(selected.kind == .logs ? "日志" : "所选终端文本")")
+                        Button {
+                            onCommand(.clear, session: selected)
+                        } label: {
+                            Image(systemName: "paintbrush")
+                        }
+                        .help("清屏")
+                        if selected.kind == .exec {
+                            Button {
+                                onCommand(.interrupt, session: selected)
+                            } label: {
+                                Image(systemName: "stop.fill")
+                            }
+                            .help("中断 (Ctrl+C)")
+                        }
+                        Rectangle().fill(Color.white.opacity(0.15))
+                            .frame(width: 1, height: 14)
+                        Button {
+                            openWindow(id: "container-console", value: selected)
+                            onClose(selected)
+                        } label: {
+                            Image(systemName: "rectangle.portrait.and.arrow.up")
+                        }
+                        .help("在原生独立窗口打开")
+                        Button {
+                            sessions.removeAll()
+                            selectedID = nil
+                            followedLogIDs.removeAll()
+                        } label: {
+                            Image(systemName: "xmark")
+                        }
+                        .help("关闭全部控制台")
+                    }
+                    .font(.system(size: 11))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                }
+            }
+            .frame(height: 32)
+            .background(ConsoleAppearance.toolbar)
+            ZStack {
+                ForEach(sessions) { session in
+                    consoleBody(session)
+                        .opacity(selectedID == session.id ? 1 : 0)
+                        .allowsHitTesting(selectedID == session.id)
+                        .accessibilityHidden(selectedID != session.id)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(ConsoleAppearance.canvas)
+        }
+        .background(ConsoleAppearance.canvas)
+    }
+
+}
+
 private struct RootView: View {
     @EnvironmentObject private var model: MobyModel
     @State private var selectedContainerIDs = Set<String>()
@@ -1657,8 +1830,18 @@ private struct RootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .frame(minHeight: 220)
                 if (model.page == .containers || model.page == .compose), !sessions.isEmpty {
-                    nativeConsoleDrawer
-                        .frame(minHeight: 170, idealHeight: 285)
+                    UnifiedConsoleDrawer(
+                        sessions: $sessions,
+                        selectedID: $selectedSessionID,
+                        followedLogIDs: $followedLogIDs,
+                        onCommand: { command, session in
+                            sendConsoleCommand(command, session: session)
+                        },
+                        onClose: { session in
+                            closeConsole(session)
+                        }
+                    )
+                    .frame(minHeight: 170, idealHeight: 285)
                         .environment(\.colorScheme, .dark)
                 }
             }
@@ -1954,157 +2137,6 @@ private struct RootView: View {
 
     // One 34pt tab/action strip shared across Exec and Logs.
     // SwiftTerm and NSTextView render directly below without inner headers.
-    private var nativeConsoleDrawer: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 3) {
-                        ForEach(sessions) { session in
-                            let active = session.id == selectedSessionID
-                            HStack(spacing: 7) {
-                                Button {
-                                    selectedSessionID = session.id
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: session.kind == .exec ?
-                                            "terminal" : "doc.text")
-                                        Text(session.label)
-                                            .lineLimit(1)
-                                            .fontWeight(active ? .medium : .regular)
-                                    }
-                                    .foregroundStyle(active ? .white : .secondary)
-                                }
-                                .buttonStyle(.plain)
-                                Button {
-                                    closeConsole(session)
-                                } label: {
-                                    Image(systemName: "xmark")
-                                        .font(.system(size: 9, weight: .semibold))
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(.secondary)
-                                .help("关闭 \(session.label)")
-                            }
-                            .font(.system(size: 11))
-                            .padding(.leading, 12)
-                            .padding(.trailing, 8)
-                            .frame(height: 31)
-                            .background(active ? ConsoleAppearance.canvas :
-                                Color.white.opacity(0.025))
-                            .clipShape(RoundedRectangle(cornerRadius: 5))
-                            .padding(.top, 3)
-                        }
-                    }
-                    .padding(.leading, 7)
-                }
-                .frame(minWidth: 120, maxWidth: 565)
-                Spacer(minLength: 6)
-                if let selected = sessions.first(where: { $0.id == selectedSessionID }) {
-                    HStack(spacing: 9) {
-                        Circle()
-                            .fill(model.containers.first(where: {
-                                $0.Id == selected.containerID
-                            })?.State == "running" ? Color.green : Color.gray)
-                            .frame(width: 6, height: 6)
-                        Text(model.containers.first(where: {
-                            $0.Id == selected.containerID
-                        })?.State == "running" ? "容器运行中" : "容器已停止")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                        Rectangle().fill(Color.white.opacity(0.15))
-                            .frame(width: 1, height: 14)
-                        if selected.kind == .logs {
-                            Button {
-                                if followedLogIDs.contains(selected.id) {
-                                    followedLogIDs.remove(selected.id)
-                                } else {
-                                    followedLogIDs.insert(selected.id)
-                                }
-                                sendConsoleCommand(.toggleFollow, session: selected)
-                            } label: {
-                                Image(systemName: followedLogIDs.contains(selected.id) ?
-                                      "pause.fill" : "play.fill")
-                            }
-                            .help(followedLogIDs.contains(selected.id) ?
-                                  "暂停日志跟随" : "继续日志跟随")
-                            Menu {
-                                Button("最近 200 行") {
-                                    sendConsoleCommand(.last200, session: selected)
-                                }
-                                Button("最近 1,000 行") {
-                                    sendConsoleCommand(.last1000, session: selected)
-                                }
-                                Button("最近 5,000 行") {
-                                    sendConsoleCommand(.last5000, session: selected)
-                                }
-                            } label: {
-                                Image(systemName: "line.3.horizontal.decrease")
-                            }
-                            .menuStyle(.borderlessButton)
-                            .frame(width: 18)
-                            .help("日志行数")
-                        }
-                        Button {
-                            sendConsoleCommand(.copy, session: selected)
-                        } label: {
-                            Image(systemName: "doc.on.doc")
-                        }
-                        .help("复制\(selected.kind == .logs ? "日志" : "所选终端文本")")
-                        Button {
-                            sendConsoleCommand(.clear, session: selected)
-                        } label: {
-                            Image(systemName: "paintbrush")
-                        }
-                        .help("清屏")
-                        if selected.kind == .exec {
-                            Button {
-                                sendConsoleCommand(.interrupt, session: selected)
-                            } label: {
-                                Image(systemName: "stop.fill")
-                            }
-                            .help("中断 (Ctrl+C)")
-                        }
-                        Rectangle().fill(Color.white.opacity(0.15))
-                            .frame(width: 1, height: 14)
-                        Button {
-                            openWindow(id: "container-console", value: selected)
-                            closeConsole(selected)
-                        } label: {
-                            Image(systemName: "rectangle.portrait.and.arrow.up")
-                        }
-                        .help("在原生独立窗口打开")
-                        Button {
-                            sessions.removeAll()
-                            selectedSessionID = nil
-                            followedLogIDs.removeAll()
-                        } label: {
-                            Image(systemName: "xmark")
-                        }
-                        .help("关闭全部控制台")
-                    }
-                    .font(.system(size: 11))
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 12)
-                }
-            }
-            .frame(height: 34)
-            .background(ConsoleAppearance.toolbar)
-            ZStack {
-                ForEach(sessions) { session in
-                    consoleBody(session)
-                        .opacity(selectedSessionID == session.id ? 1 : 0)
-                        .allowsHitTesting(selectedSessionID == session.id)
-                        .accessibilityHidden(selectedSessionID != session.id)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(ConsoleAppearance.canvas)
-        }
-        .background(ConsoleAppearance.canvas)
-    }
-
     // Native titlebar follows the reference image: branding at left, live VM
     // counters and settings at right. Values come from Docker/Guest telemetry,
     // never from a fabricated preview or hard-coded example containers.
