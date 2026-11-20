@@ -1459,7 +1459,6 @@ private struct ModernInspectorView: View {
     private func load(_ id: String) async {
         inspection = nil
         inspectionError = nil
-        revealSensitive = false
         loading = true
         defer { loading = false }
         #if KIRI_UI_PREVIEW
@@ -1502,166 +1501,226 @@ private struct ModernInspectorView: View {
         }
     }
 
+    private func cardHeader(_ text: String, symbol: String) -> some View {
+        Label(text, systemImage: symbol)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.primary)
+    }
+
+    private func metadata(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            Text(value)
+                .monospacedDigit()
+                .fontWeight(.medium)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .font(.system(size: 10.5))
+    }
+
+    private func overviewCard(_ item: ContainerItem) -> some View {
+        ModernInspectorCard {
+            HStack(spacing: 11) {
+                Image(systemName: item.Image?.lowercased().contains("mysql") == true ?
+                      "externaldrive.fill" : "shippingbox.fill")
+                    .font(.system(size: 24, weight: .medium))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 46, height: 46)
+                    .background(Color.accentColor.opacity(0.085),
+                                in: RoundedRectangle(cornerRadius: 11))
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(item.title)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(item.State == "running" ? Color.green : Color.secondary)
+                            .frame(width: 7, height: 7)
+                        Text(item.State == "running" ? "运行中" : "未运行")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            Text(item.Image ?? "—")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            HStack(spacing: 7) {
+                Button {
+                    onAction(item.State == "running" ? "stop" : "start", item)
+                } label: {
+                    Label(item.State == "running" ? "停止" : "启动",
+                          systemImage: item.State == "running" ?
+                          "stop.circle" : "play.circle")
+                }
+                Button {
+                    onAction("restart", item)
+                } label: {
+                    Label("重启", systemImage: "arrow.clockwise")
+                }
+                .disabled(item.State != "running")
+            }
+            .font(.system(size: 11))
+            .buttonStyle(.bordered)
+        }
+    }
+
+    @ViewBuilder
+    private func resourceCard(_ item: ContainerItem) -> some View {
+        ModernInspectorCard {
+            cardHeader("实时资源", symbol: "waveform.path.ecg")
+            if let stats = model.containerStats[item.Id] {
+                let points = model.statsHistory[item.Id] ?? []
+                HStack(spacing: 8) {
+                    InspectorMetricTile(
+                        title: "CPU",
+                        value: stats.cpu_percent.map {
+                            String(format: "%.1f%%", $0)
+                        } ?? "—",
+                        points: points, cpu: true, accent: .blue)
+                    InspectorMetricTile(
+                        title: "内存",
+                        value: sizeLabel(stats.memory_bytes),
+                        points: points, cpu: false, accent: .green)
+                }
+                metadata("内存上限", sizeLabel(stats.memory_limit_bytes))
+                Divider().opacity(0.4)
+                metadata("网络收发（累计）",
+                         "\(sizeLabel(stats.net_rx_bytes)) / \(sizeLabel(stats.net_tx_bytes))")
+                metadata("磁盘读写（累计）",
+                         "\(sizeLabel(stats.block_read_bytes)) / \(sizeLabel(stats.block_write_bytes))")
+                metadata("进程数", stats.pids.map(String.init) ?? "—")
+            } else {
+                Label(item.State == "running" ? "正在采集资源数据…" : "容器未运行",
+                      systemImage: "chart.xyaxis.line")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func networkStorageCard(_ item: ContainerItem) -> some View {
+        ModernInspectorCard {
+            cardHeader("网络与存储", symbol: "network")
+            Text("端口映射")
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+            let ports = (item.Ports ?? []).filter { $0.PublicPort != nil }
+            if ports.isEmpty {
+                Text("没有已发布端口")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(ports.enumerated()), id: \.offset) { _, port in
+                    let host = "localhost:" + String(port.PublicPort ?? 0)
+                    let target = String(port.PrivatePort ?? 0) + "/" + (port.Type ?? "tcp")
+                    CopyableInspectorTag(text: host + " → " + target,
+                                         copyValue: host)
+                }
+            }
+            Divider().opacity(0.4)
+            Text("挂载卷")
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+            let mounts = inspection?.Mounts ?? []
+            if loading {
+                ProgressView().controlSize(.small)
+            } else if mounts.isEmpty {
+                Text("没有挂载卷")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(mounts) { mount in
+                VStack(alignment: .leading, spacing: 4) {
+                    CopyableInspectorTag(text: mount.Destination ?? "—",
+                                         copyValue: mount.Destination ?? "")
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.turn.up.right")
+                            .font(.system(size: 9))
+                        Text(mount.Source ?? "—")
+                            .font(.system(size: 10, design: .monospaced))
+                            .lineLimit(2)
+                            .textSelection(.enabled)
+                    }
+                    .foregroundStyle(.secondary)
+                    Text(mount.RW == true ? "读写" : "只读")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func environmentCard() -> some View {
+        ModernInspectorCard {
+            cardHeader("环境变量", symbol: "curlybraces")
+            let env = inspection?.Config?.Env ?? []
+            if loading {
+                ProgressView().controlSize(.small)
+            } else if env.isEmpty {
+                Text("没有环境变量")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(env.enumerated()), id: \.offset) { _, entry in
+                    InspectorEnvironmentRow(entry: entry)
+                    if entry != env.last {
+                        Divider().opacity(0.25)
+                    }
+                }
+            }
+        }
+    }
+
     var body: some View {
         Group {
             if let item {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 17) {
-                        HStack(spacing: 10) {
-                            Image(systemName: "shippingbox.fill")
-                                .font(.system(size: 25))
-                                .foregroundStyle(.tint)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(item.title)
-                                    .font(.system(size: 17, weight: .semibold))
-                                    .lineLimit(1)
-                                Text(item.Image ?? "未知镜像")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                            }
-                        }
-                        .padding(.top, 5)
-                        GroupBox("实时资源") {
-                            VStack(alignment: .leading, spacing: 8) {
-                                if let stats = model.containerStats[item.Id] {
-                                    LabeledContent("CPU 使用率", value: stats.cpu_percent.map {
-                                        String(format: "%.1f%%", $0)
-                                    } ?? "—")
-                                    InspectorSparkline(
-                                        samples: model.statsHistory[item.Id] ?? [],
-                                        cpu: true, color: .blue)
-                                    LabeledContent("内存工作集", value:
-                                        sizeLabel(stats.memory_bytes))
-                                    LabeledContent("内存上限", value:
-                                        sizeLabel(stats.memory_limit_bytes))
-                                    InspectorSparkline(
-                                        samples: model.statsHistory[item.Id] ?? [],
-                                        cpu: false, color: .green)
-                                    Divider()
-                                    LabeledContent("网络收 / 发", value:
-                                        "\(sizeLabel(stats.net_rx_bytes)) / \(sizeLabel(stats.net_tx_bytes))")
-                                    LabeledContent("磁盘读 / 写", value:
-                                        "\(sizeLabel(stats.block_read_bytes)) / \(sizeLabel(stats.block_write_bytes))")
-                                    LabeledContent("进程数", value:
-                                        stats.pids.map(String.init) ?? "—")
-                                    Text("最多保留最近 60 次采样；网络与磁盘值为累计流量")
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(.secondary)
-                                } else {
-                                    Text(item.State == "running" ? "正在采集…" : "容器未运行")
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(7)
-                        }
-                        GroupBox("端口映射") {
-                            VStack(alignment: .leading, spacing: 8) {
-                                let ports = (item.Ports ?? []).filter { $0.PublicPort != nil }
-                                if ports.isEmpty {
-                                    Text("没有已发布端口")
-                                        .foregroundStyle(.secondary)
-                                }
-                                ForEach(Array(ports.enumerated()), id: \.offset) { _, port in
-                                    HStack(spacing: 5) {
-                                        Text("localhost:\(String(port.PublicPort ?? 0))")
-                                            .fontWeight(.medium)
-                                        Image(systemName: "arrow.right")
-                                            .foregroundStyle(.secondary)
-                                        Text("\(String(port.PrivatePort ?? 0))/\(port.Type ?? "tcp")")
-                                    }
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .lineLimit(1)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(7)
-                        }
-                        GroupBox("挂载卷") {
-                            VStack(alignment: .leading, spacing: 10) {
-                                if loading { ProgressView().controlSize(.small) }
-                                let mounts = inspection?.Mounts ?? []
-                                if mounts.isEmpty && !loading {
-                                    Text(inspection == nil ? "选择后加载 Docker 详情" :
-                                         "没有挂载卷")
-                                        .foregroundStyle(.secondary)
-                                }
-                                ForEach(mounts) { mount in
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(mount.Destination ?? "—")
-                                            .fontWeight(.medium)
-                                        Text(mount.Source ?? "—")
-                                            .font(.system(size: 10))
-                                            .foregroundStyle(.secondary)
-                                        Text("\(mount.`Type` ?? "volume") · \(mount.RW == true ? "读写" : "只读")")
-                                            .font(.system(size: 10))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .textSelection(.enabled)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(7)
-                        }
-                        GroupBox {
-                            VStack(alignment: .leading, spacing: 9) {
-                                Toggle("显示可能含敏感信息的变量值",
-                                       isOn: $revealSensitive)
-                                    .font(.system(size: 10))
-                                let env = inspection?.Config?.Env ?? []
-                                if env.isEmpty && !loading {
-                                    Text("没有环境变量或尚未加载详情")
-                                        .foregroundStyle(.secondary)
-                                }
-                                ForEach(Array(env.enumerated()), id: \.offset) { _, entry in
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(envName(entry))
-                                            .font(.system(size: 11, weight: .medium,
-                                                          design: .monospaced))
-                                        Text(envValue(entry))
-                                            .font(.system(size: 10, design: .monospaced))
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(3)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .textSelection(.enabled)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(7)
-                        } label: {
-                            Label("环境变量", systemImage: "key.horizontal")
-                        }
+                    VStack(alignment: .leading, spacing: 12) {
+                        overviewCard(item)
+                        resourceCard(item)
+                        networkStorageCard(item)
+                        environmentCard()
                         if let inspectionError {
                             Label(inspectionError, systemImage: "exclamationmark.triangle")
+                                .font(.system(size: 10.5))
                                 .foregroundStyle(.orange)
-                                .font(.caption)
                         }
-                        Text("ID: " + item.Id)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                        Text(item.Id)
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
                             .textSelection(.enabled)
+                            .padding(.horizontal, 4)
                     }
-                    .padding(13)
+                    .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .background(Color(nsColor: .windowBackgroundColor))
             } else {
                 ContentUnavailableView(
                     "选择一个容器",
                     systemImage: "sidebar.right",
-                    description: Text("在容器列表中选择一行，查看详细配置和资源历史。"))
+                    description: Text("选中容器，即可查看资源、挂载、端口和环境变量。"))
             }
         }
         .task(id: item?.Id) {
-            if let id = item?.Id { await load(id) }
-            else {
+            if let id = item?.Id {
+                await load(id)
+            } else {
                 inspection = nil
                 inspectionError = nil
             }
         }
     }
+
 }
 
 /// Deliberately sparse table cell: one service identity with a 28pt icon and
@@ -1959,8 +2018,17 @@ private struct RootView: View {
                 get: { showInspector && model.page == .containers },
                 set: { showInspector = $0 }
             )) {
-                ContainerInspectorView(
-                    item: model.containers.first(where: { $0.Id == selectedInspectorID }))
+                ModernInspectorView(
+                    item: model.containers.first(where: { $0.Id == selectedInspectorID }),
+                    onAction: { action, container in
+                        if action == "restart" &&
+                           !model.confirm("重启 \(container.title)？",
+                               detail: "运行中的服务会短暂中断。") {
+                            return
+                        }
+                        model.perform(["container", action, container.Id],
+                            title: action, showResult: false)
+                    })
                     .environmentObject(model)
                     .inspectorColumnWidth(min: 260, ideal: 305, max: 355)
             }
