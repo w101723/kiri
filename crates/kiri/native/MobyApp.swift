@@ -1290,7 +1290,8 @@ private struct KiriMobyNativeApp: App {
         WindowGroup("Kiri Moby") {
             RootView().environmentObject(model)
         }
-        .defaultSize(width: 1130, height: 740)
+        .defaultSize(width: 1280, height: 800)
+        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandMenu("Moby") {
