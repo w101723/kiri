@@ -157,3 +157,50 @@ read-only ext4 seed disk for one-time userspace updates on existing installs.
 - Compare the CI initramfs size, macOS process RSS, Guest `MemAvailable`,
   slab, and VM pressure to test the 800 MiB idle hypothesis. We have not yet
   established 100-200 MiB as measured Kiri host RSS.
+
+
+## Experimental 200 MiB idle footprint investigation
+
+**Status: experimental, not validated as an RSS reduction.** The 200 MB
+macOS `Physical footprint` target is a challenge, not a claim that stock
+Moby plus Apple Virtualization.framework currently reaches it. Real
+measurement after a clean boot is required.
+
+As of the 2026-11-20 owner measurements, a 4096 MiB configured VM shrinks its
+Guest balloon target to ~1025 MiB while macOS VZ XPC footprint remains
+~620-671 MB. Guest `/proc/meminfo` reports ~300512 KiB `Cached`,
+~596208 KiB `MemAvailable`, and ~3144704 KiB `Balloon`. The latter
+matches 4096 - 1025 MiB but does **not** prove the macOS host has reclaimed
+those pages. The Guest also runs dockerd/containerd and needs safety headroom.
+
+### Opt-in, one-shot cache experiment
+
+When manually launching the **host** process, set
+`KIRI_MOBY_IDLE_DROP_CACHES=1`. The host adds a boot-only flag; Guest PID1
+then waits 60 seconds after services start, checks twice (15 seconds apart)
+that the Docker API is reachable and there are no running containers, and
+issues a single `echo 1 > /proc/sys/vm/drop_caches`. This discards only clean
+file-page cache, not dirty pages, Docker image data, volumes, or the VM disk.
+It does not run periodically and does not change the memory governor.
+The default is **OFF**. Finder-launched GUI apps do not normally inherit
+interactive-shell environment variables, so use the explicit host launcher
+configuration instead of assuming `export` affects Finder.
+
+The startup console reports `Memory lab: idle file-cache eviction once` when
+it actually runs; otherwise the feature does nothing. An idle Docker builder
+with zero running containers can still be active; do not enable this mode
+on production or performance-sensitive systems.
+
+Measure with `scripts/moby/measure-memory-macos.sh --idle` once without the
+experiment and once with it, on **the same Mac**, Docker images and idle
+workload. The script now prints `vmmap -summary` physical footprints for VZ
+XPC processes, as well as the original RSS samples. If several VZ guests are
+running, do not attribute every XPC PID to Kiri. Compare the same Kiri PID
+across both tests and watch for cache-regrowth, performance regressions,
+OOM or failures during Docker pulls, Compose, Buildx, restart and stress.
+
+*If Guest Cached falls but macOS footprint does not, the limiting issue is
+VZ physical-page reclamation, not Linux's cache size.* That result would make
+a separate libkrun free-page-reporting backend experiment more valuable than
+further lowering the live Guest balloon floor. Do not reduce the production
+1024 MiB floor to force a 200 MiB number.

@@ -248,6 +248,9 @@ fn main() -> std::io::Result<()> {
     std::fs::set_permissions(&console_log_path, std::fs::Permissions::from_mode(0o600))?;
     eprintln!("Moby VM console: {}", console_log_path.display());
 
+    // Opt-in, one-shot diagnostic only. Never force cache eviction in normal Docker operation.
+    let idle_drop_caches = std::env::var("KIRI_MOBY_IDLE_DROP_CACHES")
+        .ok().as_deref() == Some("1");
     let cpus = std::env::var("KIRI_MOBY_CPUS").ok().and_then(|v| v.parse::<usize>().ok()).filter(|v| (1..=16).contains(v)).unwrap_or(4);
     let memory_mib = std::env::var("KIRI_MOBY_MEMORY_MIB").ok().and_then(|v| v.parse::<u64>().ok()).filter(|v| (1024..=65536).contains(v)).unwrap_or(4096);
     // Virtualization.framework guests may start with a 1970 RTC.
@@ -262,9 +265,10 @@ fn main() -> std::io::Result<()> {
         kernel,
         initrd,
         cmdline: format!(
-            "console=hvc0 rdinit=/init panic=-1 kiri.moby_boot_time={boot_epoch}{}",
+            "console=hvc0 rdinit=/init panic=-1 kiri.moby_boot_time={boot_epoch}{}{}",
             if share_spec.is_empty() { String::new() }
-            else { format!(" kiri.moby_shares={share_spec}") }
+            else { format!(" kiri.moby_shares={share_spec}") },
+            if idle_drop_caches { " kiri.moby_idle_drop_caches=1" } else { "" }
         ),
         console: Some(console_log.into()),
         agent_port: 5556,
@@ -275,6 +279,9 @@ fn main() -> std::io::Result<()> {
         nat_mac: Some("02:4b:69:72:69:01".into()),
     })?;
 
+    if idle_drop_caches {
+        eprintln!("Kiri Moby memory lab: experimental one-shot idle file-cache eviction enabled");
+    }
     let run_dir = data.join("run");
     std::fs::create_dir_all(&run_dir)?;
     std::fs::set_permissions(&run_dir, std::fs::Permissions::from_mode(0o700))?;

@@ -27,8 +27,12 @@ printf '%s\n' 160 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null || true
 
 # The Apple VZ guest RTC may initially be 1970. Sync BEFORE dockerd.
 boot_epoch=""
+idle_drop_caches=0
 for arg in $(cat /proc/cmdline); do
-    case "$arg" in kiri.moby_boot_time=*) boot_epoch="${arg#*=}" ;; esac
+    case "$arg" in
+        kiri.moby_boot_time=*) boot_epoch="${arg#*=}" ;;
+        kiri.moby_idle_drop_caches=1) idle_drop_caches=1 ;;
+    esac
 done
 case "$boot_epoch" in
     ''|*[!0-9]*) die "Invalid/missing Mac boot epoch" ;;
@@ -82,6 +86,7 @@ bridge_pid=$!
 shutdown() {
     trap - TERM INT
     log "Stopping dockerd/containerd and flushing ext4 data"
+    [ -z "${idle_cache_worker_pid:-}" ] || kill -TERM "$idle_cache_worker_pid" 2>/dev/null || true
     kill -TERM "$dockerd_pid" "$containerd_pid" "$bridge_pid" 2>/dev/null || true
     n=0
     while kill -0 "$dockerd_pid" 2>/dev/null && [ "$n" -lt 20 ]; do
@@ -95,5 +100,31 @@ shutdown() {
 }
 trap shutdown TERM INT
 log "Moby services started on ext4 root"
+# Optional A/B experiment: release only CLEAN Linux file cache once after an
+# idle window. This is deliberately NOT the normal memory policy: evicting
+# cache on every poll harms Docker builds and may not reduce macOS VZ RSS.
+# Two successful, container-free Docker queries guard against early startup
+# and restart-policy containers. No dirty cache or Docker state is deleted.
+idle_cache_worker_pid=""
+if [ "$idle_drop_caches" = 1 ]; then
+    (
+        sleep 60
+        kill -0 "$dockerd_pid" 2>/dev/null || exit 0
+        running="$(docker --host unix:///run/docker.sock ps -q 2>/dev/null)" || exit 0
+        [ -z "$running" ] || exit 0
+        sleep 15
+        kill -0 "$dockerd_pid" 2>/dev/null || exit 0
+        running="$(docker --host unix:///run/docker.sock ps -q 2>/dev/null)" || exit 0
+        [ -z "$running" ] || exit 0
+        before="$(awk '$1 == "Cached:" { print $2; exit }' /proc/meminfo)"
+        if printf '1\\n' > /proc/sys/vm/drop_caches; then
+            after="$(awk '$1 == "Cached:" { print $2; exit }' /proc/meminfo)"
+            log "Memory lab: idle file-cache eviction once, Cached ${before:-?} -> ${after:-?} KiB; verify macOS Physical footprint separately"
+        else
+            log "Memory lab: idle file-cache eviction unavailable"
+        fi
+    ) &
+    idle_cache_worker_pid="$!"
+fi
 wait "$dockerd_pid" || log "dockerd exited unexpectedly"
 shutdown
