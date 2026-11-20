@@ -9,6 +9,8 @@ import SwiftUI
 #if canImport(SwiftTerm)
 import SwiftTerm
 #endif
+// SwiftTerm also declares a Color type; UI code uses SwiftUI.Color exclusively.
+private typealias Color = SwiftUI.Color
 
 private enum Page: String, CaseIterable, Hashable, Identifiable {
     case overview = "总览"
