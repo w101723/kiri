@@ -38,7 +38,7 @@ checks = [
     ('NavigationSplitView {', "System managed split navigation"),
     ('.windowToolbarStyle(.unified)', "Unified native macOS toolbar"),
     ('sidebarEngineStatus', "Engine status inset in native sidebar"),
-    ('.inspector(isPresented: $showInspector)', "Right native macOS inspector"),
+    ('.inspector(isPresented: Binding(', "Right native macOS inspector scoped to Containers"),
     ('ContainerInspectorView(', "Selected container inspector content"),
     ('InspectorSparkline(', "Real stats time-series visualizations"),
     ('statsHistory', "Bounded history from live Docker stats"),
