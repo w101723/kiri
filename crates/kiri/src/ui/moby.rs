@@ -770,6 +770,39 @@ pub(super) fn native_command(args: &[String]) -> io::Result<()> {
                         "vm_config":vm_resource_snapshot()?})
                 }
             }
+            "configure" => {
+                let cpu = args.get(1).ok_or_else(||
+                    io::Error::new(io::ErrorKind::InvalidInput, "CPU count required"))?
+                    .parse::<usize>().map_err(|_| io::Error::new(
+                        io::ErrorKind::InvalidInput, "invalid CPU count"))?;
+                let memory = args.get(2).ok_or_else(||
+                    io::Error::new(io::ErrorKind::InvalidInput, "memory limit required"))?
+                    .parse::<u64>().map_err(|_| io::Error::new(
+                        io::ErrorKind::InvalidInput, "invalid memory limit"))?;
+                let apply = match args.get(3).map(String::as_str) {
+                    Some("apply") => true,
+                    Some("save") => false,
+                    _ => return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                        "expected configure <cpu> <memory_mib> <apply|save>")),
+                };
+                let next = validate_vm_resources(VmResources { cpus: cpu, memory_mib: memory })?;
+                let modified = next != read_vm_resources()?;
+                if modified { save_vm_resources(next)?; }
+                let active = client::alive();
+                if apply && active && modified {
+                    stop_vm()?;
+                    start_vm()?;
+                }
+                json!({"message": if !modified {
+                    "VM resource configuration unchanged"
+                } else if active && apply {
+                    "VM restarted with new CPU and memory limits"
+                } else if active {
+                    "Saved; restart VM to apply new CPU and memory limits"
+                } else {
+                    "Saved; new CPU and memory limits take effect on VM start"
+                }})
+            }
             "start" => {
                 start_vm()?;
                 json!({"message":"Moby VM started"})
@@ -825,7 +858,7 @@ pub(super) fn native_command(args: &[String]) -> io::Result<()> {
                 json!({"message":execute(&input)?})
             }
             _ => return Err(io::Error::new(io::ErrorKind::InvalidInput,
-                "moby-native: expected snapshot/start/stop/restart/pull/run/rmi/rmvol/rmnet/container/action")),
+                "moby-native: expected snapshot/configure/start/stop/restart/pull/run/rmi/rmvol/rmnet/container/action")),
         };
         Ok(value)
     })();
