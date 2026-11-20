@@ -1092,7 +1092,7 @@ private struct ExecTerminalView: View {
             .frame(height: 34)
         }
         .background(Color(red: 0.055, green: 0.061, blue: 0.07))
-        .frame(minWidth: 650, minHeight: 390)
+        .frame(minHeight: 170)
         .onAppear { terminal.start(containerID: containerID) }
         .onDisappear { terminal.close() }
     }
@@ -1110,57 +1110,150 @@ private func openExecTerminal(_ containerID: String, name: String) {
     FloatingWindowRegistry.shared.show(window, key: "exec:" + containerID)
 }
 
+private struct ConsoleSession: Codable, Hashable, Identifiable {
+    enum Kind: String, Codable { case exec, logs }
+    let kind: Kind
+    let containerID: String
+    let name: String
+    var id: String { kind.rawValue + ":" + containerID }
+    var label: String {
+        (kind == .exec ? "Exec" : "日志") + ": " + name
+    }
+}
+
+/// Native macOS tabbing applies only to real secondary windows, not an
+/// artificial set of traffic lights inside the workspace.
+private struct WindowTabbingConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
+    func updateNSView(_ view: NSView, context: Context) {
+        DispatchQueue.main.async { view.window?.tabbingMode = .preferred }
+    }
+}
+
+private struct DetachedConsoleView: View {
+    let session: ConsoleSession
+    var body: some View {
+        Group {
+            if session.kind == .exec {
+                ExecTerminalView(containerID: session.containerID, containerName: session.name)
+            } else {
+                ContainerLogWindow(containerID: session.containerID, containerName: session.name)
+            }
+        }
+        .environment(\.colorScheme, .dark)
+        .background(WindowTabbingConfigurator())
+        .navigationTitle(session.label)
+    }
+}
+
 private struct RootView: View {
     @EnvironmentObject private var model: MobyModel
     @State private var selectedContainerIDs = Set<String>()
+    @State private var sessions: [ConsoleSession] = []
+    @State private var selectedSessionID: String?
+    @State private var showVMPopover = false
+    @Environment(\.openWindow) private var openWindow
     // Original Kiri Moby shell: 44pt title strip, 212pt flat sidebar,
     // bottom-left VM card, toolbar with status chips and footer.
     // These are SwiftUI/AppKit views; no HTML, WKWebView or JavaScript.
     var body: some View {
-        VStack(spacing: 0) {
-            titleStrip
-            Rectangle().fill(KiriPalette.border(model.isLight)).frame(height: 1)
-            HStack(spacing: 0) {
-                sidebar.frame(width: model.sidebarCollapsed ? 60 : 258)
-                Rectangle().fill(KiriPalette.border(model.isLight)).frame(width: 1)
-                VStack(spacing: 0) {
-                    pageHeader
-                    Rectangle().fill(KiriPalette.border(model.isLight)).frame(height: 1)
-                    Group {
-                        if !model.online && model.page != .settings {
-                            VStack(spacing: 14) {
-                                Text("Moby VM 未连接").font(.system(size: 15, weight: .semibold))
-                                Text(model.snapshot?.error ??
-                                     "启动标准 Docker Engine 后显示容器和镜像。")
-                                    .foregroundStyle(KiriPalette.muted(model.isLight))
-                                Button("启动 VM") {
-                                    model.perform(["start"], title: "Start VM", showResult: false)
-                                }.buttonStyle(.borderedProminent)
-                            }
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else {
-                            content
-                        }
+        NavigationSplitView {
+            List(selection: Binding<Page?>(
+                get: { model.page },
+                set: { if let page = $0 { model.page = page } }
+            )) {
+                Section("资源") {
+                    ForEach([Page.containers, .images, .volumes, .networks,
+                             .compose, .builds], id: \.self) { page in
+                        nativeSidebarItem(page)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .background(KiriPalette.bg(model.isLight))
+                Section("系统") {
+                    nativeSidebarItem(.overview)
+                    nativeSidebarItem(.settings)
+                }
             }
-            footer
+            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 180, ideal: 218, max: 270)
+            .navigationTitle("Kiri Moby")
+        } detail: {
+            VSplitView {
+                Group {
+                    if !model.online && model.page != .settings {
+                        ContentUnavailableView {
+                            Label("Moby VM 未连接", systemImage: "desktopcomputer.trianglebadge.exclamationmark")
+                        } description: {
+                            Text(model.snapshot?.error ?? "启动标准 Docker Engine 后即可管理容器。")
+                        } actions: {
+                            Button("启动虚拟机") {
+                                model.perform(["start"], title: "Start VM", showResult: false)
+                            }
+                        }
+                    } else {
+                        content
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minHeight: 220)
+                if (model.page == .containers || model.page == .compose), !sessions.isEmpty {
+                    nativeConsoleDrawer
+                        .frame(minHeight: 170, idealHeight: 285)
+                        .environment(\.colorScheme, .dark)
+                }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) { footer }
+            .navigationTitle(model.page.displayName)
         }
-        .foregroundStyle(KiriPalette.title(model.isLight))
+        .searchable(text: $model.search, placement: .toolbar, prompt: "搜索容器、镜像…")
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                Button { showVMPopover.toggle() } label: {
+                    Label {
+                        Text(model.online ? "VM 运行中 · \(liveMemoryLabel)" : "VM 已停止")
+                    } icon: {
+                        Image(systemName: model.online ? "checkmark.circle.fill" : "circle")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .popover(isPresented: $showVMPopover) { vmResourcePopover }
+            }
+            ToolbarItem(placement: .automatic) {
+                Menu {
+                    ForEach(ContainerFilter.allCases) { filter in
+                        Button(filter.rawValue) { model.containerFilter = filter }
+                    }
+                } label: {
+                    Label("容器状态筛选", systemImage: "line.3.horizontal.decrease")
+                }
+                .disabled(model.page != .containers)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                if model.page == .containers {
+                    Button {
+                        if let image = model.ask("输入要创建的容器镜像", placeholder: "nginx:alpine") {
+                            model.perform(["run", image], title: "新建容器", showResult: false)
+                        }
+                    } label: {
+                        Label("新建容器", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button { model.refresh() } label: {
+                        Label("刷新", systemImage: "arrow.clockwise")
+                    }
+                }
+            }
+        }
         .font(.system(size: 12))
-        .background(KiriPalette.bg(model.isLight))
-        .preferredColorScheme(model.isLight ? .light : .dark)
-        .frame(minWidth: 760, minHeight: 480)
+        .frame(minWidth: 850, minHeight: 570)
         .task {
             model.begin()
             #if KIRI_UI_PREVIEW
             if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" &&
                ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW_NO_FLOATING"] != "1" {
                 try? await Task.sleep(for: .seconds(1))
-                openContainerLogs("a000000000000000", name: "nginx")
-                openExecTerminal("a000000000000000", name: "nginx")
+                openConsole(.logs, containerID: "a000000000000000", name: "nginx")
+                openConsole(.exec, containerID: "a000000000000000", name: "nginx")
             }
             #endif
             while !Task.isCancelled {
@@ -1271,6 +1364,114 @@ private struct RootView: View {
                     .padding(16)
             }
         }
+    }
+
+    @ViewBuilder
+    private func nativeSidebarItem(_ page: Page) -> some View {
+        if let count = navCount(page) {
+            Label(page.displayName, systemImage: page.symbol)
+                .badge(count)
+                .tag(page)
+        } else {
+            Label(page.displayName, systemImage: page.symbol)
+                .tag(page)
+        }
+    }
+
+    private var vmResourcePopover: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(model.online ? "Linux VM 运行中" : "Linux VM 已停止",
+                  systemImage: "desktopcomputer")
+                .font(.headline)
+            Divider()
+            LabeledContent("CPU", value: "\(model.snapshot?.info?.NCPU ?? 0) 核")
+            LabeledContent("内存使用", value: liveMemoryLabel)
+            LabeledContent("Balloon 目标", value:
+                "\(model.snapshot?.memory?.balloon_target_mib ?? 0) MiB")
+            LabeledContent("磁盘可用", value: diskFreeLabel)
+            HStack {
+                Button("资源设置") {
+                    showVMPopover = false
+                    model.page = .settings
+                }
+                Spacer()
+                Button(model.online ? "重启 VM" : "启动 VM") {
+                    if model.online {
+                        guard model.confirm("重启 Moby VM？",
+                            detail: "运行中的容器会被中断。") else { return }
+                    }
+                    model.perform([model.online ? "restart" : "start"],
+                        title: "VM", showResult: false)
+                    showVMPopover = false
+                }
+            }
+        }
+        .padding(18)
+        .frame(width: 285)
+    }
+
+    private func openConsole(_ kind: ConsoleSession.Kind,
+                             containerID: String, name: String) {
+        let session = ConsoleSession(kind: kind, containerID: containerID, name: name)
+        if !sessions.contains(where: { $0.id == session.id }) {
+            sessions.append(session)
+        }
+        selectedSessionID = session.id
+    }
+
+    @ViewBuilder
+    private func consoleBody(_ session: ConsoleSession) -> some View {
+        if session.kind == .exec {
+            ExecTerminalView(containerID: session.containerID, containerName: session.name)
+        } else {
+            ContainerLogWindow(containerID: session.containerID, containerName: session.name)
+        }
+    }
+
+    private var nativeConsoleDrawer: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "terminal")
+                Picker("会话", selection: $selectedSessionID) {
+                    ForEach(sessions) { session in
+                        Text(session.label).tag(Optional(session.id))
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                Spacer(minLength: 8)
+                if let selected = sessions.first(where: { $0.id == selectedSessionID }) {
+                    Button {
+                        openWindow(id: "container-console", value: selected)
+                        sessions.removeAll { $0.id == selected.id }
+                        selectedSessionID = sessions.last?.id
+                    } label: {
+                        Label("独立窗口", systemImage: "arrow.up.forward.app")
+                    }
+                    .help("弹出为原生 macOS 标签窗口")
+                    Button {
+                        sessions.removeAll { $0.id == selected.id }
+                        selectedSessionID = sessions.last?.id
+                    } label: {
+                        Label("关闭控制台", systemImage: "xmark")
+                    }
+                    .help("关闭当前控制台")
+                }
+            }
+            .labelStyle(.iconOnly)
+            .padding(.horizontal, 12)
+            .frame(height: 38)
+            .background(Color(NSColor.controlBackgroundColor).opacity(0.23))
+            Divider()
+            ZStack {
+                ForEach(sessions) { session in
+                    consoleBody(session)
+                        .opacity(selectedSessionID == session.id ? 1 : 0)
+                        .allowsHitTesting(selectedSessionID == session.id)
+                }
+            }
+        }
+        .background(Color(red: 0.055, green: 0.061, blue: 0.07))
     }
 
     // Native titlebar follows the reference image: branding at left, live VM
@@ -1793,11 +1994,11 @@ private struct RootView: View {
             }
             .disabled(container.State != "running")
             iconAction("交互式 Exec", icon: "terminal") {
-                openExecTerminal(container.Id, name: container.title)
+                openConsole(.exec, containerID: container.Id, name: container.title)
             }
             .disabled(container.State != "running")
             iconAction("实时日志", icon: "doc.text") {
-                openContainerLogs(container.Id, name: container.title)
+                openConsole(.logs, containerID: container.Id, name: container.title)
             }
             iconAction("删除容器", icon: "trash", destructive: true) {
                 if model.confirm("确定强制删除容器 \(container.title)？",
@@ -2591,9 +2792,8 @@ private struct KiriMobyNativeApp: App {
             RootView().environmentObject(model)
         }
         .defaultSize(width: 1440, height: 900)
-        .windowStyle(.hiddenTitleBar)
+
         .commands {
-            CommandGroup(replacing: .newItem) {}
             CommandMenu("Moby") {
                 Button("刷新") { model.refresh() }.keyboardShortcut("r")
                 Button("启动 VM") {
@@ -2606,6 +2806,15 @@ private struct KiriMobyNativeApp: App {
                 }
             }
         }
+
+        WindowGroup("容器控制台", id: "container-console", for: ConsoleSession.self) { $session in
+            if let session {
+                DetachedConsoleView(session: session)
+            } else {
+                Text("请选择一个容器会话")
+            }
+        }
+        .defaultSize(width: 860, height: 550)
 
         MenuBarExtra("Kiri Moby", systemImage:"shippingbox") {
             Text(model.online ? "Moby VM Running" : "Moby VM Stopped")
