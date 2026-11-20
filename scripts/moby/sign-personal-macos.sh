@@ -48,6 +48,13 @@ security unlock-keychain -p "$keychain_pw" "$keychain"
 security list-keychains -d user -s "$keychain" "$login"
 security default-keychain -d user -s "$keychain"
 security import "$work/personal.p12" -k "$keychain" -P "$KIRI_PERSONAL_SIGN_P12_PASSWORD" -T /usr/bin/codesign
+# Self-signed personal identities don't chain to Apple by default. Trust them
+# ONLY within this temporary CI code-signing keychain, not on the user's Mac.
+printf '%s' "$KIRI_PERSONAL_SIGN_P12_PASSWORD" > "$work/p12-password"
+openssl pkcs12 -in "$work/personal.p12" -clcerts -nokeys \
+  -passin "file:$work/p12-password" -out "$work/chain.pem"
+openssl x509 -in "$work/chain.pem" -out "$work/leaf.pem"
+security add-trusted-cert -r trustAsRoot -p codeSign -k "$keychain" "$work/leaf.pem"
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_pw" "$keychain" >/dev/null
 # One dedicated personal P12 should contain exactly one code-signing identity.
 identity_list="$(security find-identity -v -p codesigning "$keychain" | awk '/^[[:space:]]*[0-9]+\) [0-9A-Fa-f]{40}/ {print $2}')"
