@@ -744,7 +744,7 @@ private final class FloatingWindowRegistry: NSObject, NSWindowDelegate {
 @MainActor
 private func openContainerLogs(_ containerID: String, name: String) {
     let window = NSWindow(
-        contentRect: NSRect(x: 0, y: 0, width: 790, height: 460),
+        contentRect: NSRect(x: 0, y: 0, width: 760, height: 460),
         styleMask: [.titled, .closable, .miniaturizable, .resizable],
         backing: .buffered, defer: false)
     window.title = "日志: " + name
@@ -917,6 +917,7 @@ private struct ExecTerminalView: View {
             .font(.system(size: 11))
             .padding(.horizontal, 13)
             .frame(height: 50)
+            .background(Color(NSColor.windowBackgroundColor))
             ScrollViewReader { proxy in
                 ScrollView(.horizontal) {
                     ScrollView(.vertical) {
@@ -961,7 +962,7 @@ private struct ExecTerminalView: View {
 @MainActor
 private func openExecTerminal(_ containerID: String, name: String) {
     let window = NSWindow(
-        contentRect: NSRect(x: 0, y: 0, width: 735, height: 440),
+        contentRect: NSRect(x: 0, y: 0, width: 680, height: 440),
         styleMask: [.titled, .closable, .miniaturizable, .resizable],
         backing: .buffered, defer: false)
     window.title = "Exec: " + name + " (交互式终端)"
