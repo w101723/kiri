@@ -2488,7 +2488,7 @@ private struct KiriMobyNativeApp: App {
         }
 
         WindowGroup("容器控制台", id: "container-console", for: ConsoleSession.self) { $session in
-            if let session = session.wrappedValue {
+            if let session {
                 DetachedConsoleView(session: session)
             } else {
                 Text("请选择一个容器会话")
