@@ -1822,6 +1822,70 @@ private struct RootView: View {
             .clipShape(RoundedRectangle(cornerRadius: 7))
     }
 
+    // Compact dashboard cell shared by the Containers table and the nested
+    // Compose service rows. Network and disk counters are cumulative I/O;
+    // CPU % and working-set memory are current sampling windows.
+    @ViewBuilder
+    private func containerResourceCell(_ item: ContainerItem) -> some View {
+        if item.State != "running" {
+            Text("—")
+                .font(.system(size: 11))
+                .foregroundStyle(KiriPalette.faint(model.isLight))
+        } else if let stats = model.containerStats[item.Id] {
+            let cpu = stats.cpu_percent.map {
+                String(format: "%.1f%%", $0)
+            } ?? "—"
+            let used = sizeLabel(stats.memory_bytes)
+            let limit = sizeLabel(stats.memory_limit_bytes)
+            let usedFraction = min(1.0, max(0.0,
+                (stats.memory_percent ?? 0) / 100.0))
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Text("CPU")
+                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                    Text(cpu)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(KiriPalette.title(model.isLight))
+                    Spacer(minLength: 6)
+                    Text("内存")
+                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                    Text("\(used) / \(limit)")
+                        .fontWeight(.medium)
+                        .foregroundStyle(KiriPalette.title(model.isLight))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                }
+                .font(.system(size: 10, design: .monospaced))
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(KiriPalette.raised(model.isLight))
+                        Capsule().fill(usedFraction > 0.85 ?
+                            Color.orange : KiriPalette.blue)
+                            .frame(width: proxy.size.width * usedFraction)
+                    }
+                }
+                .frame(height: 4)
+                HStack(spacing: 6) {
+                    Text("网络 ↓\(sizeLabel(stats.net_rx_bytes)) ↑\(sizeLabel(stats.net_tx_bytes))")
+                    Spacer(minLength: 3)
+                    Text("磁盘 ↓\(sizeLabel(stats.block_read_bytes)) ↑\(sizeLabel(stats.block_write_bytes))")
+                }
+                .font(.system(size: 9))
+                .foregroundStyle(KiriPalette.muted(model.isLight))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            }
+            .padding(.vertical, 5)
+            .help("CPU：\(cpu)（可超过 100%，表示使用多个核心）\n内存工作集：\(used) / \(limit)\n网络收发（累计）：↓\(sizeLabel(stats.net_rx_bytes)) ↑\(sizeLabel(stats.net_tx_bytes))\n磁盘读写（累计）：↓\(sizeLabel(stats.block_read_bytes)) ↑\(sizeLabel(stats.block_write_bytes))\n进程数：\(stats.pids.map(String.init) ?? "—")")
+        } else {
+            Text(model.statsUpdatedAt != nil ? "暂无统计" :
+                 (model.statsError != nil ? "读取失败" : "采集中…"))
+                .font(.system(size: 11))
+                .foregroundStyle(KiriPalette.muted(model.isLight))
+                .help(model.statsError ?? "等待 Docker Engine 提供容器统计数据")
+        }
+    }
+
     private func containerSelection(_ id: String) -> some View {
         Toggle("", isOn: Binding(
             get: { selectedContainerIDs.contains(id) },
@@ -1858,6 +1922,7 @@ private struct RootView: View {
                     tableTitle("名称", width: 145)
                     tableTitle("镜像", width: 155)
                     tableTitle("状态", width: 95)
+                    tableTitle("资源 · CPU / 内存 / I/O", width: 280)
                     tableTitle("端口", width: 195)
                     tableTitle("SHARE", width: 48)
                     tableTitle("创建时间", width: 115)
@@ -1915,6 +1980,7 @@ private struct RootView: View {
                                     .font(.system(size: 11))
                                     .lineLimit(1), width: 155)
                             tableValue(containerStateBadge(item), width: 95)
+                            tableValue(containerResourceCell(item), width: 280)
                             tableValue(portLinks(item.Ports), width: 195)
                             tableValue(localPortShortcut(item), width: 48)
                             tableValue(
@@ -1932,7 +1998,7 @@ private struct RootView: View {
                     }
                 }
             }
-                .frame(minWidth: 1160, alignment: .leading)
+                .frame(minWidth: 1460, alignment: .leading)
             }
         }
         .background(KiriPalette.panel(model.isLight))
@@ -2234,6 +2300,7 @@ private struct RootView: View {
                                 HStack(spacing: 0) {
                                     tableTitle("服务 / 容器", width: 260)
                                     tableTitle("状态", width: 135)
+                                    tableTitle("资源 · CPU / 内存 / I/O", width: 280)
                                     tableTitle("端口", width: 165)
                                     tableTitle("操作", width: 280)
                                 }
@@ -2254,10 +2321,11 @@ private struct RootView: View {
                                         tableValue(
                                             Text(container.Status ?? container.State ?? "—"),
                                             width: 135)
+                                        tableValue(containerResourceCell(container), width: 280)
                                         tableValue(portLinks(container.Ports), width: 165)
                                         tableValue(containerButtons(container), width: 280)
                                     }
-                                    .frame(minHeight: 56)
+                                    .frame(minHeight: 63)
                                     tableDivider
                                 }
                             }
