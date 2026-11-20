@@ -1214,6 +1214,7 @@ private final class NativeTabbedWindowAnchor: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         window?.tabbingMode = .preferred
+        window?.tabbingIdentifier = "dev.kiri.moby.container-console"
     }
 }
 private struct WindowTabbingConfigurator: NSViewRepresentable {
@@ -1596,23 +1597,19 @@ private struct ModernInspectorView: View {
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
-            HStack(spacing: 7) {
-                Button {
-                    onAction(item.State == "running" ? "stop" : "start", item)
-                } label: {
-                    Label(item.State == "running" ? "停止" : "启动",
-                          systemImage: item.State == "running" ?
-                          "stop.circle" : "play.circle")
+            HStack(spacing: 6) {
+                Text("创建时间").foregroundStyle(.secondary)
+                Spacer()
+                if let created = item.Created, created > 0 {
+                    Text(Date(timeIntervalSince1970: TimeInterval(created)),
+                         style: .relative)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                } else {
+                    Text("—").foregroundStyle(.secondary)
                 }
-                Button {
-                    onAction("restart", item)
-                } label: {
-                    Label("重启", systemImage: "arrow.clockwise")
-                }
-                .disabled(item.State != "running")
             }
             .font(.system(size: 11))
-            .buttonStyle(.bordered)
         }
     }
 
@@ -1826,6 +1823,7 @@ private enum ContainerDetailTab: String, CaseIterable, Identifiable {
 /// Searchable, bounded Docker log snapshots in a padded charcoal card.
 private struct EmbeddedContainerLogsView: View {
     let containerID: String
+    let isActive: Bool
     @StateObject private var session = ContainerLogSession()
     @State private var query = ""
 
@@ -1893,9 +1891,11 @@ private struct EmbeddedContainerLogsView: View {
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
             .stroke(Color.white.opacity(0.07), lineWidth: 1))
         .environment(\.colorScheme, .dark)
-        .task(id: session.tailLines) {
+        .task(id: "\(session.tailLines)-\(isActive)") {
             while !Task.isCancelled {
-                if session.following { await session.refresh(containerID: containerID) }
+                if isActive && session.following {
+                    await session.refresh(containerID: containerID)
+                }
                 do { try await Task.sleep(for: .seconds(2)) }
                 catch { break }
             }
@@ -2044,7 +2044,8 @@ private struct ContainerWorkspaceDetail: View {
                     .accessibilityHidden(activeTab != .overview)
 
                 ForEach(loadedLogIDs.sorted(), id: \.self) { id in
-                    EmbeddedContainerLogsView(containerID: id)
+                    EmbeddedContainerLogsView(
+                        containerID: id, isActive: activeTab == .logs && container.Id == id)
                         .padding(12)
                         .opacity(activeTab == .logs && container.Id == id ? 1 : 0)
                         .allowsHitTesting(activeTab == .logs && container.Id == id)
