@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static visual/functional contract against the original Moby HTML UI.
+"""Static UI contract: original Moby controls plus approved native Compose/VM updates.
 
 The native SwiftUI app must also compile and undergo real-device acceptance.
 """
@@ -70,11 +70,17 @@ checks = [
     ('Button("创建 Volume")', "Create volume"),
     ('Button("创建网络")', "Create network"),
     ('if !["bridge","host","none"].contains(item.Name)', "Default networks are protected"),
-    ('Button("选择 Compose 文件")', "Compose file picker"),
-    ('Button("Up -d")', "Compose up"),
-    ('Button("查看状态")', "Compose ps"),
-    ('Button("查看日志")', "Compose logs"),
-    ('Button("Down")', "Compose down"),
+    ('Text("Compose 项目")', "Compose inventory header"),
+    ('private var composeProjects: [String]', "Compose project discovery"),
+    ('ForEach(composeProjects, id:', "Compose grouped project list"),
+    ('"com.docker.compose.service"', "Compose service labels"),
+    ('ForEach(members)', "Compose nested container rows"),
+    ('tableValue(containerButtons(container)', "Compose inline container controls"),
+    ('Text("虚拟机资源上限")', "CPU and memory resource settings"),
+    ('Stepper(value: $model.resourceCPUs', "Host-limited CPU selector"),
+    ('Slider(', "RAM ceiling slider"),
+    ('Button("仅保存")', "Save VM resource settings"),
+    ('"保存并重启 VM"', "Apply VM resources by restart"),
     ('Button("构建镜像")', "Buildx"),
     ('"linux/arm64"', "Buildx ARM64"),
     ('"linux/amd64"', "Buildx AMD64"),
