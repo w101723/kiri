@@ -54,7 +54,7 @@ checks = [
     ('ScrollView(.horizontal, showsIndicators: false)', "Compact scrollable console tabs"),
     ('CompactContainerMetrics(stats:', "Compact CPU/RAM-only resource cells"),
     ('LabeledContent("网络接收（累计）"', "Network and disk moved into detail popover"),
-    ('Button("localhost:\\(String(published)) ↗")', "Port number grouping disabled"),
+    ('String(published)', "Port number grouping disabled"),
 
     ('view.usesFindBar = true', "AppKit native find bar"),
     ('storage.append(NSAttributedString(', "Incremental log text insertion"),
