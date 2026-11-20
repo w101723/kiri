@@ -1363,11 +1363,13 @@ private struct RootView: View {
                 } label: {
                     Label("新建容器", systemImage: "plus")
                         .font(.system(size: 12, weight: .semibold))
-                        .padding(.horizontal, 12)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
                         .frame(height: 37)
+                        .background(KiriPalette.blue)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(KiriPalette.blue)
+                .buttonStyle(.plain)
             } else {
                 Button { model.refresh() } label: {
                     Label("刷新", systemImage: "arrow.clockwise")
@@ -1683,8 +1685,9 @@ private struct RootView: View {
     }
 
     private var containers: some View {
-        ScrollView([.horizontal, .vertical]) {
-            LazyVStack(alignment: .leading, spacing: 0) {
+        ScrollView(.horizontal) {
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 0) {
                     tableValue(
                         Toggle("", isOn: Binding(
@@ -1778,7 +1781,8 @@ private struct RootView: View {
                     }
                 }
             }
-            .frame(minWidth: 1160, alignment: .leading)
+                .frame(minWidth: 1160, alignment: .leading)
+            }
         }
         .background(KiriPalette.panel(model.isLight))
         .clipShape(RoundedRectangle(cornerRadius: 11))
