@@ -767,6 +767,7 @@ private final class ContainerLogSession: ObservableObject {
 /// NSTextView keeps the native find bar, selection and text system and can
 /// apply deltas without rebuilding a SwiftUI Text layout on each log update.
 private struct NativeLogTextView: NSViewRepresentable {
+    @Environment(\.colorScheme) private var colorScheme
     let content: String
     let following: Bool
 
@@ -780,7 +781,7 @@ private struct NativeLogTextView: NSViewRepresentable {
         scroller.hasHorizontalScroller = true
         scroller.autohidesScrollers = true
         scroller.drawsBackground = true
-        scroller.backgroundColor = ConsoleAppearance.canvasNS
+        scroller.backgroundColor = ConsoleAppearance.canvasNS(colorScheme)
         let view = NSTextView(frame: .zero)
         view.isEditable = false
         view.isSelectable = true
@@ -790,7 +791,7 @@ private struct NativeLogTextView: NSViewRepresentable {
         view.isAutomaticDashSubstitutionEnabled = false
         view.isAutomaticTextReplacementEnabled = false
         view.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        view.textColor = .white
+        view.textColor = ConsoleAppearance.foregroundNS(colorScheme)
         view.backgroundColor = scroller.backgroundColor
         view.textContainerInset = NSSize(width: 12, height: 10)
         view.isHorizontallyResizable = true
@@ -804,20 +805,27 @@ private struct NativeLogTextView: NSViewRepresentable {
         return scroller
     }
     func updateNSView(_ scroller: NSScrollView, context: Context) {
-        guard let view = scroller.documentView as? NSTextView,
-              let storage = view.textStorage else { return }
+        guard let view = scroller.documentView as? NSTextView else { return }
+        let foreground = ConsoleAppearance.foregroundNS(colorScheme)
+        let background = ConsoleAppearance.canvasNS(colorScheme)
+        scroller.backgroundColor = background
+        view.backgroundColor = background
+        view.textColor = foreground
+        guard let storage = view.textStorage else { return }
+        storage.addAttribute(.foregroundColor, value: foreground,
+                             range: NSRange(location: 0, length: storage.length))
         let previous = context.coordinator.rendered
         guard previous != content else { return }
         if content.hasPrefix(previous) {
             let suffix = String(content.dropFirst(previous.count))
             storage.append(NSAttributedString(string: suffix, attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-                .foregroundColor: NSColor.white
+                .foregroundColor: foreground
             ]))
         } else {
             storage.setAttributedString(NSAttributedString(string: content, attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-                .foregroundColor: NSColor.white
+                .foregroundColor: foreground
             ]))
         }
         context.coordinator.rendered = content
@@ -827,12 +835,29 @@ private struct NativeLogTextView: NSViewRepresentable {
     }
 }
 
-/// Consistent charcoal console across tabs, renderer and controls.
+/// Console colors follow the system appearance, including live appearance changes.
 private enum ConsoleAppearance {
-    static let canvas = Color(red: 24 / 255, green: 24 / 255, blue: 27 / 255)
-    static let toolbar = Color(red: 34 / 255, green: 34 / 255, blue: 38 / 255)
-    static let canvasNS = NSColor(calibratedRed: 24 / 255,
-                                  green: 24 / 255, blue: 27 / 255, alpha: 1)
+    static func canvas(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(red: 24 / 255, green: 24 / 255, blue: 27 / 255)
+                        : Color(nsColor: .textBackgroundColor)
+    }
+    static func toolbar(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(red: 30 / 255, green: 30 / 255, blue: 34 / 255)
+                        : Color(nsColor: .controlBackgroundColor)
+    }
+    static func foreground(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(white: 0.88)
+                        : Color(red: 30 / 255, green: 32 / 255, blue: 36 / 255)
+    }
+    static func canvasNS(_ scheme: ColorScheme) -> NSColor {
+        scheme == .dark ? NSColor(calibratedRed: 24 / 255, green: 24 / 255,
+                                  blue: 27 / 255, alpha: 1) : .textBackgroundColor
+    }
+    static func foregroundNS(_ scheme: ColorScheme) -> NSColor {
+        scheme == .dark ? NSColor(calibratedWhite: 0.88, alpha: 1)
+                        : NSColor(calibratedRed: 30 / 255, green: 32 / 255,
+                                  blue: 36 / 255, alpha: 1)
+    }
 }
 private enum ConsoleCommand: String {
     case copy, clear, interrupt, toggleFollow
@@ -841,6 +866,7 @@ private enum ConsoleCommand: String {
 private let consoleCommandNotification = Notification.Name("dev.kiri.moby.console.action")
 
 private struct ContainerLogWindow: View {
+    @Environment(\.colorScheme) private var colorScheme
     @StateObject private var session = ContainerLogSession()
     let containerID: String
     let containerName: String
@@ -848,7 +874,7 @@ private struct ContainerLogWindow: View {
     var body: some View {
         NativeLogTextView(content: session.content, following: session.following)
             .frame(minHeight: 150)
-            .background(ConsoleAppearance.canvas)
+            .background(ConsoleAppearance.canvas(colorScheme))
             .task(id: session.tailLines) {
                 while !Task.isCancelled {
                     if session.following {
@@ -1017,14 +1043,16 @@ private final class SwiftTermTerminalControls: ObservableObject {
 // keyboard handling and resize/SIGWINCH. The launched executable is Kiri's
 // signed CLI, not a local host shell or a different Docker Engine context.
 private struct NativeSwiftTermExecView: NSViewRepresentable {
+    @Environment(\.colorScheme) private var colorScheme
     let containerID: String
     @ObservedObject var controls: SwiftTermTerminalControls
 
     func makeNSView(context: Context) -> LocalProcessTerminalView {
         let view = LocalProcessTerminalView(frame: .zero)
         view.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        view.nativeBackgroundColor = ConsoleAppearance.canvasNS
-        view.nativeForegroundColor = NSColor.white
+        view.nativeBackgroundColor = ConsoleAppearance.canvasNS(colorScheme)
+        view.nativeForegroundColor = ConsoleAppearance.foregroundNS(colorScheme)
+        view.nativeCursorColor = NSColor.controlAccentColor
         controls.terminal = view
         let cli = Bundle.main.bundleURL.appendingPathComponent(
             "Contents/MacOS/kiri").path
@@ -1040,7 +1068,11 @@ private struct NativeSwiftTermExecView: NSViewRepresentable {
                           environment: environment)
         return view
     }
-    func updateNSView(_ view: LocalProcessTerminalView, context: Context) {}
+    func updateNSView(_ view: LocalProcessTerminalView, context: Context) {
+        view.nativeBackgroundColor = ConsoleAppearance.canvasNS(colorScheme)
+        view.nativeForegroundColor = ConsoleAppearance.foregroundNS(colorScheme)
+        view.nativeCursorColor = NSColor.controlAccentColor
+    }
     static func dismantleNSView(_ view: LocalProcessTerminalView, coordinator: ()) {
         view.terminate()
     }
@@ -1048,6 +1080,7 @@ private struct NativeSwiftTermExecView: NSViewRepresentable {
 #endif
 
 private struct ExecTerminalView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @StateObject private var terminal = ExecTerminalSession()
     #if canImport(SwiftTerm)
     @StateObject private var swiftTermControls = SwiftTermTerminalControls()
@@ -1070,7 +1103,7 @@ private struct ExecTerminalView: View {
                         Text(terminal.output.isEmpty ?
                              "正在连接容器…" : terminal.output)
                             .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(ConsoleAppearance.foreground(colorScheme))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 14)
@@ -1088,7 +1121,7 @@ private struct ExecTerminalView: View {
             #endif
         }
         .frame(minHeight: 155)
-        .background(ConsoleAppearance.canvas)
+        .background(ConsoleAppearance.canvas(colorScheme))
         .onReceive(NotificationCenter.default.publisher(
             for: consoleCommandNotification)) { notification in
             guard notification.object as? String == "exec:" + containerID,
@@ -1227,6 +1260,7 @@ private struct WindowTabbingConfigurator: NSViewRepresentable {
 }
 
 private struct DetachedConsoleView: View {
+    @Environment(\.colorScheme) private var colorScheme
     let session: ConsoleSession
     @State private var logFollowing = true
 
@@ -1244,8 +1278,7 @@ private struct DetachedConsoleView: View {
             }
         }
         .frame(minWidth: 450, minHeight: 220)
-        .background(ConsoleAppearance.canvas)
-        .environment(\.colorScheme, .dark)
+        .background(ConsoleAppearance.canvas(colorScheme))
         .background(WindowTabbingConfigurator())
         .navigationTitle(session.label)
         .toolbar {
@@ -1290,9 +1323,9 @@ private struct ModernInspectorCard<Content: View>: View {
     let content: Content
     init(@ViewBuilder content: () -> Content) { self.content = content() }
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) { content }
+        VStack(alignment: .leading, spacing: 8) { content }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(13)
+            .padding(10)
             .background(
                 Color(nsColor: .controlBackgroundColor),
                 in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -1356,7 +1389,7 @@ private struct InspectorAreaChart: View {
                         lineWidth: 1.8, lineCap: .round, lineJoin: .round))
             }
         }
-        .frame(height: 55)
+        .frame(height: 32)
         .accessibilityLabel(cpu ? "CPU 使用历史曲线" : "内存占比历史曲线")
     }
     #else
@@ -1382,7 +1415,7 @@ private struct InspectorAreaChart: View {
         .chartXAxis(.hidden)
         .chartYAxis(.hidden)
         .chartYScale(domain: 0...ceiling)
-        .frame(height: 55)
+        .frame(height: 32)
         .accessibilityLabel(cpu ? "CPU 使用历史曲线" : "内存占比历史曲线")
     }
     #endif
@@ -1406,7 +1439,7 @@ private struct InspectorMetricTile: View {
             InspectorAreaChart(points: points, cpu: cpu, accent: accent)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(9)
+        .padding(6)
         .background(Color.primary.opacity(0.028),
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
@@ -1724,8 +1757,7 @@ private struct ModernInspectorView: View {
         Group {
             if let item {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
-                        overviewCard(item)
+                    VStack(alignment: .leading, spacing: 8) {
                         resourceCard(item)
                         networkStorageCard(item)
                         environmentCard()
@@ -1741,7 +1773,7 @@ private struct ModernInspectorView: View {
                             .textSelection(.enabled)
                             .padding(.horizontal, 4)
                     }
-                    .padding(12)
+                    .padding(9)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .background(Color(nsColor: .windowBackgroundColor))
@@ -1822,6 +1854,7 @@ private enum ContainerDetailTab: String, CaseIterable, Identifiable {
 
 /// Searchable, bounded Docker log snapshots in a padded charcoal card.
 private struct EmbeddedContainerLogsView: View {
+    @Environment(\.colorScheme) private var colorScheme
     let containerID: String
     let isActive: Bool
     @StateObject private var session = ContainerLogSession()
@@ -1876,7 +1909,8 @@ private struct EmbeddedContainerLogsView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)
             .frame(height: 36)
-            .background(ConsoleAppearance.toolbar)
+            .background(ConsoleAppearance.toolbar(colorScheme))
+            Divider()
             if let error = session.error {
                 Text(error).font(.system(size: 10)).foregroundStyle(.orange)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1886,11 +1920,7 @@ private struct EmbeddedContainerLogsView: View {
                               following: session.following && query.isEmpty)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(ConsoleAppearance.canvas)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .stroke(Color.white.opacity(0.07), lineWidth: 1))
-        .environment(\.colorScheme, .dark)
+        .background(ConsoleAppearance.canvas(colorScheme))
         .task(id: "\(session.tailLines)-\(isActive)") {
             while !Task.isCancelled {
                 if isActive && session.following {
@@ -1907,6 +1937,7 @@ private struct EmbeddedContainerLogsView: View {
 /// Overview/Logs/Terminal only changes visibility; SwiftTerm's NSView and PTY
 /// are not dismantled by tab switches or by selecting another container.
 private struct ContainerWorkspaceDetail: View {
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var model: MobyModel
     @Environment(\.openWindow) private var openWindow
     let container: ContainerItem
@@ -1957,17 +1988,14 @@ private struct ContainerWorkspaceDetail: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)
             .frame(height: 34)
-            .background(ConsoleAppearance.toolbar)
+            .background(ConsoleAppearance.toolbar(colorScheme))
+            Divider()
             ExecTerminalView(containerID: containerID,
                 containerName: model.containers.first(where: { $0.Id == containerID })?.title
                     ?? String(containerID.prefix(12)))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(ConsoleAppearance.canvas)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .stroke(Color.white.opacity(0.07), lineWidth: 1))
-        .environment(\.colorScheme, .dark)
+        .background(ConsoleAppearance.canvas(colorScheme))
     }
 
     private var detailHeader: some View {
@@ -2046,14 +2074,12 @@ private struct ContainerWorkspaceDetail: View {
                 ForEach(loadedLogIDs.sorted(), id: \.self) { id in
                     EmbeddedContainerLogsView(
                         containerID: id, isActive: activeTab == .logs && container.Id == id)
-                        .padding(12)
                         .opacity(activeTab == .logs && container.Id == id ? 1 : 0)
                         .allowsHitTesting(activeTab == .logs && container.Id == id)
                         .accessibilityHidden(activeTab != .logs || container.Id != id)
                 }
                 ForEach(loadedTerminalIDs.sorted(), id: \.self) { id in
                     terminalCard(id)
-                        .padding(12)
                         .opacity(activeTab == .terminal && container.Id == id ? 1 : 0)
                         .allowsHitTesting(activeTab == .terminal && container.Id == id)
                         .accessibilityHidden(activeTab != .terminal || container.Id != id)
@@ -2072,13 +2098,76 @@ private struct ContainerWorkspaceDetail: View {
     }
 }
 
+/// Mail-style 44pt native list row: identity first, hover-only controls.
+private struct CompactContainerRow: View {
+    let item: ContainerItem
+    let onAction: (String) -> Void
+    @State private var hovered = false
+
+    private var portHint: String {
+        guard let port = item.Ports?.first(where: { $0.PublicPort != nil })?.PublicPort else {
+            return ""
+        }
+        return ":\(port)"
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "shippingbox.fill")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 24, height: 24)
+                .background(Color.accentColor.opacity(0.085),
+                            in: RoundedRectangle(cornerRadius: 6))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                Text(item.Image ?? "—")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+            if hovered {
+                Button {
+                    onAction(item.State == "running" ? "stop" : "start")
+                } label: {
+                    Image(systemName: item.State == "running" ? "stop.fill" : "play.fill")
+                }
+                .help(item.State == "running" ? "停止" : "启动")
+                Button { onAction("exec") } label: {
+                    Image(systemName: "terminal")
+                }
+                .disabled(item.State != "running")
+                .help("打开终端")
+            } else {
+                VStack(alignment: .trailing, spacing: 5) {
+                    Circle()
+                        .fill(item.State == "running" ? Color.green : Color.gray)
+                        .frame(width: 7, height: 7)
+                    if !portHint.isEmpty {
+                        Text(portHint)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(height: 40)
+        .contentShape(Rectangle())
+        .onHover { hovered = $0 }
+    }
+}
+
 private struct RootView: View {
     @EnvironmentObject private var model: MobyModel
     @State private var selectedContainerIDs = Set<String>()
     @State private var selectedInspectorID: String?
-    @State private var hoveredActionRowID: String?
     @State private var showInspector = true
-    @State private var tableSortOrder = [KeyPathComparator(\ContainerItem.title)]
     @State private var activeDetailTab: ContainerDetailTab = .overview
     @State private var loadedLogIDs = Set<String>()
     @State private var loadedTerminalIDs = Set<String>()
@@ -2105,8 +2194,12 @@ private struct RootView: View {
                 }
             }
             .listStyle(.sidebar)
-            .safeAreaInset(edge: .bottom, spacing: 0) { sidebarEngineStatus }
-            .navigationSplitViewColumnWidth(min: 185, ideal: 215, max: 250)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                sidebarEngineStatus
+                    .onTapGesture { showVMPopover.toggle() }
+                    .popover(isPresented: $showVMPopover) { vmResourcePopover }
+            }
+            .navigationSplitViewColumnWidth(min: 160, ideal: 175, max: 200)
             .navigationTitle("Kiri - Moby")
         } detail: {
             Group {
@@ -2131,24 +2224,6 @@ private struct RootView: View {
         }
         .searchable(text: $model.search, placement: .toolbar, prompt: "搜索容器、镜像…")
         .toolbar {
-            ToolbarItem(placement: .automatic) {
-                Button { showVMPopover.toggle() } label: {
-                    HStack(spacing: 7) {
-                        Circle()
-                            .fill(model.online ? Color.green : Color.secondary)
-                            .frame(width: 7, height: 7)
-                        Text(model.online ?
-                             "VM 运行中 · \(liveMemoryLabel)" : "VM 已停止")
-                            .font(.system(size: 12, weight: .medium, design: .rounded))
-                            .lineLimit(1)
-                    }
-                    .padding(.horizontal, 6)
-                    .frame(minWidth: 122, minHeight: 24)
-                }
-                .buttonStyle(.bordered)
-                .help("查看虚拟机 CPU、内存及快捷操作")
-                .popover(isPresented: $showVMPopover) { vmResourcePopover }
-            }
             ToolbarItemGroup(placement: .automatic) {
                 if model.page == .containers {
                     Menu {
@@ -2182,7 +2257,7 @@ private struct RootView: View {
             }
         }
         .font(.system(size: 12))
-        .frame(minWidth: 850, minHeight: 570)
+        .frame(minWidth: 820, minHeight: 520)
         .task {
             model.begin()
             #if KIRI_UI_PREVIEW
@@ -2821,15 +2896,12 @@ private struct RootView: View {
         .help("选择容器")
     }
 
-    // SwiftUI Table maps to NSTableView on macOS: adjustable column widths,
-    // keyboard navigation, native selection, heading sort, and context menus.
-    // Native NSTableView backed five-column presentation: dimensions belong
-    // in the right Inspector, not duplicated in a 7-column table.
+    // Mail-style native container list, with details in the third column.
     // Only Containers uses an inner HSplitView. VM and Settings stay full width.
     private var containers: some View {
         HSplitView {
-            containerTable
-                .frame(minWidth: 380, idealWidth: 650, maxWidth: .infinity,
+            containerList
+                .frame(minWidth: 230, idealWidth: 250, maxWidth: 260,
                        maxHeight: .infinity)
             if showInspector {
                 if let selected = model.containers.first(where: {
@@ -2850,67 +2922,64 @@ private struct RootView: View {
                         }
                     )
                     .environmentObject(model)
-                    .frame(minWidth: 340, idealWidth: 420, maxWidth: 740,
+                    .frame(minWidth: 420, idealWidth: 500, maxWidth: .infinity,
                            maxHeight: .infinity)
                 } else {
                     ContentUnavailableView("选择一个容器",
                         systemImage: "sidebar.right",
                         description: Text("在列表中选择容器以查看概览、日志与终端。"))
-                        .frame(minWidth: 340, idealWidth: 420, maxWidth: 740,
+                        .frame(minWidth: 420, idealWidth: 500, maxWidth: .infinity,
                                maxHeight: .infinity)
                 }
             }
         }
     }
 
-    private var containerTable: some View {
-        let sorted = filteredContainers.sorted(using: tableSortOrder)
-        return Table(sorted, selection: $selectedContainerIDs, sortOrder: $tableSortOrder) {
-            TableColumn("容器", value: \.title) { item in
-                ContainerRowView(item: item)
-                    .onTapGesture(count: 2) {
-                        if item.State == "running" {
-                            openConsole(.exec, containerID: item.Id, name: item.title)
-                        }
+    private var containerList: some View {
+        List(selection: $selectedContainerIDs) {
+            ForEach(filteredContainers.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }) { item in
+                CompactContainerRow(item: item, onAction: { action in
+                    if action == "exec" {
+                        openConsole(.exec, containerID: item.Id, name: item.title)
+                    } else {
+                        containerOp(action, item)
                     }
-            }
-            .width(min: 185, ideal: 330)
-            TableColumn("状态", value: \.stateSortName) { item in
-                containerStateBadge(item)
-            }
-            .width(min: 86, ideal: 90)
-            TableColumn("操作") { item in
-                containerButtons(item)
-            }
-            .width(min: 105, ideal: 112)
-        }
-        .contextMenu(forSelectionType: String.self) { selection in
-            if !selection.isEmpty {
-                Button("启动选中的 \(selection.count) 个容器") {
-                    for id in selection {
-                        model.perform(["container", "start", id],
-                                      title: "Start container", showResult: false)
+                })
+                .tag(item.Id)
+                .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
+                .contextMenu {
+                    Button("概览") {
+                        selectedContainerIDs = [item.Id]
+                        selectedInspectorID = item.Id
+                        activeDetailTab = .overview
                     }
-                }
-                Button("停止选中的 \(selection.count) 个容器") {
-                    for id in selection {
-                        model.perform(["container", "stop", id],
-                                      title: "Stop container", showResult: false)
+                    Button("终端") {
+                        openConsole(.exec, containerID: item.Id, name: item.title)
                     }
-                }
-                Divider()
-                Button("删除选中的 \(selection.count) 个容器", role: .destructive) {
-                    if model.confirm("删除所选的 \(selection.count) 个容器？",
-                                     detail: "强制删除将停止并移除容器，不会自动删除命名数据卷。") {
-                        for id in selection {
-                            model.perform(["container", "remove", id],
-                                          title: "Remove container", showResult: false)
+                    .disabled(item.State != "running")
+                    Button("日志") {
+                        openConsole(.logs, containerID: item.Id, name: item.title)
+                    }
+                    Divider()
+                    Button(item.State == "running" ? "停止" : "启动") {
+                        containerOp(item.State == "running" ? "stop" : "start", item)
+                    }
+                    Button("重启") { containerOp("restart", item) }
+                        .disabled(item.State != "running")
+                    Button(item.State == "paused" ? "恢复" : "暂停") {
+                        containerOp(item.State == "paused" ? "unpause" : "pause", item)
+                    }
+                    Divider()
+                    Button("删除容器", role: .destructive) {
+                        if model.confirm("删除 \\(item.title)？",
+                                         detail: "将移除容器，但不会自动删除命名数据卷。") {
+                            containerOp("remove", item)
                         }
                     }
                 }
             }
         }
-        .tableStyle(.inset(alternatesRowBackgrounds: false))
+        .listStyle(.inset)
     }
 
     private var images: some View {
@@ -3426,7 +3495,7 @@ private struct KiriMobyNativeApp: App {
         WindowGroup("Kiri Moby") {
             RootView().environmentObject(model)
         }
-        .defaultSize(width: 1440, height: 900)
+        .defaultSize(width: 940, height: 600)
         .windowToolbarStyle(.unified)
 
         .commands {

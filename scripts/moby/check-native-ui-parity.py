@@ -45,13 +45,15 @@ checks = [
     ('LinearGradient(', "Gradient area charts"),
     ('CopyableInspectorTag(', "Copyable native port and mount tags"),
     ('InspectorEnvironmentRow(entry:', "Per-key secret masking controls"),
-    ('ContainerRowView(item:', "Two-line service identity cell"),
+    ('CompactContainerRow(item:', "Compact Mail-style container row"),
+    ('List(selection: $selectedContainerIDs)', "Native compact container list"),
+    ('.onHover { hovered = $0 }', "Hover-only container actions"),
+    ('.defaultSize(width: 940, height: 600)', "Compact default window"),
 
     ('InspectorAreaChart(', "Real stats time-series visualizations"),
     ('statsHistory', "Bounded history from live Docker stats"),
     ('ContainerInspectDetails: Decodable', "Read-only Docker inspect details"),
     ('Text("Kiri 私有 Docker · 默认 Context 不变")', "Private Docker context in sidebar"),
-    ('.tableStyle(.inset(alternatesRowBackgrounds: false))', "Disable blank zebra stripes"),
     ('iconAction("停止", icon: "stop.circle")', "Borderless SF Symbol container actions"),
     ('private var sidebarEngineStatus: some View', "Sidebar status view"),
 
@@ -73,21 +75,13 @@ checks = [
     ('NativeLogTextView: NSViewRepresentable', "Incremental NSTextView log renderer"),
     ('ConsoleAppearance.canvas', "Consistent charcoal console canvas"),
     ('ConsoleAppearance.toolbar', "Card-scoped dark console controls"),
-    ('CompactContainerMetrics(stats:', "Compact CPU/RAM-only resource cells"),
     ('LabeledContent("网络接收（累计）"', "Network and disk moved into detail popover"),
     ('String(published)', "Port number grouping disabled"),
 
     ('view.usesFindBar = true', "AppKit native find bar"),
     ('storage.append(NSAttributedString(', "Incremental log text insertion"),
-    ('Table(sorted, selection: $selectedContainerIDs, sortOrder: $tableSortOrder)', "Native NSTableView backed container table"),
-    ('TableColumn("容器"', "Sortable container name"),
-    ('TableColumn("状态"', "Sortable container state"),
-    ('containerResourceCell(container)', "Compose resource cells"),
     ('model.refreshContainerStats()', "Periodic Docker stats refresh"),
     ('ContainerWorkspaceDetail(', "Ports, mounts and metadata live in detail pane"),
-    ('TableColumn("操作"', "Native operations column"),
-    ('.contextMenu(forSelectionType: String.self)', "Native batch context menu"),
-    ('"删除选中的', "Multi-selection delete confirmation"),
     ('containerOp("start"', "Start container"),
     ('containerOp("stop"', "Stop container"),
     ('containerOp("restart"', "Restart container"),
@@ -132,17 +126,13 @@ if ".safeAreaInset(edge: .bottom, spacing: 0) { footer }" in NEW:
 if ".tableStyle(.inset(alternatesRowBackgrounds: true))" in NEW:
     errors.append("Old blank zebra table stripes reintroduced")
 
-# The AppKit Table's visual column order should remain metadata first and
-# actions at the far right, independent of the other Compose table.
-native_table = NEW.split('return Table(sorted, selection:', 1)[-1].split(
-    '.contextMenu(forSelectionType:', 1)[0]
-native_columns = re.findall(r'TableColumn\("([^"]+)"', native_table)
-expected_columns = [
-    "容器", "状态", "操作"
-]
-if native_columns != expected_columns:
-    errors.append(
-        f"Container native Table columns out of order: {native_columns!r}")
+# Containers deliberately use a narrow headerless List rather than Table.
+if "Table(sorted, selection: $selectedContainerIDs" in NEW:
+    errors.append("Wide container Table returned")
+if ".environment(\\.colorScheme, .dark)" in NEW:
+    errors.append("Console must follow system appearance")
+if "overviewCard(item)\n                        resourceCard(item)" in NEW:
+    errors.append("Duplicate container identity card returned")
 
 # SwiftUI LocalizedStringKey interpolates Int with grouping separators.
 if 'Button("localhost:\\(published)' in NEW:
