@@ -117,7 +117,7 @@ if [ "$idle_drop_caches" = 1 ]; then
         running="$(docker --host unix:///run/docker.sock ps -q 2>/dev/null)" || exit 0
         [ -z "$running" ] || exit 0
         before="$(awk '$1 == "Cached:" { print $2; exit }' /proc/meminfo)"
-        if printf '1\\n' > /proc/sys/vm/drop_caches; then
+        if printf '1\n' > /proc/sys/vm/drop_caches; then
             after="$(awk '$1 == "Cached:" { print $2; exit }' /proc/meminfo)"
             log "Memory lab: idle file-cache eviction once, Cached ${before:-?} -> ${after:-?} KiB; verify macOS Physical footprint separately"
         else

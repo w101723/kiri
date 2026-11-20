@@ -23,7 +23,7 @@ rss() {
       case "$comm" in
         *com.apple.Virtualization.VirtualMachine*)
           footprint="$(vmmap -summary "$pid" 2>/dev/null | grep -m 1 '^Physical footprint:' || true)"
-          [ -z "$footprint" ] || printf 'PID %s: %s\\n' "$pid" "$footprint"
+          [ -z "$footprint" ] || printf 'PID %s: %s\n' "$pid" "$footprint"
           ;;
       esac
     done
