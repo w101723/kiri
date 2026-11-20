@@ -72,7 +72,8 @@ codesign --verify --deep --strict --verbose=2 "$app"
 codesign -d --extract-certificates="$work/leaf-" "$app" >/dev/null 2>&1
 [[ -s "$work/leaf-0" ]] || { echo "No signer certificate attached to app" >&2; exit 2; }
 fingerprint="$(shasum -a 256 "$work/leaf-0" | awk '{print $1}')"
-if [[ "${fingerprint,,}" != "${KIRI_PERSONAL_SIGN_CERT_SHA256,,}" ]]; then
+expected_sha="$(printf '%s' "$KIRI_PERSONAL_SIGN_CERT_SHA256" | tr '[:upper:]' '[:lower:]')"
+if [[ "$fingerprint" != "$expected_sha" ]]; then
   echo "PERSONAL SIGNER MISMATCH: certificate differs from pinned secret!" >&2
   exit 2
 fi
