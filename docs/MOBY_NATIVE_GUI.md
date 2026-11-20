@@ -21,7 +21,15 @@ Docker context, or duplicated container metadata database.
 - Overview: real Docker Engine version, containers/images/volumes counts,
   configured maximum Guest RAM and live balloon target.
 - Containers: search, list, start/stop/restart/pause/unpause, logs, exec,
-  inspect, published localhost ports and remove.
+  inspect, published localhost ports and remove. The table also displays live
+  Docker CPU utilization (multi-core percentages can exceed 100%), active
+  working-set RAM and per-container memory limits with progress indication,
+  cumulative network receive/transmit and disk read/write totals; hover for PIDs.
+  Stopped containers show no live utilization rather than misleading zeroes.
+  Telemetry is fetched via `/containers/{id}/stats?stream=false` every five
+  seconds only on Containers and Compose, separately from the Docker list refresh.
+  At most 64 containers and six stats requests at a time are sampled, each with
+  a 5-second socket timeout. Stats errors do not block container actions.
 - Images: search, pull, run, inspect, remove.
 - Volumes and networks: list, create, inspect, remove.
 - Compose: automatically discover projects from `com.docker.compose.project` labels,
