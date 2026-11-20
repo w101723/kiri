@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "xtask"]
+# Only macOS Apple Silicon host packages; Linux ARM64 guest is built
+# separately with scripts/moby/build-guest.sh.
+members = ["crates/kiri", "crates/kiri-image", "crates/kiri-proto",
+    "crates/kiri-share-proto", "crates/kiri-vmm", "crates/kiri-moby-bridge", "xtask"]
 
 [workspace.package]
 # Not a release number: a release takes its version from its tag (v0.2.0),
