@@ -97,3 +97,70 @@ Important:
   with VZ (VirtioFS, Rosetta x86_64, NAT/port publishing, vsock transport,
   graceful shutdown, same-commit packaging) is still needed before the GUI
   engine can switch over.
+
+
+## RAM-only memory A/B lab (memory-reporting-lab branch)
+
+This branch adds a **separate experimental Guest build** and a macOS Physical
+footprint sampler. Production Kiri Moby VZ, Docker Engine, rootfs and user
+Docker data are unchanged.
+
+GitHub Actions workflow: .github/workflows/moby-libkrun-lab.yml.
+
+Download these two artifacts:
+- experimental-libkrun2-guest-mmio-arm64: Image, initramfs.cpio,
+  kernel.config and SHA256SUMS. Its throwaway ARM64 kernel includes
+  CONFIG_VIRTIO_MMIO, CONFIG_VIRTIO_BALLOON and CONFIG_PAGE_REPORTING.
+  Its initramfs is just BusyBox/musl and a RAM-only /init; no persistent disk.
+- experimental-libkrun2-ram-lab-arm64: signed ARM64 lab runner, capability
+  probe and measure-libkrun-lab-macos.sh.
+
+**Important prerequisite:** neither artifact bundles libkrun.dylib.
+Supply a separately trusted libkrun v2.x Apple Silicon library. Homebrew
+libkrun 1.x is not ABI-compatible with this v2 experiment.
+
+### Obtain the library from a pinned source revision
+
+The C ABI in the experimental code was authored against libkrun commit
+3d0e61d1293f39562f757cf45ae6673cf2663100. Verify that upstream revision
+and its prerequisites before compiling; do not use a moving main branch.
+The upstream macOS build guide describes Rust, the Linux musl target, lld and
+xz. An isolated checkout can start as follows:
+
+    git clone https://github.com/libkrun/libkrun.git /tmp/kiri-libkrun-v2
+    cd /tmp/kiri-libkrun-v2
+    git checkout 3d0e61d1293f39562f757cf45ae6673cf2663100
+    rustup target add aarch64-unknown-linux-musl
+    make
+
+Additional build dependencies may be required. No tool in this branch
+automatically installs these dependencies on the user's Mac. Never load an
+untrusted library just to test memory recovery.
+
+### Run Default vs Replace under identical conditions
+
+Extract both workflow artifacts to local absolute paths. Verify the Guest's
+SHA256SUMS, then execute the capability probe:
+
+    /absolute/runner/kiri-libkrun2-symbol-probe /absolute/trusted/libkrun.dylib
+
+Run the exact same Guest and library twice, with each mode:
+
+    KIRI_LIBKRUN_REPORTING_MODE=default bash scripts/moby/measure-libkrun-lab-macos.sh \
+      /absolute/runner/kiri-libkrun2-ram-lab /absolute/trusted/libkrun.dylib \
+      /absolute/guest/Image /absolute/guest/initramfs.cpio
+
+    KIRI_LIBKRUN_REPORTING_MODE=replace bash scripts/moby/measure-libkrun-lab-macos.sh \
+      /absolute/runner/kiri-libkrun2-ram-lab /absolute/trusted/libkrun.dylib \
+      /absolute/guest/Image /absolute/guest/initramfs.cpio
+
+Each call produces a timestamped guest.log plus footprint.csv, sampling
+the actual libkrun PID via vmmap -summary every four seconds for 112 seconds.
+The RAM-only Guest emits READY, ALLOCATING, ALLOCATED and FREED milestones.
+
+For a useful result: compare the Physical footprint before allocation,
+after allocating/touching 256 MiB, and after Guest frees it, for both modes.
+The Replace mode should show a repeatable drop not seen in Default. Check
+macOS compression/swap effects too. Startup failure, missing milestones or
+empty vmmap values are not evidence. This lab proves neither 200 MB idle
+Docker VM nor Docker/Compose/Buildx parity by itself.
