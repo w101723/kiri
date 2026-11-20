@@ -13,6 +13,10 @@ for key in "${keys[@]}"; do
   [[ -z "${!key:-}" ]] || present=$((present+1))
 done
 if ((present == 0)); then
+  if [[ "${KIRI_REQUIRE_PERSONAL_SIGNING:-false}" == true ]]; then
+    echo "RELEASE BLOCKED: personal signing is required but P12 signing secrets are missing" >&2
+    exit 2
+  fi
   echo "No persistent personal signer: development build remains ad-hoc (signature identity changes on rebuild)."
   [[ -z "${GITHUB_OUTPUT:-}" ]] || echo "signed=false" >> "$GITHUB_OUTPUT"
   exit 0
