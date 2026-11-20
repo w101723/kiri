@@ -65,6 +65,43 @@ The user must compare `STAT` before/after an idle interval and macOS
 virtualization service resident memory. This is **not a measured memory win**
 and is **not a change of VMM backend**.
 
+## 2026-11-20: retest after governor shrink fix
+
+The owner installed the newer Moby App and tested **one running Ubuntu
+container** (so the screenshots are not a zero-container idle sample). The
+control endpoint returned in chronological order:
+
+```json
+{"balloon_target_mib":1536,"guest_total_kib":4030296,"guest_available_kib":1410096,"host_reclaimed_bytes":null}
+{"balloon_target_mib":1024,"guest_total_kib":4030296,"guest_available_kib":632876,"host_reclaimed_bytes":null}
+{"balloon_target_mib":1024,"guest_total_kib":4030296,"guest_available_kib":609660,"host_reclaimed_bytes":null}
+```
+
+**Confirmed:** the online governor no longer stalls at 1536 MiB; it contracts
+to its 1024 MiB safety floor while a container remains running. **Not
+confirmed:** effective return of macOS physical memory. Activity Monitor
+showed **870.2 MB** for the `kiri-moby-host` virtualization service at
+the same session, more than the earlier 440 MB and 684.6 MB snapshots under
+different container workloads. The `host_reclaimed_bytes:null` STAT field
+means this measurement is not implemented; **it does not mean a verified
+reclamation value of zero**.
+
+There is corroborating external evidence of Apple VZ Guest/Host reclamation
+mismatch in Lima issue #2789 and an independent macOS 26 test. Apple documents
+balloon cooperation as conditional; a shrink target is not equivalent to a
+host footprint measurement. See:
+
+- https://github.com/lima-vm/lima/issues/2789
+- https://github.com/thewesjohnson/macos-virtio-balloon-test
+- https://developer.apple.com/documentation/virtualization/vzvirtiotraditionalmemoryballoondevice/targetvirtualmachinememorysize
+
+Further reducing the VM floor while Ubuntu/Docker are running could cause
+OOMs. The next improvement must be proven using a host-memory A/B test:
+VZ versus a separate libkrun free-page-reporting VM, using the same Guest,
+image/volume workload and Linux MemAvailable measurement. Recent libkrun
+upstream introduced an explicit macOS page-replacement reclamation mode,
+but this does not make it a drop-in backend for Kiri.
+
 ## What is still needed for OrbStack-like memory return
 
 Apple documents that VZ's balloon support is partial and released Guest RAM
