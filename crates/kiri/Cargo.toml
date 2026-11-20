@@ -25,13 +25,11 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem",
 # regex-lite: RE2 syntax like Go's regexp, without the Unicode tables' size.
 regex-lite = "0.1"
 
-[target.'cfg(target_os = "macos")'.dependencies]
-libc = "0.2"
-
 [target.'cfg(unix)'.dependencies]
 kiri-vmm = { path = "../kiri-vmm" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
 block2 = "0.6.2"
 dispatch2 = "0.3.1"
 objc2 = "0.6.5"
