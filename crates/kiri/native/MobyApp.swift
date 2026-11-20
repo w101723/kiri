@@ -949,116 +949,187 @@ private struct RootView: View {
         .background(KiriPalette.bg(model.isLight))
     }
 
+    // Same columns, row density and inline controls as moby.html.
     private var images: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("\(model.images.count) 个镜像").foregroundStyle(.secondary)
+                Text("镜像").font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Button("拉取镜像") {
-                    if let name = model.ask("拉取 Docker 镜像", placeholder: "alpine:3.22") {
-                        model.perform(["pull",name], title: "Pull image")
+                    if let name = model.ask("镜像名称", placeholder: "alpine:3.22") {
+                        model.perform(["pull", name], title: "Pull image", showResult: false)
                     }
                 }.buttonStyle(.borderedProminent)
-            }.padding(16)
-            List(model.images.filter { match([$0.title, $0.Id]) }) { image in
-                HStack {
-                    Image(systemName: "square.stack.3d.up.fill").foregroundStyle(.secondary)
-                    VStack(alignment:.leading) {
-                        Text(image.title).fontWeight(.medium)
-                        Text(String(image.Id.prefix(22))).font(.caption).foregroundStyle(.secondary)
+            }.padding(.horizontal, 20).frame(height: 47)
+            ScrollView([.horizontal, .vertical]) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 0) {
+                        tableTitle("镜像", width: 370)
+                        tableTitle("大小", width: 130)
+                        tableTitle("创建时间", width: 160)
+                        tableTitle("操作", width: 265)
                     }
-                    Spacer()
-                    Text(sizeLabel(image.Size)).font(.caption).foregroundStyle(.secondary)
-                    Menu {
-                        Button("运行") { model.perform(["run",image.title], title:"Run container") }
-                        Button("详情") {
-                            model.action("inspect",
-                                fields:["kind":"images","id":image.Id],title:"Inspect image")
-                        }
-                        Divider()
-                        Button("删除", role:.destructive) {
-                            if model.confirm("删除镜像？",detail:image.title) {
-                                model.perform(["rmi",image.Id],title:"Remove image")
-                            }
-                        }
-                    } label: { Image(systemName:"ellipsis.circle") }
-                        .menuStyle(.borderlessButton).frame(width:30)
-                }.padding(.vertical,7)
-            }.listStyle(.inset)
+                    tableDivider
+                    ForEach(model.images.filter { match([$0.title, $0.Id]) }) { item in
+                        HStack(spacing: 0) {
+                            tableValue(
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(item.RepoTags?.joined(separator: ", ") ?? "<none>")
+                                        .foregroundStyle(KiriPalette.link(model.isLight))
+                                        .fontWeight(.semibold).lineLimit(2)
+                                    Text(String(item.Id.dropFirst(min(item.Id.count, 7)).prefix(12)))
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                                }, width: 370)
+                            tableValue(Text(sizeLabel(item.Size)), width: 130)
+                            tableValue(Text(dateLabel(item.Created)), width: 160)
+                            tableValue(
+                                HStack(spacing: 5) {
+                                    smallAction("运行") {
+                                        model.perform(["run", item.title], title: "Run container",
+                                                      showResult: false)
+                                    }
+                                    smallAction("详情") {
+                                        model.action("inspect",
+                                            fields:["kind":"images","id":item.Id],title:"inspect")
+                                    }
+                                    smallAction("删除", destructive: true) {
+                                        if model.confirm("确定删除镜像 \(item.title)？",
+                                                         detail: "已有容器使用时 Docker 会拒绝删除。") {
+                                            model.perform(["rmi", item.title], title: "Remove image",
+                                                          showResult: false)
+                                        }
+                                    }
+                                }, width: 265)
+                        }.frame(minHeight: 56)
+                        tableDivider
+                    }
+                    if model.images.isEmpty {
+                        Text("暂无数据").foregroundStyle(KiriPalette.muted(model.isLight))
+                            .frame(maxWidth: .infinity, minHeight: 130)
+                    }
+                }.frame(minWidth: 973)
+            }
         }
     }
 
     private var volumes: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("\(model.volumes.count) 个数据卷").foregroundStyle(.secondary)
+                Text("数据卷").font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Button("创建 Volume") {
                     if let name = model.ask("新 Volume 名称") {
-                        model.action("create_volume",fields:["name":name],title:"Create volume")
+                        model.action("create_volume", fields:["name":name],
+                                     title:"Create volume")
                     }
                 }.buttonStyle(.borderedProminent)
-            }.padding(16)
-            List(model.volumes.filter { match([$0.Name,$0.Mountpoint ?? ""]) }) { item in
-                HStack {
-                    Image(systemName:"externaldrive").foregroundStyle(.secondary)
-                    VStack(alignment:.leading) {
-                        Text(item.Name).fontWeight(.medium)
-                        Text(item.Mountpoint ?? "local")
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }.padding(.horizontal, 20).frame(height: 47)
+            ScrollView([.horizontal, .vertical]) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 0) {
+                        tableTitle("名称", width: 250)
+                        tableTitle("驱动", width: 110)
+                        tableTitle("路径", width: 420)
+                        tableTitle("操作", width: 170)
                     }
-                    Spacer()
-                    Text(item.Driver ?? "local").font(.caption).foregroundStyle(.secondary)
-                    Menu {
-                        Button("详情") {
-                            model.action("inspect",
-                                fields:["kind":"volumes","id":item.Name],title:"Inspect volume")
-                        }
-                        Button("删除",role:.destructive) {
-                            if model.confirm("删除 Volume \(item.Name)？",
-                                detail:"此操作可能永久删除数据。") {
-                                model.perform(["rmvol",item.Name],title:"Remove volume")
-                            }
-                        }
-                    } label: { Image(systemName:"ellipsis.circle") }
-                        .menuStyle(.borderlessButton).frame(width:30)
-                }.padding(.vertical,7)
-            }.listStyle(.inset)
+                    tableDivider
+                    ForEach(model.volumes.filter {
+                        match([$0.Name, $0.Driver ?? ""])
+                    }) { item in
+                        HStack(spacing: 0) {
+                            tableValue(
+                                Text(item.Name).foregroundStyle(KiriPalette.link(model.isLight))
+                                    .fontWeight(.semibold), width:250)
+                            tableValue(Text(item.Driver ?? "local"), width:110)
+                            tableValue(
+                                Text(item.Mountpoint ?? "—")
+                                    .font(.system(size: 11, design:.monospaced))
+                                    .lineLimit(2), width:420)
+                            tableValue(
+                                HStack(spacing: 5) {
+                                    smallAction("详情") {
+                                        model.action("inspect",
+                                            fields:["kind":"volumes","id":item.Name],title:"inspect")
+                                    }
+                                    smallAction("删除", destructive:true) {
+                                        if model.confirm("删除 Volume \(item.Name)？",
+                                                         detail:"可能永久丢失数据。") {
+                                            model.perform(["rmvol",item.Name],title:"Remove volume",
+                                                          showResult:false)
+                                        }
+                                    }
+                                },width:170)
+                        }.frame(minHeight: 53)
+                        tableDivider
+                    }
+                    if model.volumes.isEmpty {
+                        Text("暂无数据").foregroundStyle(KiriPalette.muted(model.isLight))
+                            .frame(maxWidth: .infinity, minHeight: 130)
+                    }
+                }.frame(minWidth: 998)
+            }
         }
     }
 
     private var networks: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("\(model.networks.count) 个网络").foregroundStyle(.secondary)
+                Text("网络").font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Button("创建网络") {
-                    if let name = model.ask("新网络名称") {
-                        model.action("create_network",fields:["name":name],title:"Create network")
+                    if let name = model.ask("网络名称") {
+                        model.action("create_network",fields:["name":name],
+                                     title:"Create network")
                     }
                 }.buttonStyle(.borderedProminent)
-            }.padding(16)
-            List(model.networks.filter { match([$0.Name,$0.Id]) }) { item in
-                HStack {
-                    Image(systemName:"network").foregroundStyle(.secondary)
-                    Text(item.Name).fontWeight(.medium)
-                    Spacer()
-                    Text(item.Driver ?? "bridge").font(.caption).foregroundStyle(.secondary)
-                    Menu {
-                        Button("详情") {
-                            model.action("inspect",
-                                fields:["kind":"networks","id":item.Id],title:"Inspect network")
-                        }
-                        Button("删除",role:.destructive) {
-                            if model.confirm("删除网络 \(item.Name)？",
-                                detail:"正在使用的网络无法删除。") {
-                                model.perform(["rmnet",item.Id],title:"Remove network")
-                            }
-                        }
-                    } label: { Image(systemName:"ellipsis.circle") }
-                        .menuStyle(.borderlessButton).frame(width:30)
-                }.padding(.vertical,7)
-            }.listStyle(.inset)
+            }.padding(.horizontal, 20).frame(height: 47)
+            ScrollView([.horizontal, .vertical]) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 0) {
+                        tableTitle("网络", width: 335)
+                        tableTitle("驱动", width: 170)
+                        tableTitle("范围", width: 170)
+                        tableTitle("操作", width: 195)
+                    }
+                    tableDivider
+                    ForEach(model.networks.filter { match([$0.Name, $0.Id]) }) { item in
+                        HStack(spacing: 0) {
+                            tableValue(
+                                VStack(alignment: .leading, spacing:4) {
+                                    Text(item.Name).foregroundStyle(KiriPalette.link(model.isLight))
+                                        .fontWeight(.semibold)
+                                    Text(String(item.Id.prefix(12)))
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                                },width:335)
+                            tableValue(Text(item.Driver ?? "—"),width:170)
+                            tableValue(Text(item.Scope ?? "—"),width:170)
+                            tableValue(
+                                HStack(spacing: 5) {
+                                    smallAction("详情") {
+                                        model.action("inspect",
+                                            fields:["kind":"networks","id":item.Id],title:"inspect")
+                                    }
+                                    if !["bridge","host","none"].contains(item.Name) {
+                                        smallAction("删除", destructive:true) {
+                                            if model.confirm("确定删除网络 \(item.Name)？",
+                                                             detail:"正在使用的网络无法删除。") {
+                                                model.perform(["rmnet",item.Id],
+                                                              title:"Remove network",showResult:false)
+                                            }
+                                        }
+                                    }
+                                },width:195)
+                        }.frame(minHeight:53)
+                        tableDivider
+                    }
+                    if model.networks.isEmpty {
+                        Text("暂无数据").foregroundStyle(KiriPalette.muted(model.isLight))
+                            .frame(maxWidth: .infinity, minHeight: 130)
+                    }
+                }.frame(minWidth: 918)
+            }
         }
     }
 
