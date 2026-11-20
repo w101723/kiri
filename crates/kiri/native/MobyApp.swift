@@ -1283,69 +1283,178 @@ private struct DetachedConsoleView: View {
 
 /// Simple SwiftUI history trace; the backend samples every five seconds,
 /// so there is no fake history until actual Docker stats arrive.
-private struct InspectorSparkline: View {
-    let samples: [ContainerHistoryPoint]
-    let cpu: Bool
-    let color: Color
-
+// Shared grouped surface. A macOS control background is intentionally
+// subtle; no Web-style thick borders or dead-white standalone cards.
+private struct ModernInspectorCard<Content: View>: View {
+    let content: Content
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
     var body: some View {
-        GeometryReader { geometry in
-            let values: [Double?] = samples.map {
-                cpu ? $0.cpuPercent : $0.memoryPercent
+        VStack(alignment: .leading, spacing: 12) { content }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(13)
+            .background(
+                Color(nsColor: .controlBackgroundColor),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
             }
-            let ceiling = max(100, values.compactMap { $0 }.max() ?? 100)
-            Path { path in
-                guard geometry.size.width > 0, geometry.size.height > 0 else { return }
-                var drawing = false
-                for (index, sample) in values.enumerated() {
-                    guard let sample else {
-                        drawing = false
-                        continue
-                    }
-                    let x = CGFloat(index) / CGFloat(max(1, values.count - 1)) *
-                        geometry.size.width
-                    let y = geometry.size.height * CGFloat(1 -
-                        min(ceiling, max(0, sample)) / ceiling)
-                    if drawing {
-                        path.addLine(to: CGPoint(x: x, y: y))
-                    } else {
-                        path.move(to: CGPoint(x: x, y: y))
-                        drawing = true
-                    }
-                }
-            }
-            .stroke(color, style: StrokeStyle(lineWidth: 1.8, lineCap: .round,
-                                               lineJoin: .round))
-        }
-        .frame(height: 49)
-        .background(Color.secondary.opacity(0.055))
-        .clipShape(RoundedRectangle(cornerRadius: 7))
-        .accessibilityLabel(cpu ? "CPU 使用历史" : "内存占用历史")
     }
 }
 
-private struct ContainerInspectorView: View {
+// Swift Charts: a quiet, gridless line with native gradient area.
+// Points are the real 5-second Docker stats history (max 60 values).
+private struct InspectorAreaChart: View {
+    let points: [ContainerHistoryPoint]
+    let cpu: Bool
+    let accent: Color
+
+    private var ceiling: Double {
+        max(100, points.compactMap {
+            cpu ? $0.cpuPercent : $0.memoryPercent
+        }.max() ?? 100)
+    }
+
+    var body: some View {
+        Chart(points) { point in
+            if let percent = cpu ? point.cpuPercent : point.memoryPercent {
+                AreaMark(
+                    x: .value("时间", point.timestamp),
+                    yStart: .value("基线", 0),
+                    yEnd: .value("使用率", percent))
+                    .interpolationMethod(.catmullRom)
+                    .foregroundStyle(LinearGradient(
+                        colors: [accent.opacity(0.25), accent.opacity(0.0)],
+                        startPoint: .top, endPoint: .bottom))
+                LineMark(
+                    x: .value("时间", point.timestamp),
+                    y: .value("使用率", percent))
+                    .interpolationMethod(.catmullRom)
+                    .lineStyle(StrokeStyle(lineWidth: 1.8, lineCap: .round))
+                    .foregroundStyle(accent)
+            }
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .chartYScale(domain: 0...ceiling)
+        .frame(height: 55)
+        .accessibilityLabel(cpu ? "CPU 使用历史曲线" : "内存占比历史曲线")
+    }
+}
+
+private struct InspectorMetricTile: View {
+    let title: String
+    let value: String
+    let points: [ContainerHistoryPoint]
+    let cpu: Bool
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.system(size: 10.5)).foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+            InspectorAreaChart(points: points, cpu: cpu, accent: accent)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(9)
+        .background(Color.primary.opacity(0.028),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+// Click the tag to copy its fully qualified path / port. The glyph appears
+// on hover, so read-only metadata does not look like a row of admin buttons.
+private struct CopyableInspectorTag: View {
+    let text: String
+    let copyValue: String
+    @State private var hovered = false
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(copyValue, forType: .string)
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(text)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 1)
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 10))
+                    .opacity(hovered ? 0.7 : 0)
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background(Color.primary.opacity(hovered ? 0.085 : 0.045),
+                        in: RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .help("点击复制：" + copyValue)
+        .onHover { hovered = $0 }
+    }
+}
+
+private struct InspectorEnvironmentRow: View {
+    let entry: String
+    @State private var revealed = false
+
+    private var parts: [String] {
+        entry.components(separatedBy: "=").count > 1
+            ? [String(entry.prefix(while: { $0 != "=" })),
+               String(entry.dropFirst((entry.firstIndex(of: "=")
+                   .map { entry.distance(from: entry.startIndex, to: $0) } ?? 0) + 1))]
+            : [entry, ""]
+    }
+    private var key: String { parts[0] }
+    private var value: String { parts[1] }
+    private var sensitive: Bool {
+        let name = key.uppercased()
+        return ["PASSWORD", "PASSWD", "SECRET", "TOKEN", "KEY",
+                "AUTH", "CREDENTIAL", "PRIVATE"].contains { name.contains($0) }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 7) {
+            Text(key)
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 104, alignment: .leading)
+                .lineLimit(2)
+            Text(sensitive && !revealed ? "••••••••" : value)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.primary)
+                .lineLimit(3)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if sensitive {
+                Button {
+                    revealed.toggle()
+                } label: {
+                    Image(systemName: revealed ? "eye.slash" : "eye")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help(revealed ? "隐藏此变量" : "仅显示此变量")
+                .accessibilityLabel(revealed ? "隐藏 \(key)" : "显示 \(key)")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ModernInspectorView: View {
     @EnvironmentObject private var model: MobyModel
     let item: ContainerItem?
+    let onAction: (String, ContainerItem) -> Void
     @State private var inspection: ContainerInspectDetails?
     @State private var inspectionError: String?
     @State private var loading = false
-    @State private var revealSensitive = false
-
-    private func envValue(_ text: String) -> String {
-        let split = text.split(separator: "=", maxSplits: 1,
-                               omittingEmptySubsequences: false)
-        guard split.count > 1 else { return "" }
-        let key = String(split[0]).uppercased()
-        let sensitive = ["PASSWORD", "SECRET", "TOKEN", "PRIVATE", "CREDENTIAL",
-                         "API_KEY", "ACCESS_KEY", "AUTH", "CERT", "PASSWD"]
-            .contains(where: key.contains)
-        return sensitive && !revealSensitive ? "••••••" : String(split[1])
-    }
-    private func envName(_ text: String) -> String {
-        String(text.split(separator: "=", maxSplits: 1,
-                          omittingEmptySubsequences: false).first ?? "")
-    }
 
     private func load(_ id: String) async {
         inspection = nil
