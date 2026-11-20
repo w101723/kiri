@@ -27,17 +27,9 @@ use mac as window;
 pub(crate) fn native_moby_command(args: &[String]) -> std::io::Result<()> {
     moby::native_command(args)
 }
-#[cfg(target_os = "linux")]
-mod gtk;
-#[cfg(target_os = "linux")]
-use gtk as window;
 pub use window::run;
 #[cfg(target_os = "macos")]
 use crate::{import, setup, update};
-#[cfg(target_os = "linux")]
-mod linux;
-#[cfg(target_os = "linux")]
-use linux::{import, setup, update};
 
 mod assemble;
 mod lang;
