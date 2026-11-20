@@ -54,9 +54,14 @@ Docker context, or duplicated container metadata database.
 - Logs use an AppKit NSTextView via NSViewRepresentable, with native find bar,
   disabled smart substitutions and incremental text updates. The bounded log
   fetching is still poll-based; no true stream has been implemented.
-- Exec continues to use a signed Kiri CLI-backed openpty transport and a
-  SwiftUI Text **line-oriented** renderer, NOT SwiftTerm or VT100/xterm emulation.
-  It does not yet support full-screen TUIs, ANSI cursor controls or PTY resize.
+- Exec is configured to use **SwiftTerm 1.20.0** in the production SwiftPM
+  executable, wrapping `LocalProcessTerminalView` in `NSViewRepresentable`.
+  SwiftTerm owns the PTY, ANSI/xterm rendering, keyboard handling and PTY
+  resize; it launches the already-signed bundled Kiri CLI, connecting through
+  Kiri's existing private Docker socket. The bare-swiftc CI visual fixture
+  intentionally falls back to the old line-oriented SwiftUI Text terminal.
+  The SwiftTerm-linked arm64 binary has its **own required CI build gate**;
+  only that gate proves the production native terminal compiles correctly.
 
 The Docker engine remains upstream Moby, and user state remains in
 ~/.kiri-moby/vm/data.img. The Host process and Apple VZ backend remain
