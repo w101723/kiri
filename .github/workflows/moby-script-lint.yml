@@ -30,6 +30,8 @@ jobs:
           bash -n scripts/moby/upgrade-host-macos.sh
           bash -n scripts/moby/install-milestone-macos.sh
           bash -n scripts/moby/sign-notarize-macos.sh
+          bash -n scripts/moby/sign-personal-macos.sh
+          bash -n scripts/moby/setup-personal-signing-macos.sh
           bash -n scripts/moby/install-local-macos.sh
           bash -n scripts/moby/package-dmg-macos.sh
           # On Linux the opt-in command must refuse to authorize a Mac app.
