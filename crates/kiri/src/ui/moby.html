@@ -2484,7 +2484,9 @@ nav button.active{color:var(--text)}
 #content .pill{display:inline-flex;border-radius:14px;border:1px solid var(--line);color:var(--muted);padding:4px 8px;font-size:11px}
 #content .pill.running{color:var(--moss)}
 #content .empty{padding:65px 12px;color:var(--muted);text-align:center}
-#content .card{border:1px solid var(--line);border-radius:11px;background:var(--panel);padding:20px;margin-bottom:14px}
+/* Upstream .card belongs to Compose's absolute-positioned canvas nodes.
+   Our Moby settings cards MUST reset its grid, positioning and fixed height. */
+#content .card{position:static;inset:auto;width:100%;height:auto;min-height:0;display:block;grid-template-columns:none;gap:0;align-content:normal;cursor:default;direction:inherit;transition:none;border:1px solid var(--line);border-radius:11px;background:var(--panel);padding:20px;margin-bottom:14px;box-sizing:border-box}
 #content .card h2{font-size:14px;margin:0 0 14px}
 #content .card p{color:var(--muted);line-height:1.7}
 #content .form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
@@ -2570,7 +2572,7 @@ html[data-moby-theme="light"]{
     <dl class="num">
       <dt data-i18n="Running">Running</dt><dd id="vm-running">—</dd>
       <dt data-i18n="CPUs">CPUs</dt><dd id="vm-cpus">—</dd>
-      <dt data-i18n="Memory">Memory</dt><dd id="vm-mem">—</dd>
+      <dt title="Balloon 目标，不是 Mac 已占用内存">Balloon</dt><dd id="vm-mem">—</dd>
       <div class="meter"><span id="vm-meter"></span></div>
       
       
@@ -2750,9 +2752,13 @@ function render(){
   d("vm-running").textContent=s.online?s.containers.filter(c=>c.State==="running").length:"—";
   d("vm-cpus").textContent=s.online?(s.info.NCPU||4):"—";
   const target=Number(s.memory.balloon_target_mib)||0,total=Number(s.info.MemTotal)||0;
+  // VZ's Balloon target is a guest limit, NOT host RSS or memory "used".
   d("vm-mem").textContent=s.online?(target?fmtBytes(target*1048576):"—")+(total?" / "+fmtBytes(total):""):"—";
+  d("vm-mem").title="Balloon 目标 / VM 内存上限；不代表 Mac 实际占用";
   d("vm-meter").style.width=total&&target?Math.min(100,Math.round(target*1048576/total*100))+"%":"0%";
   document.body.dataset.vm=s.online?"running":"stopped";
+  // A finished Docker snapshot clears the temporary "正在启动 VM…" status.
+  d("subtitle").textContent=s.online?"Docker Engine 已连接":(s.error?"VM 未连接":"正在连接 Docker Engine…");
   d("statusbar").textContent="Kiri Moby  ·  "+(s.version.Version?"Docker "+s.version.Version:"Linux VM")+
     "  ·  "+s.containers.filter(c=>c.State==="running").length+" of "+s.containers.length+" containers running"+
     "  ·  "+(s.online?"Linux VM running":"Linux VM offline")+
