@@ -1335,18 +1335,24 @@ private struct InspectorAreaChart: View {
         return path
     }
 
+    private func area(in size: CGSize) -> Path {
+        var path = trace(in: size)
+        path.addLine(to: CGPoint(x: size.width, y: size.height))
+        path.addLine(to: CGPoint(x: 0, y: size.height))
+        path.closeSubpath()
+        return path
+    }
+
     var body: some View {
         GeometryReader { geometry in
-            let line = trace(in: geometry.size)
             ZStack {
-                line
-                    .addLine(to: CGPoint(x: geometry.size.width, y: geometry.size.height))
-                    .addLine(to: CGPoint(x: 0, y: geometry.size.height))
+                area(in: geometry.size)
                     .fill(LinearGradient(
                         colors: [accent.opacity(0.25), accent.opacity(0)],
                         startPoint: .top, endPoint: .bottom))
-                line.stroke(accent, style: StrokeStyle(
-                    lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+                trace(in: geometry.size)
+                    .stroke(accent, style: StrokeStyle(
+                        lineWidth: 1.8, lineCap: .round, lineJoin: .round))
             }
         }
         .frame(height: 55)
