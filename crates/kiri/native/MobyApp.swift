@@ -1698,7 +1698,7 @@ private struct RootView: View {
                             HStack {
                                 Text("1 GiB")
                                 Spacer()
-                                Text("上限 \(config.max_memory_mib / 1024) GiB")
+                                Text(String(format: "上限 %.2f GiB", Double(config.max_memory_mib) / 1024))
                             }
                             .font(.system(size: 10))
                             .foregroundStyle(KiriPalette.muted(model.isLight))
