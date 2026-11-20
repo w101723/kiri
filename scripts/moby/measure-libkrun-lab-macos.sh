@@ -44,5 +44,20 @@ for ((i=1; i<=28; i++)); do
   [[ -n "$physical" ]] || physical="unavailable"
   printf '%s,"%s",%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$stage" "$physical" | tee -a "$csv"
 done
+# A host footprint change with no Guest progress is not an accepted test.
+for phase in READY ALLOCATING ALLOCATED FREED; do
+  if ! grep -Fq "KIRI-LIBKRUN-MEMLAB $phase" "$log"; then
+    echo "INVALID LAB RUN: missing Guest $phase marker in $log" >&2
+    echo "Guest console output was not observed. Do not claim a successful A/B measurement." >&2
+    tail -n 40 "$log" >&2
+    exit 1
+  fi
+done
+if grep -q ',unavailable
+ "$csv"; then
+  echo "INVALID LAB RUN: vmmap Physical footprint unavailable in $csv" >&2
+  exit 1
+fi
+echo "PASS: Guest READY / ALLOCATING / ALLOCATED / FREED phases all observed."
 echo "Completed samples. Guest log: $log ; host measurement: $csv"
 echo "Compare post-ALLOCATED and post-FREED physical_footprint, across default and replace modes."
