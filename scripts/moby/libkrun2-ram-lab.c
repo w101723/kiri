@@ -91,6 +91,9 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    // libkrun sends hvc0 to the log target when stdout is redirected
+    // (the measurement harness runs without a host TTY). Enable that sink.
+    uint64_t (*krun_init_log)(int, uint32_t, uint32_t, uint32_t, Handle *) = NULL;
     Handle (*krun_mmio_device_manager_new)(void) = NULL;
     void (*krun_mmio_device_manager_add)(Handle, Handle) = NULL;
     Handle (*krun_console_device_builder)(void) = NULL;
@@ -111,6 +114,7 @@ int main(int argc, char **argv) {
     Handle (*krun_vmm_builder_build)(Handle *, Handle *) = NULL;
     void (*krun_vmm_run)(Handle) = NULL;
 
+    REQUIRE(krun_init_log);
     REQUIRE(krun_mmio_device_manager_new);
     REQUIRE(krun_mmio_device_manager_add);
     REQUIRE(krun_console_device_builder);
@@ -129,6 +133,15 @@ int main(int argc, char **argv) {
     REQUIRE(krun_vmm_run);
 
     Handle error = NULL;
+    // Log level ERROR also captures kernel/Guest hvc0 lines: libkrun's
+    // non-TTY console routes them to target "init_or_kernel" at ERROR level.
+    // Without krun_init_log(), guest.log contains only this runner's stderr.
+    uint64_t log_result = krun_init_log(-1, 1u, 2u, 0u, &error);
+    if (failed(error, "console logger setup") || log_result != 0) {
+        fprintf(stderr, "Could not enable libkrun hvc0 log sink (result=%llu)\n",
+                (unsigned long long)log_result);
+        return 1;
+    }
     Handle devices = krun_mmio_device_manager_new();
     if (devices == NULL) {
         fprintf(stderr, "Could not create MMIO device manager\n");
