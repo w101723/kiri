@@ -24,9 +24,17 @@ Docker context, or duplicated container metadata database.
   inspect, published localhost ports and remove.
 - Images: search, pull, run, inspect, remove.
 - Volumes and networks: list, create, inspect, remove.
-- Compose: choose .yaml/.yml file with NSOpenPanel, up/down/ps/logs.
+- Compose: automatically discover projects from `com.docker.compose.project` labels,
+  expand nested service/container rows and access the same container actions.
+  No Compose YAML path or `up/down` command form is shown.
 - Buildx: choose context folder, set tag and linux/arm64 or linux/amd64.
-- Settings: VM start/stop/restart, explicit authorized Mac project directories.
+- Settings: persist host-aware CPU and maximum VM memory ceilings (1 CPU minimum,
+  memory in 256 MiB increments), optionally restart VM to apply changes, plus
+  explicit authorized Mac project directories.
+- Logs: floating native window with refresh/follow toggle, bounded 200/1,000/5,000
+  line tail, copy, clear. Logs are polled every two seconds, not streamed.
+- Exec: floating PTY-backed `docker exec -it` shell with repeatable input,
+  copy, clear and Ctrl-C. Line-oriented display is **not** a full VT100 emulator.
 - Native macOS menus, alerts, sidebar, searchable lists and menu bar icon.
 
 The Docker engine remains upstream Moby, and user state remains in
@@ -45,6 +53,14 @@ executables' arm64 architecture and signature, not just the original CLI.
 CI builds the SwiftUI binary and rejects direct WebKit/JavaScriptCore
 linkage. The real P12 signing test uses its own clean macOS Runner, separate
 from the synthetic private CA signing test. Full CI builds the entire DMG.
+
+The `moby-native-visual-preview.yml` workflow separately compiles the same
+AppKit/SwiftUI UI source in a **test-only** macOS preview build and takes a real
+window screenshot in a hosted macOS session. Its container status, logs and
+terminal output are explicitly synthetic fixtures compiled only with
+`KIRI_UI_PREVIEW`; production Apple Silicon binaries do not include them.
+This permits layout and window overlap debugging without installing the app
+or starting the Docker VM. It is not a substitute for live Docker acceptance.
 
 The old WebView implementation remains in the source tree during parity
 validation as a rollback, but it is not launched by Finder in the new app.
