@@ -81,7 +81,7 @@ checks = [
     ('Text("Mac 目录共享")', "Mac shares settings"),
     ('Button("选择共享目录…")', "Mac share picker"),
     ('Button("应用更改并重启 VM")', "Apply share and restart"),
-    ('"OrbStack/default Docker context unchanged"', "Original footer"),
+    ('OrbStack/default Docker context unchanged', "Original footer"),
 ]
 for key, label in checks:
     has(NEW, key, label)
