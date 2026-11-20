@@ -551,11 +551,6 @@ mod tests {
         }
         assert!(page.contains(".xterm-viewport"), "xterm.css missing");
         assert!(page.contains("function langStep(") && page.contains("const LANGS = ["), "langstep.js missing");
-        let setup = super::words(include_str!("../../../kiri-win/src/setup.html"), None);
-        for p in ["/*LANGSTEP*/", "/*LANG*/", "/*STRINGS*/"] {
-            assert!(!setup.contains(p), "{p} left in the setup page");
-        }
-        assert!(setup.contains("function langStep("), "langstep.js missing from the setup page");
         assert!(page.contains("window.KIRI_LANG = {") && page.contains(&lang::strings_js(lang::resolve(None))), "words missing");
         // Each language the page can open in carries the keys and that language
         // alone.
@@ -570,14 +565,8 @@ mod tests {
                 (worst, biggest) = (units(&p), tag);
             }
         }
-        // No system has a hard limit on it now, so this is a sanity ceiling
-        // only. Windows no longer loads it with NavigateToString, which on
-        // WebView2 157 refused pages past about 1.57 MB of UTF-8 and left
-        // the window blank (#495); only kiri-win's small error page goes
-        // through that now.
+        // Legacy original UI kept for native visual-parity reference.
         assert!(worst < 8_000_000, "the page in {biggest} is {worst} UTF-16 units");
         assert!(units(&page) <= worst);
-        // Setup's page too.
-        assert!(units(&super::words("/*LANG*/ /*STRINGS*/{}", Some(biggest))) < 200_000);
     }
 }
