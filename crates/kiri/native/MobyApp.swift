@@ -1823,14 +1823,14 @@ private struct RootView: View {
                 }
                 let label = "\(port.IP ?? "0.0.0.0"):\(port.PublicPort ?? 0)→\(port.PrivatePort ?? 0)/\(port.Type ?? "tcp")"
                 if port.Type == "tcp", let published = port.PublicPort {
-                    Button(label) {
+                    Button("localhost:\(published) ↗") {
                         model.action("open_local", fields: [
                             "url": "http://127.0.0.1:\(published)/"
                         ], title: "open_local")
                     }
-                    .foregroundStyle(KiriPalette.title(model.isLight))
+                    .foregroundStyle(KiriPalette.link(model.isLight))
                     .buttonStyle(.plain)
-                    .help("浏览 localhost:\(published)")
+                    .help(label)
                 } else {
                     Text(label)
                 }
@@ -1968,36 +1968,32 @@ private struct RootView: View {
                 }
                 .help(item.Id)
             }
-            .width(min: 140, ideal: 190)
+             .width(min: 120, ideal: 155)
             TableColumn("镜像", value: \.imageSortName) { item in
                 Text(item.Image ?? "—").lineLimit(1)
             }
-            .width(min: 110, ideal: 170)
+             .width(min: 95, ideal: 135)
             TableColumn("状态", value: \.stateSortName) { item in
                 containerStateBadge(item)
             }
-            .width(min: 85, ideal: 105)
+             .width(min: 75, ideal: 85)
             TableColumn("资源 · CPU / 内存 / I/O") { item in
                 containerResourceCell(item)
             }
-            .width(min: 250, ideal: 310)
+             .width(min: 220, ideal: 265)
             TableColumn("端口") { item in
                 portLinks(item.Ports)
             }
-            .width(min: 120, ideal: 170)
-            TableColumn("SHARE") { item in
-                localPortShortcut(item)
+             .width(min: 100, ideal: 140)
+            TableColumn("操作") { item in
+                containerButtons(item)
             }
-            .width(min: 55, ideal: 70)
+             .width(min: 130, ideal: 155)
             TableColumn("创建时间", value: \.creationSortDate) { item in
                 Text(dateLabel(item.Created))
                     .foregroundStyle(KiriPalette.muted(model.isLight))
             }
-            .width(min: 130, ideal: 150)
-            TableColumn("操作") { item in
-                containerButtons(item)
-            }
-            .width(min: 155, ideal: 170)
+             .width(min: 110, ideal: 130)
         }
         .contextMenu(forSelectionType: String.self) { selection in
             if !selection.isEmpty {
