@@ -47,6 +47,7 @@ private struct ContainerItem: Decodable, Identifiable {
     let Ports: [PublishedPort]?
     let Labels: [String: String]?
     let Created: Int64?
+    let SizeRw: Int64?
     var id: String { Id }
     var title: String { Names?.first?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? String(Id.prefix(12)) }
     var composeProject: String? { Labels?["com.docker.compose.project"] }
@@ -57,6 +58,7 @@ private struct ImageItem: Decodable, Identifiable {
     let Id: String
     let RepoTags: [String]?
     let Size: Int64?
+    let Created: Int64?
     var id: String { Id }
     var title: String { RepoTags?.first(where: {$0 != "<none>:<none>"}) ?? String(Id.prefix(18)) }
 }
@@ -111,6 +113,66 @@ private struct Reply: Decodable {
     let ok: Bool
     let message: String?
     let error: String?
+}
+
+
+/// Matches the four original Kiri container status tabs exactly.
+private enum ContainerFilter: String, CaseIterable, Identifiable {
+    case all = "All", running = "Running", stopped = "Stopped", failed = "Failed"
+    var id: String { rawValue }
+    func includes(_ item: ContainerItem) -> Bool {
+        let state = item.State ?? ""
+        let failed = state == "dead" || state == "removing"
+            || ((item.Status ?? "").range(of: #"^exited \(([1-9][0-9]*)\)"#,
+                  options: .regularExpression) != nil)
+        switch self {
+        case .all: return true
+        case .running: return state == "running"
+        case .failed: return failed
+        case .stopped: return state != "running" && !failed
+        }
+    }
+}
+
+private enum KiriPalette {
+    static let blue = Color(red: 13/255, green: 110/255, blue: 253/255)
+    static let mint = Color(red: 63/255, green: 182/255, blue: 139/255)
+    static let red = Color(red: 248/255, green: 113/255, blue: 113/255)
+    static func bg(_ light: Bool) -> Color {
+        light ? Color(red: 249/255, green: 251/255, blue: 253/255)
+              : Color(red: 15/255, green: 20/255, blue: 25/255)
+    }
+    static func side(_ light: Bool) -> Color {
+        light ? Color(red: 240/255, green: 244/255, blue: 248/255)
+              : Color(red: 18/255, green: 25/255, blue: 32/255)
+    }
+    static func panel(_ light: Bool) -> Color {
+        light ? .white : Color(red: 23/255, green: 29/255, blue: 36/255)
+    }
+    static func raised(_ light: Bool) -> Color {
+        light ? Color(red: 232/255, green: 238/255, blue: 245/255)
+              : Color(red: 30/255, green: 37/255, blue: 45/255)
+    }
+    static func border(_ light: Bool) -> Color {
+        light ? Color(red: 207/255, green: 217/255, blue: 227/255)
+              : Color(red: 42/255, green: 49/255, blue: 58/255)
+    }
+    static func muted(_ light: Bool) -> Color {
+        light ? Color(red: 83/255, green: 98/255, blue: 115/255)
+              : Color(red: 152/255, green: 161/255, blue: 172/255)
+    }
+    static func faint(_ light: Bool) -> Color {
+        light ? Color(red: 102/255, green: 117/255, blue: 136/255)
+              : Color(red: 102/255, green: 112/255, blue: 124/255)
+    }
+    static func title(_ light: Bool) -> Color {
+        light ? Color(red: 23/255, green: 33/255, blue: 46/255)
+              : Color(red: 242/255, green: 240/255, blue: 235/255)
+    }
+    static func link(_ light: Bool) -> Color {
+        light ? Color(red: 38/255, green: 114/255, blue: 207/255)
+              : Color(red: 110/255, green: 168/255, blue: 254/255)
+    }
 }
 
 private struct TextResult: Identifiable {
@@ -173,6 +235,10 @@ private final class MobyModel: ObservableObject {
     @Published var buildFolder = ""
     @Published var buildTag = ""
     @Published var buildPlatform = "linux/arm64"
+    @Published var isLight = false
+    @Published var sidebarCollapsed = false
+    @Published var containerFilter: ContainerFilter = .all
+    @Published var collapsedProjects = Set<String>()
     private var refreshing = false
     private var bootRequested = false
 
@@ -266,7 +332,7 @@ private final class MobyModel: ObservableObject {
 
     func chooseFile() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.yaml, .init(filenameExtension: "yml")!]
+        panel.allowedContentTypes = [.init(filenameExtension: "yaml")!, .init(filenameExtension: "yml")!]
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         if panel.runModal() == .OK, let url = panel.url { composeFile = url.path }
