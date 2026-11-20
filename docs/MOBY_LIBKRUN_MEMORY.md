@@ -164,3 +164,39 @@ The Replace mode should show a repeatable drop not seen in Default. Check
 macOS compression/swap effects too. Startup failure, missing milestones or
 empty vmmap values are not evidence. This lab proves neither 200 MB idle
 Docker VM nor Docker/Compose/Buildx parity by itself.
+
+## 2026-11-20 Apple Silicon A/B result: isolated RAM recovery verified
+
+The owner ran the separately built, RAM-only MMIO Guest (2 GiB configured)
+against the same locally compiled libkrun 2.x dylib, switching only
+`KIRI_LIBKRUN_REPORTING_MODE`:
+
+| vmmap Physical footprint | Default | Replace |
+| --- | ---: | ---: |
+| Guest READY, before allocation | ~97.4 MB | ~97.5 MB |
+| After 256 MiB tmpfs allocation | ~351.9 MB | ~355.1 MB |
+| Immediately around Guest FREED marker | ~352.0 MB | ~355.4 MB |
+| Stable after free | ~352.2 MB | ~113.3 MB |
+
+Both runs emitted all mandatory Guest milestones:
+`KIRI-LIBKRUN-MEMLAB READY`, `ALLOCATING`, `ALLOCATED`, and `FREED`.
+The Replace footprint decreased from 355.4 MB to 113.3 MB, a ~242 MB
+physical-footprint decrease, and stayed close to 113.3 MB. Default remained
+around 352 MB after free. This is strong, phase-aligned evidence of Guest-to-Host
+page reclamation without shutting down the VM. It does **not** prove an
+idle Docker VM can reach 113 MB or the 200 MB product target.
+
+Earlier runs captured only runner stderr, not Guest milestones: libkrun's
+non-TTY hvc0 output is routed through the libkrun logger. The runner now calls
+`krun_init_log` before creating the virtual console, and the sampler rejects
+runs without all four milestones. Some Guest log lines contain CR, so the
+sampler also normalizes phase names before writing `footprint.csv`.
+The first successful measurements were saved locally as
+`~/kiri-lab/default-v2` and `~/kiri-lab/replace-v2`;
+`default` and `replace` are the older *invalid* phase-less runs.
+
+**Next experimental gate:** bring up the *stock Docker Engine* on a separate
+throwaway libkrun Guest with block-device persistence, NAT/port forwarding,
+vsock, per-folder VirtioFS and amd64 emulation parity. Do **not** replace
+production Apple VZ or attach the original writable `~/.kiri-moby` data disk
+until the complete gates above have been verified on a disposable copy.
