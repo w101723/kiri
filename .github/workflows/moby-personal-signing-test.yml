@@ -109,8 +109,36 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "packaged/Kiri Moby.app"
           echo "PASS: Private-CA-issued leaf signed using its bundled CA certificate."
 
-      - name: Verify repository's actual configured P12 without building Linux kernel
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+
+  real-certificate:
+    name: Validate actual repository P12 in a fresh macOS keychain environment
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create isolated native-entrypoint signing fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="packaged/Kiri Moby.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/bin/cli-plugins"
+          cat > "$app/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <plist version="1.0"><dict>
+          <key>CFBundleIdentifier</key><string>dev.kiri.app.moby</string>
+          <key>CFBundleExecutable</key><string>kiri-moby-ui</string>
+          <key>CFBundlePackageType</key><string>APPL</string>
+          <key>CFBundleVersion</key><string>1</string>
+          </dict></plist>
+          PLIST
+          printf 'int main(void){return 0;}\n' > "$RUNNER_TEMP/fixture.c"
+          clang -arch x86_64 -o "$app/Contents/MacOS/kiri" "$RUNNER_TEMP/fixture.c"
+          cp "$app/Contents/MacOS/kiri" "$app/Contents/MacOS/kiri-moby-ui"
+          for bin in kiri-moby-host docker cli-plugins/docker-compose cli-plugins/docker-buildx; do
+            cp "$app/Contents/MacOS/kiri" "$app/Contents/Resources/bin/$bin"
+          done
+      - name: Sign with the actual P12 and verify the native Finder executable
         shell: bash
         env:
           KIRI_PERSONAL_SIGN_P12_BASE64: ${{ secrets.KIRI_PERSONAL_SIGN_P12_BASE64 }}
@@ -120,11 +148,10 @@ jobs:
           KIRI_REQUIRE_PERSONAL_SIGNING: "true"
         run: |
           set -euo pipefail
-          if [[ -z "${KIRI_PERSONAL_SIGN_CA_PEM_BASE64:-}" ]]; then
-            echo "SKIP REAL P12: private-root public PEM secret KIRI_PERSONAL_SIGN_CA_PEM_BASE64 not yet configured."
-            echo "The dummy CA-issued signing test above still validates the complete root-chain code path."
-            exit 0
-          fi
+          test -n "$(printenv KIRI_PERSONAL_SIGN_CA_PEM_BASE64)" || {
+            echo "Missing public private-root CA PEM"; exit 1;
+          }
           bash scripts/moby/sign-personal-macos.sh "packaged/Kiri Moby.app"
           codesign --verify --deep --strict --verbose=2 "packaged/Kiri Moby.app"
-          echo "PASS: repository's actual P12 and private root CA sign an App."
+          codesign --verify --strict "packaged/Kiri Moby.app/Contents/MacOS/kiri-moby-ui"
+          echo "PASS: actual Kiri personal P12 signed native SwiftUI bundle in a clean runner."
