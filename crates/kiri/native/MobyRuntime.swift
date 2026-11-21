@@ -200,7 +200,8 @@ private enum MobyConfig {
     static func readResources() throws -> [String: Int] {
         let url = MobyPaths.data.appendingPathComponent("vm-resources.json")
         let values: [String: Int]
-        if let raw = try? Data(contentsOf: url) {
+        if fm.fileExists(atPath: url.path) {
+            let raw = try Data(contentsOf: url)
             guard let decoded = try JSONSerialization.jsonObject(with: raw) as? [String: Int] else {
                 throw fail("Invalid VM resource settings")
             }
@@ -231,7 +232,8 @@ private enum MobyConfig {
     }
     static func shares() throws -> [String] {
         let url = MobyPaths.data.appendingPathComponent("authorized-shares.json")
-        guard let raw = try? Data(contentsOf: url) else { return [] }
+        guard fm.fileExists(atPath: url.path) else { return [] }
+        let raw = try Data(contentsOf: url)
         guard let values = try JSONSerialization.jsonObject(with: raw) as? [String],
               values.count <= 16, Set(values).count == values.count,
               values.allSatisfy(allowedShare) else { throw fail("Invalid authorized shared folders") }
@@ -342,10 +344,11 @@ private enum MobyVM {
     static func start() throws {
         if DockerUnixHTTP.ping() { return }
         try installGuestAssets()
-        let bundled = MobyPaths.resources.appendingPathComponent("bin/kiri-moby-host")
-        let installed = MobyPaths.data.appendingPathComponent("bin/kiri-moby-host")
-        let helper = fm.fileExists(atPath: bundled.path) ? bundled : installed
-        guard fm.isExecutableFile(atPath: helper.path) else { throw fail("Native Kiri Moby Host helper is missing") }
+        // A signed Swift GUI must launch only its bundled Swift Host; no stale Rust fallback.
+        let helper = MobyPaths.resources.appendingPathComponent("bin/kiri-moby-host")
+        guard fm.isExecutableFile(atPath: helper.path) else {
+            throw fail("Signed Kiri Moby Swift Host helper is missing from the app")
+        }
         let cpus = try MobyConfig.readResources()
         try MobyConfig.ensurePrivate(MobyPaths.data.appendingPathComponent("logs"))
         let log = MobyPaths.data.appendingPathComponent("logs/gui-host.log")
@@ -390,11 +393,11 @@ private enum MobyVM {
 
 enum MobyRuntime {
     private static func docker(_ args: [String]) throws -> String {
-        let bundled = MobyPaths.docker
-        let executable: URL
-        if FileManager.default.isExecutableFile(atPath: bundled.path) { executable = bundled }
-        else { executable = URL(fileURLWithPath: "/usr/local/bin/docker") }
-        guard FileManager.default.isExecutableFile(atPath: executable.path) else { throw fail("Docker CLI is missing") }
+        // Never fall back to another user's Docker CLI, context, or arbitrary PATH.
+        let executable = MobyPaths.docker
+        guard FileManager.default.isExecutableFile(atPath: executable.path) else {
+            throw fail("Bundled Docker CLI is missing from Kiri Moby.app")
+        }
         let task = Process()
         task.executableURL = executable
         task.arguments = args
