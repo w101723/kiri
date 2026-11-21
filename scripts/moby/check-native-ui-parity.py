@@ -4,11 +4,9 @@
 The native SwiftUI app must also compile and undergo real-device acceptance.
 """
 from pathlib import Path
-import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-OLD = (ROOT / "crates/kiri/src/ui/moby.html").read_text(encoding="utf-8")
 NEW = (ROOT / "crates/kiri/native/MobyApp.swift").read_text(encoding="utf-8")
 WORKFLOW = (ROOT / ".github/workflows/moby-milestone.yml").read_text()
 SIGNER = (ROOT / "scripts/moby/sign-personal-macos.sh").read_text()
@@ -19,13 +17,6 @@ def has(haystack, needle, label):
     if needle not in haystack:
         errors.append(f"{label}: missing {needle!r}")
 
-legacy_nav = re.findall(
-    r'<button data-page="([^"]+)"',
-    OLD.split("<aside>", 1)[1].split("</aside>", 1)[0])
-if legacy_nav != [
-    "containers", "compose", "images", "volumes", "networks", "build", "settings"
-]:
-    errors.append("Original Moby navigation unexpectedly changed")
 # HIG-native navigation intentionally replaces all legacy hand-painted bars.
 if not all(token in NEW for token in (
     "NavigationSplitView {", "List(selection:", ".listStyle(.sidebar)",
@@ -139,7 +130,6 @@ if 'Button("localhost:\\(published)' in NEW:
     errors.append("localhost labels must interpolate String(port), not Int")
 
 for label in ("Containers", "Images", "Volumes", "Networks", "Compose", "Builds", "Settings"):
-    has(OLD, label, "Original navigation")
     has(NEW, label, "Native navigation")
 
 has(WORKFLOW, "CFBundleExecutable</key><string>kiri-moby-ui", "Native Finder binary")
@@ -151,11 +141,26 @@ for required in ("guest/kernel/build.sh", "scripts/moby/build-guest.sh"):
     if not (ROOT / required).is_file():
         errors.append(f"Required Docker Guest build source missing: {required}")
 for forbidden in (
+    "crates/kiri/src/daemon", "crates/kiri/src/ui",
+    "crates/kiri-image", "crates/kiri-proto", "crates/kiri-share-proto",
     "crates/kiri-win", "crates/kiri-init", "crates/kiri/src/ui/gtk.rs",
     "crates/kiri/src/ui/linux.rs", "packaging/linux", "installer/windows",
 ):
     if (ROOT / forbidden).exists():
         errors.append(f"Unsupported host source remains: {forbidden}")
+
+backend = (ROOT / "crates/kiri/src/moby.rs").read_text(encoding="utf-8")
+main = (ROOT / "crates/kiri/src/main.rs").read_text(encoding="utf-8")
+client = (ROOT / "crates/kiri/src/client.rs").read_text(encoding="utf-8")
+for term in ("mod daemon;", "mod ui;", "mod k8s;", "mod usb;", "mod import;"):
+    if term in main:
+        errors.append(f"Legacy runtime entrypoint restored: {term}")
+for term in ("WKWebView", "/kiri/wake"):
+    if term in backend:
+        errors.append(f"Legacy backend dependency restored: {term}")
+has(main, 'Some("moby-native")', "Moby-only CLI")
+has(client, 'run/docker.sock', "Private standard Docker API socket")
+has(backend, 'pub fn native_command(', "Native command bridge")
 
 if errors:
     print("FAIL: Native Moby parity contract:\n  - " + "\n  - ".join(errors), file=sys.stderr)

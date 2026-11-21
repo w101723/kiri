@@ -2,8 +2,7 @@
 resolver = "3"
 # Only macOS Apple Silicon host packages; Linux ARM64 guest is built
 # separately with scripts/moby/build-guest.sh.
-members = ["crates/kiri", "crates/kiri-image", "crates/kiri-proto",
-    "crates/kiri-share-proto", "crates/kiri-vmm", "crates/kiri-moby-bridge", "xtask"]
+members = ["crates/kiri", "crates/kiri-vmm", "crates/kiri-moby-bridge", "xtask"]
 
 [workspace.package]
 # Not a release number: a release takes its version from its tag (v0.2.0),
@@ -25,8 +24,6 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 panic = "abort"
-# Debug info goes, function names stay: crash reports' backtraces
-# (`crate::diag`) then name the functions instead of bare addresses.
 strip = "debuginfo"
 
 # Feature builds (`cargo xtask app-dev`): optimized like a release, but split

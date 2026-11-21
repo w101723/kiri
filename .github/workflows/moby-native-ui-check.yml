@@ -5,8 +5,8 @@ on:
     branches: [native-swiftui-moby, apple-silicon-native-parity]
     paths:
       - "crates/kiri/native/**"
-      - "crates/kiri/src/ui/moby.rs"
-      - "crates/kiri/src/ui/mod.rs"
+      - "crates/kiri/src/moby.rs"
+      - "crates/kiri/src/client.rs"
       - "crates/kiri/src/main.rs"
       - "scripts/moby/check-native-ui-parity.py"
       - "Cargo.toml"
@@ -17,8 +17,8 @@ on:
   pull_request:
     paths:
       - "crates/kiri/native/**"
-      - "crates/kiri/src/ui/moby.rs"
-      - "crates/kiri/src/ui/mod.rs"
+      - "crates/kiri/src/moby.rs"
+      - "crates/kiri/src/client.rs"
       - "crates/kiri/src/main.rs"
       - "scripts/moby/check-native-ui-parity.py"
       - "Cargo.toml"
