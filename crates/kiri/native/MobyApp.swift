@@ -1943,6 +1943,8 @@ private struct RootView: View {
     @State private var selectedInspectorID: String?
     @State private var hoveredActionRowID: String?
     @State private var showInspector = true
+    @State private var isSearching = false
+    @FocusState private var searchFocused: Bool
     @State private var activeDetailTab: ContainerDetailTab = .overview
     @State private var loadedLogIDs = Set<String>()
     @State private var loadedTerminalIDs = Set<String>()
@@ -1957,9 +1959,9 @@ private struct RootView: View {
                 get: { model.page },
                 set: { if let page = $0 { model.page = page } }
             )) {
-                Section("资源") {
-                    ForEach([Page.containers, .images, .volumes, .networks,
-                             .compose, .builds], id: \.self) { page in
+                Section("Docker") {
+                    ForEach([Page.containers, .volumes, .images, .builds,
+                             .networks, .compose], id: \.self) { page in
                         nativeSidebarItem(page)
                     }
                 }
@@ -1969,16 +1971,107 @@ private struct RootView: View {
                 }
             }
             .listStyle(.sidebar)
+            .tint(Color.accentColor)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 sidebarEngineStatus
+                    .contentShape(Rectangle())
                     .onTapGesture { showVMPopover.toggle() }
                     .popover(isPresented: $showVMPopover) { vmResourcePopover }
             }
-            .navigationSplitViewColumnWidth(min: 160, ideal: 175, max: 200)
-            .navigationTitle("Kiri - Moby")
+            .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 215)
+        } content: {
+            VStack(spacing: 0) {
+                if isSearching {
+                    HStack(spacing: 9) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("搜索容器、镜像、数据卷…", text: $model.search)
+                            .textFieldStyle(.plain)
+                            .focused($searchFocused)
+                            .onExitCommand {
+                                model.search = ""
+                                isSearching = false
+                            }
+                        if !model.search.isEmpty {
+                            Button {
+                                model.search = ""
+                                searchFocused = true
+                            } label: { Image(systemName: "xmark.circle.fill") }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                                .help("清空搜索")
+                        }
+                        Button("取消") {
+                            model.search = ""
+                            isSearching = false
+                        }
+                        .font(.system(size: 11))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 39)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    Divider().opacity(0.45)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                if model.page == .containers {
+                    containerList
+                } else {
+                    resourceNavigator
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(nsColor: .textBackgroundColor))
+            .navigationTitle(model.page.displayName)
+            .navigationSubtitle(currentPageSubtitle)
+            .navigationSplitViewColumnWidth(min: 280, ideal: 330, max: 440)
+            .toolbar {
+                ToolbarItemGroup(placement: .automatic) {
+                    if model.page == .containers {
+                        Menu {
+                            ForEach(ContainerFilter.allCases) { filter in
+                                Button(filter.rawValue) { model.containerFilter = filter }
+                            }
+                        } label: {
+                            Label("状态筛选", systemImage: "line.3.horizontal.decrease.circle")
+                        }
+                        .help("筛选容器状态")
+                    }
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isSearching.toggle()
+                            if !isSearching { model.search = "" }
+                        }
+                        if isSearching { searchFocused = true }
+                    } label: { Image(systemName: "magnifyingglass") }
+                        .keyboardShortcut("f", modifiers: .command)
+                        .help(isSearching ? "收起搜索" : "搜索（⌘F）")
+                }
+            }
         } detail: {
             Group {
-                if !model.online && model.page != .settings {
+                if model.page == .containers {
+                    if let selected = selectedContainer {
+                        ContainerWorkspaceDetail(
+                            container: selected,
+                            activeTab: $activeDetailTab,
+                            loadedLogIDs: $loadedLogIDs,
+                            loadedTerminalIDs: $loadedTerminalIDs,
+                            onAction: { action, item in
+                                if action == "restart" &&
+                                    !model.confirm("重启 \(item.title)？",
+                                        detail: "运行中的服务会短暂中断。") { return }
+                                containerOp(action, item)
+                            }
+                        )
+                        .environmentObject(model)
+                    } else {
+                        Text("未选择项目")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                } else if !model.online && model.page != .settings {
                     ContentUnavailableView {
                         Label("Moby VM 未连接",
                               systemImage: "desktopcomputer.trianglebadge.exclamationmark")
@@ -1995,38 +2088,61 @@ private struct RootView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationTitle(model.page.displayName)
-        }
-        .searchable(text: $model.search, placement: .toolbar, prompt: "搜索容器、镜像…")
-        .toolbar {
-            ToolbarItemGroup(placement: .automatic) {
-                if model.page == .containers {
-                    Menu {
-                        ForEach(ContainerFilter.allCases) { filter in
-                            Button(filter.rawValue) { model.containerFilter = filter }
+            .frame(minWidth: 420)
+            .background(Color(nsColor: .textBackgroundColor))
+            .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    if [.containers, .images, .volumes, .networks].contains(model.page) {
+                        Button(action: createResource) {
+                            Image(systemName: "plus")
                         }
-                    } label: {
-                        Label("容器状态筛选", systemImage: "line.3.horizontal.decrease")
+                        .help("创建" + model.page.displayName)
                     }
-                    Button { showInspector.toggle() } label: {
-                        Label("检查器", systemImage: "sidebar.right")
-                    }
-                    .help(showInspector ? "隐藏容器检查器" : "显示容器检查器")
                 }
-            }
-            ToolbarItem(placement: .primaryAction) {
-                if model.page == .containers {
-                    Button {
-                        if let image = model.ask("输入要创建的容器镜像", placeholder: "nginx:alpine") {
-                            model.perform(["run", image], title: "新建容器", showResult: false)
+                ToolbarItem(placement: .principal) {
+                    if model.page == .containers && selectedContainer != nil {
+                        Picker("容器工作区", selection: $activeDetailTab) {
+                            ForEach(ContainerDetailTab.allCases) { tab in
+                                Text(tab.rawValue).tag(tab)
+                            }
                         }
-                    } label: {
-                        Label("新建容器", systemImage: "plus")
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 210)
                     }
-                    .buttonStyle(.borderedProminent)
-                } else {
-                    Button { model.refresh() } label: {
-                        Label("刷新", systemImage: "arrow.clockwise")
+                }
+                ToolbarItemGroup(placement: .primaryAction) {
+                    if model.page == .containers, let item = selectedContainer {
+                        Button {
+                            containerOp(item.State == "running" ? "stop" : "start", item)
+                        } label: {
+                            Image(systemName: item.State == "running" ? "stop.fill" : "play.fill")
+                        }
+                        .help(item.State == "running" ? "停止容器" : "启动容器")
+                        Button {
+                            if model.confirm("重启 \(item.title)？",
+                                detail: "运行中的服务会短暂中断。") {
+                                containerOp("restart", item)
+                            }
+                        } label: { Image(systemName: "arrow.clockwise") }
+                            .disabled(item.State != "running")
+                            .help("重启容器")
+                        if activeDetailTab != .overview {
+                            Button {
+                                let kind: ConsoleSession.Kind =
+                                    activeDetailTab == .terminal ? .exec : .logs
+                                openWindow(id: "container-console", value: ConsoleSession(
+                                    kind: kind, containerID: item.Id, name: item.title))
+                            } label: {
+                                Image(systemName: "arrow.up.right.square")
+                            }
+                            .help("在原生多标签窗口中弹出")
+                        }
+                    } else if model.page != .containers {
+                        Button { model.refresh() } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .help("刷新资源")
                     }
                 }
             }
@@ -2068,7 +2184,11 @@ private struct RootView: View {
                 catch { break }
             }
         }
-        .onChange(of: model.page) { _, _ in model.search = "" }
+        .onChange(of: model.page) { _, _ in
+            model.search = ""
+            isSearching = false
+            activeDetailTab = .overview
+        }
         .onChange(of: selectedContainerIDs) { old, new in
             if let added = new.subtracting(old).first {
                 selectedInspectorID = added
