@@ -150,15 +150,15 @@ struct NativeLogTextView: NSViewRepresentable {
 /// Console colors follow the system appearance, including live appearance changes.
 enum ConsoleAppearance {
     // A cool, high-contrast terminal surface without forcing system dark mode.
-    static func canvas(_ scheme: ColorScheme) -> Color {
+    static func canvas(_ scheme: ColorScheme) -> SwiftUI.Color {
         scheme == .dark ? Color(red: 24 / 255, green: 24 / 255, blue: 27 / 255)
                         : Color(red: 246 / 255, green: 248 / 255, blue: 250 / 255)
     }
-    static func toolbar(_ scheme: ColorScheme) -> Color {
+    static func toolbar(_ scheme: ColorScheme) -> SwiftUI.Color {
         scheme == .dark ? Color(red: 30 / 255, green: 30 / 255, blue: 34 / 255)
                         : .white
     }
-    static func foreground(_ scheme: ColorScheme) -> Color {
+    static func foreground(_ scheme: ColorScheme) -> SwiftUI.Color {
         scheme == .dark ? Color(white: 0.88)
                         : Color(red: 31 / 255, green: 35 / 255, blue: 40 / 255)
     }

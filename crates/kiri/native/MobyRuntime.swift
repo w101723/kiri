@@ -26,7 +26,7 @@ enum MobyPaths {
     static var docker: URL { resources.appendingPathComponent("bin/docker") }
 }
 
-private struct DockerResponse {
+struct DockerResponse {
     let status: Int
     let body: Data
     var json: Any {
