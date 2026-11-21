@@ -497,8 +497,8 @@ private final class KiriMobyHost: NSObject, VZVirtualMachineDelegate, VZVirtioSo
         let started = DispatchSemaphore(value: 0)
         var startError: Error?
         queue.async {
-            self.virtualMachine.start { error in
-                startError = error
+            self.virtualMachine.start { result in
+                if case .failure(let error) = result { startError = error }
                 started.signal()
             }
         }
