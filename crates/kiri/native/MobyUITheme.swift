@@ -62,55 +62,32 @@ enum KiriMenuBarIcon {
 }
 
 
+/// Kiri API compatibility backed by ArcBox's system-adaptive semantic colors.
 enum KiriPalette {
-    static let blue = Color(red: 13/255, green: 110/255, blue: 253/255)
-    static let mint = Color(red: 63/255, green: 182/255, blue: 139/255)
-    static let red = Color(red: 248/255, green: 113/255, blue: 113/255)
-    static func bg(_ light: Bool) -> Color {
-        light ? Color(red: 249/255, green: 251/255, blue: 253/255)
-              : Color(red: 15/255, green: 20/255, blue: 25/255)
-    }
-    static func panel(_ light: Bool) -> Color {
-        light ? .white : Color(red: 23/255, green: 29/255, blue: 36/255)
-    }
-    static func raised(_ light: Bool) -> Color {
-        light ? Color(red: 232/255, green: 238/255, blue: 245/255)
-              : Color(red: 30/255, green: 37/255, blue: 45/255)
-    }
-    static func border(_ light: Bool) -> Color {
-        light ? Color(red: 207/255, green: 217/255, blue: 227/255)
-              : Color(red: 42/255, green: 49/255, blue: 58/255)
-    }
-    static func muted(_ light: Bool) -> Color {
-        light ? Color(red: 83/255, green: 98/255, blue: 115/255)
-              : Color(red: 152/255, green: 161/255, blue: 172/255)
-    }
-    static func faint(_ light: Bool) -> Color {
-        light ? Color(red: 102/255, green: 117/255, blue: 136/255)
-              : Color(red: 102/255, green: 112/255, blue: 124/255)
-    }
-    static func title(_ light: Bool) -> Color {
-        light ? Color(red: 23/255, green: 33/255, blue: 46/255)
-              : Color(red: 242/255, green: 240/255, blue: 235/255)
-    }
-    static func link(_ light: Bool) -> Color {
-        light ? Color(red: 38/255, green: 114/255, blue: 207/255)
-              : Color(red: 110/255, green: 168/255, blue: 254/255)
-    }
+    static let blue = AppColors.accent
+    static let mint = AppColors.running
+    static let red = AppColors.error
+    static func bg(_ light: Bool) -> Color { AppColors.background }
+    static func panel(_ light: Bool) -> Color { AppColors.surfaceCard }
+    static func raised(_ light: Bool) -> Color { AppColors.surfaceElevated }
+    static func border(_ light: Bool) -> Color { AppColors.border }
+    static func muted(_ light: Bool) -> Color { AppColors.textSecondary }
+    static func faint(_ light: Bool) -> Color { AppColors.textMuted }
+    static func title(_ light: Bool) -> Color { AppColors.text }
+    static func link(_ light: Bool) -> Color { AppColors.accent }
 }
-
 
 /// Reusable native layout constraints. Keep toolbar space inside its owning column.
 enum KiriLayoutMetrics {
-    static let sidebarMin: CGFloat = 165
+    static let sidebarMin: CGFloat = 180
     static let sidebarIdeal: CGFloat = 180
-    static let sidebarMax: CGFloat = 205
+    static let sidebarMax: CGFloat = 220
     static let contentMin: CGFloat = 280
-    static let contentIdeal: CGFloat = 310
-    static let contentMax: CGFloat = 440
-    static let detailMin: CGFloat = 360
-    static let containerRowHeight: CGFloat = 48
+    static let contentIdeal: CGFloat = 320
+    static let contentMax: CGFloat = 600
+    static let detailMin: CGFloat = 420
+    static let containerRowHeight: CGFloat = 44
     static let sidebarStatusHeight: CGFloat = 44
-    static let detailTabWidth: CGFloat = 210
+    static let detailTabWidth: CGFloat = 240
     static let consoleHeaderHeight: CGFloat = 38
 }

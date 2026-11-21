@@ -5,6 +5,13 @@ Kiri Moby itself is licensed under the Apache License, Version 2.0.
 See the accompanying LICENSE file.
 
 Included components (relevant to the native macOS app):
+- ArcBox Desktop macOS SwiftUI/AppKit components, MIT:
+  https://github.com/arcboxlabs/arcbox-desktop
+  Copyright (c) 2026 ArcBox Labs.
+  The Kiri GUI incorporates and adapts upstream theme, container model,
+  native resource list cells/rows, info rows, toolbar and Liquid Glass code.
+  The MIT permission and disclaimer are reproduced below.
+  ArcBox brand name, app icons and screenshots are not bundled in Kiri.
 - SwiftTerm 1.20.0 (migueldeicaza/SwiftTerm), MIT:
   https://github.com/migueldeicaza/SwiftTerm/blob/1.20.0/LICENSE
   Copyright Miguel de Icaza and contributors.

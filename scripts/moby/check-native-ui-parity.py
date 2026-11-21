@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-GUI_FILES = ["MobyApp.swift","MobyRuntime.swift","MobyUITheme.swift","MobyUIModels.swift","MobyModel.swift","MobyTelemetry.swift","MobyDockerEvents.swift","MobyTerminal.swift","MobyUIComponents.swift","MobyContainerWorkspace.swift"]
+GUI_FILES = ["MobyApp.swift","MobyRuntime.swift","MobyUITheme.swift","MobyUIModels.swift","MobyModel.swift","MobyTelemetry.swift","MobyDockerEvents.swift","MobyTerminal.swift","MobyUIComponents.swift","MobyContainerWorkspace.swift","ArcBoxContainerModel.swift","ArcBoxAppColors.swift","ArcBoxAppMetrics.swift","ArcBoxLiquidGlass.swift","ArcBoxDetailTabPicker.swift","ArcBoxResourceListRowView.swift","ArcBoxContainerListCells.swift","ArcBoxInfoRow.swift","ArcBoxInfoTableView.swift","ArcBoxIconButton.swift","ArcBoxStatusBadge.swift","ArcBoxToolbarSeparator.swift","KiriArcBoxContainersList.swift"]
 NATIVE = ROOT / "crates/kiri/native"
 NEW = "\n".join((NATIVE / name).read_text(encoding="utf-8") for name in GUI_FILES)
 PACKAGE = (NATIVE / "Package.swift").read_text(encoding="utf-8")
@@ -52,20 +52,20 @@ checks = [
     ('LinearGradient(', "Gradient area charts"),
     ('CopyableInspectorTag(', "Copyable native port and mount tags"),
     ('InspectorEnvironmentRow(entry:', "Per-key secret masking controls"),
-    ('CompactContainerRow(item:', "Airy Mail-style container row"),
-    ('Section(running ? "运行中" : "已停止")', "Container state grouping"),
-    ('.frame(height: KiriLayoutMetrics.containerRowHeight)', "48pt native rows"),
-    ('styledImageName(item.Image ?? "—")', "Two-tone image names"),
+    ('ContainerTableCellView', "ArcBox original AppKit container cell"),
+    ('case .section:', "ArcBox native OutlineView sections"),
+    ('static let rowHeight: CGFloat = 44', "ArcBox 44pt native rows"),
+    ('imageLabel.stringValue = container.image', "ArcBox two-line image labels"),
     ('Color.accentColor', "Native sidebar accent"),
-    ('List(selection: $selectedContainerIDs)', "Native compact container list"),
-    ('.onHover { hovered = $0 }', "Hover-only container actions"),
-    ('.defaultSize(width: 940, height: 600)', "Compact default window"),
+    ('KiriArcBoxContainersList(', "ArcBox AppKit container list"),
+    ('override func mouseEntered(with event: NSEvent)', "ArcBox hover native actions"),
+    ('.defaultSize(width: 1200, height: 800)', "ArcBox original default 1200x800"),
 
     ('InspectorAreaChart(', "Real stats time-series visualizations"),
     ('statsHistory', "Bounded history from live Docker stats"),
     ('ContainerInspectDetails: Decodable', "Read-only Docker inspect details"),
     ('Text("Kiri 私有 Docker · 默认 Context 不变")', "Private Docker context in VM popover"),
-    ('iconAction("停止", icon: "stop.circle")', "Borderless SF Symbol container actions"),
+    ('ResourceActionButton', "ArcBox AppKit row actions"),
     ('private var sidebarEngineStatus: some View', "Sidebar status view"),
 
     ('.listStyle(.sidebar)', "macOS vibrancy sidebar material"),
@@ -79,7 +79,7 @@ checks = [
     ('} content: {', "Native resource second column"),
     ('} detail: {', "Native workspace third column"),
     ('.navigationSubtitle(currentPageSubtitle)', "Per-resource native subtitles"),
-    ('ToolbarItem(placement: .principal)', "Native toolbar segmented workspace"),
+    ('DetailTabPicker(selection: $activeDetailTab)', "ArcBox detail tabs"),
     ('ContainerDetailTab: String, CaseIterable', "Overview / Logs / Terminal segmented tabs"),
     ('.pickerStyle(.segmented)', "Native segmented detail navigation"),
     ('ForEach(loadedTerminalIDs.sorted()', "SwiftTerm views remain mounted when switching tabs"),

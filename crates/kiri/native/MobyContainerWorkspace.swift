@@ -5,7 +5,7 @@ import SwiftUI
 
 // The outer NavigationSplitView intentionally stays two columns. Only the
 // Containers page hosts this draggable, full-height native workspace.
-enum ContainerDetailTab: String, CaseIterable, Identifiable {
+enum ContainerDetailTab: String, CaseIterable, Identifiable, DetailTab {
     case overview = "概览"
     case logs = "日志"
     case terminal = "终端"

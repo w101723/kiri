@@ -95,12 +95,17 @@ private struct RootView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(nsColor: .textBackgroundColor))
+            .background(AppColors.background)
             .navigationTitle(model.page.displayName)
             .navigationSubtitle(currentPageSubtitle)
             .navigationSplitViewColumnWidth(min: KiriLayoutMetrics.contentMin, ideal: KiriLayoutMetrics.contentIdeal, max: KiriLayoutMetrics.contentMax)
+            .toolbarSeparator()
             .toolbar {
-                ToolbarItemGroup(placement: .automatic) {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    if [.containers, .images, .volumes, .networks].contains(model.page) {
+                        Button(action: createResource) { Image(systemName: "plus") }
+                            .help("创建" + model.page.displayName)
+                    }
                     if model.page == .containers {
                         Menu {
                             ForEach(ContainerFilter.allCases) { filter in
@@ -163,27 +168,11 @@ private struct RootView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .frame(minWidth: KiriLayoutMetrics.detailMin)
-            .background(Color(nsColor: .textBackgroundColor))
+            .background(AppColors.sidebar)
+            .toolbarSeparator()
             .toolbar {
-                ToolbarItem(placement: .navigation) {
-                    if [.containers, .images, .volumes, .networks].contains(model.page) {
-                        Button(action: createResource) {
-                            Image(systemName: "plus")
-                        }
-                        .help("创建" + model.page.displayName)
-                    }
-                }
-                ToolbarItem(placement: .principal) {
-                    if model.page == .containers && selectedContainer != nil {
-                        Picker("容器工作区", selection: $activeDetailTab) {
-                            ForEach(ContainerDetailTab.allCases) { tab in
-                                Text(tab.rawValue).tag(tab)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(width: KiriLayoutMetrics.detailTabWidth)
-                    }
+                if model.page == .containers && selectedContainer != nil {
+                    DetailTabPicker(selection: $activeDetailTab)
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
                     if model.page == .containers, let item = selectedContainer {
@@ -222,7 +211,7 @@ private struct RootView: View {
             }
         }
         .font(.system(size: 12))
-        .frame(minWidth: 820, minHeight: 520)
+        .frame(minWidth: 980, minHeight: 640)
         .task {
             model.begin()
             #if KIRI_UI_PREVIEW
@@ -360,18 +349,9 @@ private struct RootView: View {
 
     @ViewBuilder
     private func nativeSidebarItem(_ page: Page) -> some View {
-        let selected = model.page == page
-        let row = Label {
-            Text(page.displayName)
-        } icon: {
-            Image(systemName: page.symbol)
-                .foregroundStyle(selected ? Color.white : Color.accentColor)
-        }
-        if let count = navCount(page) {
-            row.badge(count).tag(page)
-        } else {
-            row.tag(page)
-        }
+        let row = Label(page.displayName, systemImage: page.symbol)
+        if let count = navCount(page) { row.badge(count).tag(page) }
+        else { row.tag(page) }
     }
 
     private var vmResourcePopover: some View {
@@ -901,94 +881,45 @@ private struct RootView: View {
                                  isLight: model.isLight)
     }
 
+    // Original ArcBox native AppKit list; Kiri's private Docker API owns the data.
     private var containerList: some View {
-        List(selection: $selectedContainerIDs) {
-            ForEach([true, false], id: \.self) { running in
-                let items = filteredContainers
-                    .filter { ($0.State == "running") == running }
-                    .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-                if !items.isEmpty {
-                    Section(running ? "运行中" : "已停止") {
-                        ForEach(items) { item in
-                            CompactContainerRow(item: item, onAction: { action in
-                                if action == "exec" {
-                                    openConsole(.exec, containerID: item.Id, name: item.title)
-                                } else {
-                                    containerOp(action, item)
-                                }
-                            })
-                            .tag(item.Id)
-                            .onTapGesture(count: 2) {
-                                if item.State == "running" {
-                                    openConsole(.exec, containerID: item.Id, name: item.title)
-                                }
-                            }
-                            .listRowInsets(EdgeInsets(top: 0, leading: 9, bottom: 0, trailing: 9))
-                            .listRowSeparator(.hidden)
-                            .contextMenu {
-                                Button("概览") {
-                                    selectedContainerIDs = [item.Id]
-                                    selectedInspectorID = item.Id
-                                    activeDetailTab = .overview
-                                }
-                                Button("终端") {
-                                    openConsole(.exec, containerID: item.Id, name: item.title)
-                                }
-                                .disabled(item.State != "running")
-                                Button("日志") {
-                                    openConsole(.logs, containerID: item.Id, name: item.title)
-                                }
-                                Divider()
-                                Button(item.State == "running" ? "停止" : "启动") {
-                                    containerOp(item.State == "running" ? "stop" : "start", item)
-                                }
-                                Button("重启") { containerOp("restart", item) }
-                                    .disabled(item.State != "running")
-                                Button(item.State == "paused" ? "恢复" : "暂停") {
-                                    containerOp(item.State == "paused" ? "unpause" : "pause", item)
-                                }
-                                Divider()
-                                Button("删除容器", role: .destructive) {
-                                    if model.confirm("删除 \(item.title)？",
-                                        detail: "将移除容器，但不会自动删除命名数据卷。") {
-                                        containerOp("remove", item)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        ZStack {
             if model.containers.isEmpty {
-                Section {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label("开始使用 Docker", systemImage: "shippingbox")
-                            .font(.system(size: 12, weight: .semibold))
-                        Text("运行你的第一个容器")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                        Text("docker run -it -p 80:80 nginx:alpine")
-                            .font(.system(size: 10, design: .monospaced))
-                            .textSelection(.enabled)
-                            .lineLimit(2)
-                        Button("拉取 nginx:alpine") {
-                            model.perform(["pull", "nginx:alpine"],
-                                          title: "Pull image", showResult: false)
-                        }
-                        .font(.system(size: 11))
-                    }
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.primary.opacity(0.04),
-                                in: RoundedRectangle(cornerRadius: 10))
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
+                ContentUnavailableView {
+                    Label("No Containers", systemImage: "shippingbox")
+                } description: {
+                    Text(model.online ? "Run your first container with Docker." :
+                         "Start the Kiri Linux VM to manage containers.")
+                } actions: {
+                    Button("New Container") { createResource() }
                 }
+            } else {
+                KiriArcBoxContainersList(
+                    items: filteredContainers,
+                    selectedID: selectedInspectorID,
+                    collapsedProjects: model.collapsedProjects,
+                    onSelect: { id in
+                        selectedInspectorID = id
+                        selectedContainerIDs = id.map { Set([$0]) } ?? []
+                    },
+                    onAction: { action, id in
+                        guard let item = model.containers.first(where: { $0.Id == id }) else { return }
+                        if action == "exec" { openConsole(.exec, containerID: id, name: item.title) }
+                        else if action == "logs" { openConsole(.logs, containerID: id, name: item.title) }
+                        else { containerOp(action, item) }
+                    },
+                    onOpenPort: { port in
+                        model.action("open_local", fields: ["url": "http://127.0.0.1:\(port)/"],
+                                     title: "open_local")
+                    },
+                    onGroupExpansion: { project, collapsed in
+                        if collapsed { model.collapsedProjects.insert(project) }
+                        else { model.collapsedProjects.remove(project) }
+                    }
+                )
             }
         }
-        .listStyle(.inset)
-        .scrollContentBackground(.hidden)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(AppColors.background)
     }
 
     private var images: some View {
@@ -1504,7 +1435,7 @@ private struct KiriMobyNativeApp: App {
         WindowGroup("Kiri Moby") {
             RootView().environmentObject(model)
         }
-        .defaultSize(width: 940, height: 600)
+        .defaultSize(width: 1200, height: 800)
         .windowToolbarStyle(.unified)
 
         .commands {
