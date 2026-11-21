@@ -342,6 +342,9 @@ jobs:
           </dict>
           </plist>
           PLIST
+          # A new build number forces LaunchServices to invalidate cached
+          # application/Dock/menu-bar artwork for updated Kiri.icns assets.
+          plutil -replace CFBundleVersion -string "${GITHUB_RUN_NUMBER:-1}" "$app/Contents/Info.plist"
           plutil -lint "$app/Contents/Info.plist"
           python3 scripts/moby/audit-native-runtime.py --app "$app"
           test "$(lipo "$res/bin/kiri-moby-host" -archs)" = "arm64"
