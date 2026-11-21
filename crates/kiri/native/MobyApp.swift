@@ -121,11 +121,7 @@ private struct ContainerItem: Decodable, Identifiable {
     let Ports: [PublishedPort]?
     let Labels: [String: String]?
     let Created: Int64?
-    let SizeRw: Int64?
     var id: String { Id }
-    var imageSortName: String { Image ?? "" }
-    var stateSortName: String { State ?? "" }
-    var creationSortDate: Int64 { Created ?? 0 }
     var title: String { Names?.first?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? String(Id.prefix(12)) }
     var composeProject: String? { Labels?["com.docker.compose.project"] }
 }
@@ -159,7 +155,6 @@ private struct DockerInfo: Decodable {
     let MemTotal: Int64?
     let Architecture: String?
     let Driver: String?
-    let OperatingSystem: String?
 }
 
 private struct DockerVersion: Decodable {

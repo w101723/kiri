@@ -59,6 +59,26 @@ def verify_source(errors: list[str]) -> None:
         errors.append("Current branded icon source missing")
     if (ROOT / "brand/icon/png/kiri-menubar-template@2x.png").exists():
         errors.append("Obsolete independent menu-bar image remains in brand resources")
+    # Prevent reintroducing the retired second PTY engine, orphaned UI helpers,
+    # or host-side Rust responsibilities already migrated to Swift.
+    retired_ui = (
+        "ExecTerminalSession", "openpty(", "ContainerRowView: View",
+        "func overviewCard(", "func localPortShortcut(",
+        "func containerStateBadge(", "func containerSelection(",
+        "liveLogContainerID",
+    )
+    for symbol in retired_ui:
+        if symbol in app:
+            errors.append(f"Retired duplicate or unused native UI component restored: {symbol}")
+    host = SOURCES[2].read_text(encoding="utf-8")
+    if "VZVirtioSocketListenerDelegate" in host or "setSocketListener(" in host:
+        errors.append("Unused guest-initiated vsock listener was restored to Swift Host")
+    guest_memory = (ROOT / "crates/kiri-moby-bridge/src/memory.rs").read_text(encoding="utf-8")
+    if "pub struct Governor" in guest_memory:
+        errors.append("Dead Rust Host balloon governor was restored to Linux Guest")
+    guest_shares = (ROOT / "crates/kiri-moby-bridge/src/shares.rs").read_text(encoding="utf-8")
+    if "pub fn encode(" in guest_shares:
+        errors.append("Retired Rust Host share-map encoder was restored to Linux Guest")
     notice = (ROOT / "NOTICE").read_text(encoding="utf-8")
     if any(name in notice.lower() for name in ("webkit2gtk", "webview2-com", "javascriptcore-rs", "xterm.js")):
         errors.append("Legacy web runtime license manifest was reintroduced into native NOTICE")
