@@ -1,5 +1,6 @@
 // Native macOS Moby control plane. No Rust CLI, HTTP server, or Docker context mutation.
 // All Docker HTTP traffic is over ~/.kiri-moby/run/docker.sock.
+import AppKit
 import Darwin
 import Foundation
 
@@ -639,10 +640,14 @@ enum MobyRuntime {
             guard let url = URL(string: value["url"] as? String ?? ""),
                   url.scheme == "http", url.host == "127.0.0.1",
                   (url.port ?? 0) > 0 else { throw fail("Only 127.0.0.1 published ports may be opened") }
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            task.arguments = [url.absoluteString]
-            try task.run()
+            // NSWorkspace uses LaunchServices directly; no short-lived /usr/bin/open helper.
+            let success: Bool
+            if Thread.isMainThread {
+                success = NSWorkspace.shared.open(url)
+            } else {
+                success = DispatchQueue.main.sync { NSWorkspace.shared.open(url) }
+            }
+            guard success else { throw fail("macOS could not open \(url.absoluteString)") }
             return "Opened \(url.absoluteString)"
         default:
             throw fail("Unsupported native Docker operation: \(kind)")

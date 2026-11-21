@@ -382,7 +382,7 @@ private final class LocalListeners {
     }
 }
 
-private final class KiriMobyHost: NSObject, VZVirtualMachineDelegate, VZVirtioSocketListenerDelegate {
+private final class KiriMobyHost: NSObject, VZVirtualMachineDelegate {
     private let queue = DispatchQueue(label: "dev.kiri.moby.host.virtualization")
     private let stateLock = NSLock()
     private var stopping = false
@@ -391,7 +391,6 @@ private final class KiriMobyHost: NSObject, VZVirtualMachineDelegate, VZVirtioSo
     private var governor: MemoryGovernor
     private var virtualMachine: VZVirtualMachine!
     private var guestSocket: VZVirtioSocketDevice!
-    private var guestListener: VZVirtioSocketListener!
     private var consoleHandle: FileHandle?
     private var dockerListener: Int32 = -1
     private var controlListener: Int32 = -1
@@ -420,12 +419,6 @@ private final class KiriMobyHost: NSObject, VZVirtualMachineDelegate, VZVirtioSo
     func virtualMachine(_ virtualMachine: VZVirtualMachine, didStopWithError error: Error) {
         trace("Guest stopped with error: \(error)")
         setStopped()
-    }
-    func listener(_ listener: VZVirtioSocketListener,
-                  shouldAcceptNewConnection connection: VZVirtioSocketConnection,
-                  from socketDevice: VZVirtioSocketDevice) -> Bool {
-        trace("Guest boot agent connected")
-        return true
     }
     private func socket(_ port: UInt32) throws -> VZVirtioSocketConnection {
         let signal = DispatchSemaphore(value: 0)
@@ -505,9 +498,6 @@ private final class KiriMobyHost: NSObject, VZVirtualMachineDelegate, VZVirtioSo
         virtualMachine.delegate = self
         guestSocket = virtualMachine.socketDevices[0] as? VZVirtioSocketDevice
         guard guestSocket != nil else { throw hostError("VM has no VirtioSocket device") }
-        guestListener = VZVirtioSocketListener()
-        guestListener.delegate = self
-        guestSocket.setSocketListener(guestListener, forPort: 5556)
     }
     private func startup() throws {
         guard VZVirtualMachine.isSupported else { throw hostError("Virtualization.framework is unsupported") }

@@ -49,3 +49,21 @@ system browser outside the app; the app itself renders only SwiftUI/AppKit.
 The current `NOTICE` contains the active native components and the Linux
 kernel GPL-2.0-only license / source offer; obsolete web dependency notices
 remain available in Git history, not in the installed app.
+
+## Process boundaries and legacy cleanup
+
+The native UI no longer loads WebKit or starts the obsolete Rust CLI. Normal
+macOS-side VM operation has three expected process roles: `kiri-moby-ui`,
+the independent Swift `kiri-moby-host`, and Apple's
+`com.apple.Virtualization.VirtualMachine` XPC service. The XPC service is
+owned by macOS; merging it is unsupported. The Helper must remain separate so
+the VM survives GUI exit. Inside the Linux Guest, `dockerd` and the minimal
+Rust `kiri-moby-guest` are separate Guest processes.
+
+The former duplicate PTY/text terminal, unused SwiftUI view helpers, dead
+Host-side incoming vsock listener and Guest-side Rust balloon governor have
+been removed. SwiftTerm remains the only production terminal; the screenshot
+fixture uses text-only preview data and does not launch Docker/PTY. A terminal
+session and operations such as Compose/Buildx may spawn the bundled Docker CLI
+on demand; disk setup and update verification may briefly invoke Apple system
+tools. Those are transient, not additional resident Kiri daemons.

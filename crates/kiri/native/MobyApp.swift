@@ -3,7 +3,6 @@
 // Docker/VM operations use the in-process Swift HTTP-over-UDS client.
 // Only the independent VM Host is a separate Swift process; Guest stays Rust.
 import AppKit
-import Darwin
 import Foundation
 import SwiftUI
 import Charts
@@ -129,7 +128,6 @@ private struct ContainerItem: Decodable, Identifiable {
     var creationSortDate: Int64 { Created ?? 0 }
     var title: String { Names?.first?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? String(Id.prefix(12)) }
     var composeProject: String? { Labels?["com.docker.compose.project"] }
-    var localPort: Int? { Ports?.first(where: {$0.Type == "tcp" && $0.PublicPort != nil})?.PublicPort }
 }
 
 private struct ImageItem: Decodable, Identifiable {
@@ -275,10 +273,6 @@ private enum KiriPalette {
         light ? Color(red: 249/255, green: 251/255, blue: 253/255)
               : Color(red: 15/255, green: 20/255, blue: 25/255)
     }
-    static func side(_ light: Bool) -> Color {
-        light ? Color(red: 240/255, green: 244/255, blue: 248/255)
-              : Color(red: 18/255, green: 25/255, blue: 32/255)
-    }
     static func panel(_ light: Bool) -> Color {
         light ? .white : Color(red: 23/255, green: 29/255, blue: 36/255)
     }
@@ -383,7 +377,6 @@ private final class MobyModel: ObservableObject {
     private var vmTransitionInProgress = false
     @Published var error: String?
     @Published var result: TextResult?
-    @Published var liveLogContainerID: String?
     @Published var operationMessage: String?
     @Published var toastMessage: String?
     @Published var toastIsError = false
@@ -632,27 +625,6 @@ private final class MobyModel: ObservableObject {
         }
     }
 
-    func showLiveLogs(_ id: String) {
-        liveLogContainerID = id
-        result = TextResult(title: "logs", body: "正在加载日志…")
-    }
-
-    func refreshLiveLogs(_ id: String) async {
-        let input = ["action": "logs", "id": id]
-        guard let json = try? JSONSerialization.data(withJSONObject: input),
-              let encoded = String(data: json, encoding: .utf8) else { return }
-        let answer = await Task.detached(priority: .utility) {
-            Result { try request(["action", encoded], as: Reply.self) }
-        }.value
-        guard liveLogContainerID == id, result?.title == "logs" else { return }
-        switch answer {
-        case .success(let reply):
-            result = TextResult(title: "logs", body: reply.ok ? (reply.message ?? "") : (reply.error ?? "日志读取失败"))
-        case .failure(let failure):
-            result = TextResult(title: "logs", body: failure.localizedDescription)
-        }
-    }
-
     func action(_ action: String, fields: [String: String] = [:], title: String) {
         var input: [String: String] = ["action":action]
         for (key, value) in fields { input[key] = value }
@@ -685,14 +657,6 @@ private final class MobyModel: ObservableObject {
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value
-    }
-
-    func chooseFile() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.init(filenameExtension: "yaml")!, .init(filenameExtension: "yml")!]
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        if panel.runModal() == .OK, let url = panel.url { composeFile = url.path }
     }
 
     func chooseBuildFolder() {
@@ -739,11 +703,6 @@ private final class ContainerLogSession: ObservableObject {
     func clear() {
         // Retain the previous snapshot so old lines do not reappear on poll.
         content = ""
-    }
-
-    func reload() {
-        content = ""
-        previousSnapshot = ""
     }
 
     func refresh(containerID: String) async {
@@ -941,131 +900,24 @@ private struct ContainerLogWindow: View {
     }
 }
 
-// Dedicated macOS PTY session. The child runs the bundled Docker CLI which
-// delegates to docker exec -it over Kiri's private Docker socket.
-@MainActor
-private final class ExecTerminalSession: ObservableObject {
-    @Published var output = ""
-    @Published var input = ""
-    @Published var running = false
-    private var process: Process?
-    private var master: FileHandle?
-    private var slave: FileHandle?
-    private let maxCharacters = 100_000
+// Screenshot-only content. This block does not exist in the production build.
+#if KIRI_UI_PREVIEW
+private let previewTerminalOutput = """
+/ # cat /etc/os-release
+PRETTY_NAME="Alpine Linux v3.19"
+NAME="Alpine Linux"
+VERSION_ID="3.19.1"
+ID=alpine
+HOME_URL="https://alpinelinux.org/"
 
-    func start(containerID: String) {
-        guard !running else { return }
-        #if KIRI_UI_PREVIEW
-        if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
-            running = true
-            output = """
-            / # cat /etc/os-release
-            PRETTY_NAME="Alpine Linux v3.19"
-            NAME="Alpine Linux"
-            VERSION_ID="3.19.1"
-            ID=alpine
-            HOME_URL="https://alpinelinux.org/"
+/ # ls -l /var/log
+total 8
+-rw-r--r-- 1 root root 615 Jan 20 10:14 access.log
+-rw-r--r-- 1 root root 615 Jan 20 10:14 error.log
 
-            / # ls -l /var/log
-            total 8
-            -rw-r--r-- 1 root root 615 Jan 20 10:14 access.log
-            -rw-r--r-- 1 root root 615 Jan 20 10:14 error.log
-
-            / # 
-            """
-            return
-        }
-        #endif
-        guard !containerID.isEmpty, containerID.count <= 64,
-              containerID.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) || (65...70).contains($0) }) else {
-            output = "无效的容器 ID"
-            return
-        }
-        var masterFD: Int32 = -1
-        var slaveFD: Int32 = -1
-        guard openpty(&masterFD, &slaveFD, nil, nil, nil) == 0 else {
-            output = "无法创建终端 PTY"
-            return
-        }
-        let masterHandle = FileHandle(fileDescriptor: masterFD, closeOnDealloc: true)
-        let slaveHandle = FileHandle(fileDescriptor: slaveFD, closeOnDealloc: true)
-        master = masterHandle
-        slave = slaveHandle
-        let child = Process()
-        child.executableURL = MobyPaths.docker
-        child.arguments = ["exec", "-it", containerID, "/bin/sh"]
-        child.standardInput = slaveHandle
-        child.standardOutput = slaveHandle
-        child.standardError = slaveHandle
-        child.environment = MobyRuntime.terminalEnvironment()
-        child.terminationHandler = { [weak self] ended in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.running = false
-                self.append("\r\n[会话结束：\(ended.terminationStatus)]\r\n")
-                self.master?.closeFile()
-                self.master = nil
-                self.slave?.closeFile()
-                self.slave = nil
-            }
-        }
-        do {
-            try child.run()
-            process = child
-            running = true
-            // Parent must close its slave descriptor so EOF is observable.
-            slaveHandle.closeFile()
-            slave = nil
-            DispatchQueue.global(qos: .utility).async { [weak self] in
-                while true {
-                    let data = masterHandle.availableData
-                    if data.isEmpty { break }
-                    let text = String(decoding: data, as: UTF8.self)
-                    Task { @MainActor [weak self] in self?.append(text) }
-                }
-            }
-        } catch {
-            append("终端启动失败：\(error.localizedDescription)")
-            masterHandle.closeFile()
-            slaveHandle.closeFile()
-        }
-    }
-
-    private func append(_ text: String) {
-        // The current view is a line terminal, not a VT100 screen emulator.
-        // Remove ANSI SGR/control sequences instead of displaying garbage.
-        let printable = text.replacingOccurrences(
-            of: "\u{001B}\\[[0-9;?]*[ -/]*[@-~]", with: "",
-            options: .regularExpression)
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-        output.append(printable)
-        if output.count > maxCharacters {
-            output.removeFirst(output.count - maxCharacters)
-        }
-    }
-
-    func send(_ text: String) {
-        guard running, let master else { return }
-        master.write(Data(text.utf8))
-    }
-
-    func submit() {
-        send(input + "\r")
-        input = ""
-    }
-
-    func interrupt() { send("\u{03}") }
-    func close() {
-        if running { send("exit\r") }
-        if process?.isRunning == true { process?.terminate() }
-        master?.closeFile()
-        master = nil
-        slave?.closeFile()
-        slave = nil
-        running = false
-    }
-}
+/ #
+"""
+#endif
 
 #if canImport(SwiftTerm)
 @MainActor
@@ -1077,8 +929,8 @@ private final class SwiftTermTerminalControls: ObservableObject {
 }
 
 // SwiftTerm's LocalProcessTerminalView owns the PTY, UTF-8/ANSI parser,
-// keyboard handling and resize/SIGWINCH. The launched executable is Kiri's
-// signed CLI, not a local host shell or a different Docker Engine context.
+// keyboard handling and resize/SIGWINCH. The child is the bundled official
+// Docker CLI, pinned to Kiri's private socket instead of the user's context.
 private struct NativeSwiftTermExecView: NSViewRepresentable {
     @Environment(\.colorScheme) private var colorScheme
     let containerID: String
@@ -1114,7 +966,6 @@ private struct NativeSwiftTermExecView: NSViewRepresentable {
 
 private struct ExecTerminalView: View {
     @Environment(\.colorScheme) private var colorScheme
-    @StateObject private var terminal = ExecTerminalSession()
     #if canImport(SwiftTerm)
     @StateObject private var swiftTermControls = SwiftTermTerminalControls()
     #endif
@@ -1123,34 +974,26 @@ private struct ExecTerminalView: View {
 
     var body: some View {
         Group {
-            #if canImport(SwiftTerm) && !KIRI_UI_PREVIEW
+            #if KIRI_UI_PREVIEW
+            // CI captures the appearance without launching Docker or a PTY.
+            ScrollView(.vertical) {
+                Text(previewTerminalOutput)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(ConsoleAppearance.foreground(colorScheme))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+            }
+            #elseif canImport(SwiftTerm)
             NativeSwiftTermExecView(containerID: containerID,
                                     controls: swiftTermControls)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .frame(minHeight: 150)
             #else
-            ScrollViewReader { proxy in
-                ScrollView(.vertical) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(terminal.output.isEmpty ?
-                             "正在连接容器…" : terminal.output)
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(ConsoleAppearance.foreground(colorScheme))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                        Color.clear.frame(height: 1).id("terminal-bottom")
-                    }
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                }
-                .onChange(of: terminal.output) { _, _ in
-                    proxy.scrollTo("terminal-bottom", anchor: .bottom)
-                }
-            }
-            .onAppear { terminal.start(containerID: containerID) }
-            .onDisappear { terminal.close() }
+            ContentUnavailableView("终端不可用", systemImage: "terminal",
+                                   description: Text("此构建未包含 SwiftTerm；请使用正式 Kiri Moby 应用。"))
             #endif
         }
         .frame(minHeight: 155)
@@ -1162,23 +1005,19 @@ private struct ExecTerminalView: View {
                   let command = ConsoleCommand(rawValue: action) else { return }
             switch command {
             case .copy:
-                #if canImport(SwiftTerm) && !KIRI_UI_PREVIEW
-                swiftTermControls.copy()
-                #else
+                #if KIRI_UI_PREVIEW
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(terminal.output, forType: .string)
+                NSPasteboard.general.setString(previewTerminalOutput, forType: .string)
+                #elseif canImport(SwiftTerm)
+                swiftTermControls.copy()
                 #endif
             case .clear:
                 #if canImport(SwiftTerm) && !KIRI_UI_PREVIEW
                 swiftTermControls.clear()
-                #else
-                terminal.output = ""
                 #endif
             case .interrupt:
                 #if canImport(SwiftTerm) && !KIRI_UI_PREVIEW
                 swiftTermControls.interrupt()
-                #else
-                terminal.interrupt()
                 #endif
             case .toggleFollow, .last200, .last1000, .last5000:
                 break
@@ -1633,52 +1472,6 @@ private struct ModernInspectorView: View {
         .font(.system(size: 10.5))
     }
 
-    private func overviewCard(_ item: ContainerItem) -> some View {
-        ModernInspectorCard {
-            HStack(spacing: 11) {
-                Image(systemName: item.Image?.lowercased().contains("mysql") == true ?
-                      "externaldrive.fill" : "shippingbox.fill")
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 46, height: 46)
-                    .background(Color.accentColor.opacity(0.085),
-                                in: RoundedRectangle(cornerRadius: 11))
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(item.title)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(item.State == "running" ? Color.green : Color.secondary)
-                            .frame(width: 7, height: 7)
-                        Text(item.State == "running" ? "运行中" : "未运行")
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            Text(item.Image ?? "—")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-            HStack(spacing: 6) {
-                Text("创建时间").foregroundStyle(.secondary)
-                Spacer()
-                if let created = item.Created, created > 0 {
-                    Text(Date(timeIntervalSince1970: TimeInterval(created)),
-                         style: .relative)
-                        .monospacedDigit()
-                        .foregroundStyle(.primary)
-                } else {
-                    Text("—").foregroundStyle(.secondary)
-                }
-            }
-            .font(.system(size: 11))
-        }
-    }
-
     @ViewBuilder
     private func resourceCard(_ item: ContainerItem) -> some View {
         ModernInspectorCard {
@@ -1827,53 +1620,6 @@ private struct ModernInspectorView: View {
         }
     }
 
-}
-
-/// Deliberately sparse table cell: one service identity with a 28pt icon and
-/// two typographic levels. Detailed metrics belong in the right Inspector.
-private struct ContainerRowView: View {
-    let item: ContainerItem
-    @State private var hovered = false
-
-    private var symbol: String {
-        let descriptor = (item.title + " " + (item.Image ?? "")).lowercased()
-        if ["mysql", "postgres", "mariadb", "mongo", "redis", "database"]
-            .contains(where: descriptor.contains) {
-            return "externaldrive.fill"
-        }
-        if ["nginx", "apache", "traefik", "caddy", "web", "http"]
-            .contains(where: descriptor.contains) {
-            return "network"
-        }
-        return "shippingbox.fill"
-    }
-
-    var body: some View {
-        HStack(spacing: 11) {
-            Image(systemName: symbol)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(item.State == "running" ? Color.accentColor : .secondary)
-                .frame(width: 28, height: 28)
-                .background(
-                    Color.accentColor.opacity(item.State == "running" ? 0.09 : 0.035),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            VStack(alignment: .leading, spacing: 3) {
-                Text(item.title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text(item.Image ?? "—")
-                    .font(.system(size: 11.5, weight: .regular, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.vertical, 4)
-        .onHover { hovered = $0 }
-        .help(item.Id)
-        .accessibilityElement(children: .combine)
-    }
 }
 
 // The outer NavigationSplitView intentionally stays two columns. Only the
@@ -2344,14 +2090,6 @@ private struct RootView: View {
                 selectedInspectorID = nil
             }
         }
-        .task(id: model.liveLogContainerID) {
-            guard let id = model.liveLogContainerID else { return }
-            while !Task.isCancelled {
-                await model.refreshLiveLogs(id)
-                do { try await Task.sleep(for: .seconds(2)) }
-                catch { break }
-            }
-        }
         .alert("Kiri Moby", isPresented: Binding(
             get: { model.error != nil },
             set: { if !$0 { model.error = nil } }
@@ -2364,15 +2102,10 @@ private struct RootView: View {
             if let result = model.result {
                 ZStack {
                     Color.black.opacity(0.52).ignoresSafeArea()
-                        .onTapGesture { model.result = nil; model.liveLogContainerID = nil }
+                        .onTapGesture { model.result = nil }
                     VStack(alignment: .leading, spacing: 14) {
                         HStack(spacing: 12) {
                             Text(result.title).font(.system(size: 14, weight: .semibold))
-                            if model.liveLogContainerID != nil {
-                                Label("实时刷新", systemImage: "arrow.clockwise")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(KiriPalette.mint)
-                            }
                             Spacer()
                             Text("\(result.body.utf8.count) bytes")
                                 .font(.system(size: 10, design: .monospaced))
@@ -2385,7 +2118,7 @@ private struct RootView: View {
                                 Label("复制", systemImage: "doc.on.doc")
                             }
                             .keyboardShortcut("c", modifiers: [.command, .shift])
-                            Button("关闭") { model.result = nil; model.liveLogContainerID = nil }
+                            Button("关闭") { model.result = nil }
                                 .keyboardShortcut(.escape, modifiers: [])
                         }
                         Divider()
@@ -2857,46 +2590,6 @@ private struct RootView: View {
         .lineLimit(1)
     }
 
-    private func localPortShortcut(_ container: ContainerItem) -> some View {
-        Group {
-            if let port = container.localPort {
-                Button {
-                    model.action("open_local", fields: [
-                        "url": "http://127.0.0.1:\(port)/"
-                    ], title: "open_local")
-                } label: {
-                    Image(systemName: "link")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(KiriPalette.blue)
-                }
-                .buttonStyle(.plain)
-                .help("打开本地端口 \(port)（非公网分享）")
-            } else {
-                Text("—").foregroundStyle(KiriPalette.faint(model.isLight))
-            }
-        }
-    }
-
-    private func containerStateBadge(_ item: ContainerItem) -> some View {
-        let state = item.State ?? "unknown"
-        let running = state == "running"
-        return Label {
-            Text(running ? "运行中" : (state == "paused" ? "已暂停" :
-                 (state == "exited" || state == "created" ? "已停止" : state)))
-        } icon: {
-            Image(systemName: "circle.fill")
-                .font(.system(size: 7))
-        }
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(running ? Color(red: 0.08, green: 0.53, blue: 0.21) :
-                KiriPalette.muted(model.isLight))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(running ? Color.green.opacity(0.12) :
-                Color.secondary.opacity(0.07))
-            .clipShape(Capsule())
-    }
-
     // Compact dashboard cell shared by the Containers table and the nested
     // Compose service rows. Network and disk counters are cumulative I/O;
     // CPU % and working-set memory are current sampling windows.
@@ -2915,19 +2608,6 @@ private struct RootView: View {
                 .foregroundStyle(KiriPalette.muted(model.isLight))
                 .help(model.statsError ?? "等待 Docker Engine 提供容器统计数据")
         }
-    }
-
-    private func containerSelection(_ id: String) -> some View {
-        Toggle("", isOn: Binding(
-            get: { selectedContainerIDs.contains(id) },
-            set: { enabled in
-                if enabled { selectedContainerIDs.insert(id) }
-                else { selectedContainerIDs.remove(id) }
-            }
-        ))
-        .labelsHidden()
-        .toggleStyle(.checkbox)
-        .help("选择容器")
     }
 
     // Mail-style native container list, with details in the third column.
