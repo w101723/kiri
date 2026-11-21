@@ -54,6 +54,9 @@ def verify_source(errors: list[str]) -> None:
         errors.append("Current branded icon source missing")
     if (ROOT / "brand/icon/png/kiri-menubar-template@2x.png").exists():
         errors.append("Obsolete independent menu-bar image remains in brand resources")
+    notice = (ROOT / "NOTICE").read_text(encoding="utf-8")
+    if any(name in notice.lower() for name in ("webkit2gtk", "webview2-com", "javascriptcore-rs", "xterm.js")):
+        errors.append("Legacy web runtime license manifest was reintroduced into native NOTICE")
 
 
 def verify_app(root: pathlib.Path, errors: list[str]) -> None:

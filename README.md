@@ -44,6 +44,6 @@ standalone status icon. CI checks native source, compiled framework links and
 the assembled app for browser runtimes and web frontend assets using
 `scripts/moby/audit-native-runtime.py`. Browser-opening actions use the
 system browser outside the app; the app itself renders only SwiftUI/AppKit.
-The historical dependency ledger in `NOTICE` remains in the source tree for
-license provenance; the installed app receives the active-component ledger
-`NOTICE-NATIVE.txt` instead.
+The current `NOTICE` contains the active native components and the Linux
+kernel GPL-2.0-only license / source offer; obsolete web dependency notices
+remain available in Git history, not in the installed app.

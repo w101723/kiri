@@ -28,7 +28,7 @@ on:
       - "Cargo.toml"
       - "scripts/moby/check-native-ui-parity.py"
       - "brand/icon/png/**"
-      - "NOTICE-NATIVE.txt"
+      - "NOTICE"
       - "scripts/moby/audit-native-runtime.py"
 
 concurrency:
@@ -306,8 +306,7 @@ jobs:
           cp downloaded/cli/docker-buildx "$res/bin/cli-plugins/docker-buildx"
           chmod 755 "$res/bin/kiri-moby-host" "$res/bin/docker" \
             "$res/bin/cli-plugins/docker-compose" "$res/bin/cli-plugins/docker-buildx"
-          cp LICENSE "$res/"
-          cp NOTICE-NATIVE.txt "$res/NOTICE"
+          cp LICENSE NOTICE "$res/"
           mkdir -p packaged/Kiri.iconset
           for spec in '16 1' '16 2' '32 1' '32 2' '128 1' '128 2' '256 1' '256 2' '512 1' '512 2'; do
             set -- $spec
