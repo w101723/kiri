@@ -320,6 +320,7 @@ jobs:
           cp downloaded/cli/docker-buildx "$res/bin/cli-plugins/docker-buildx"
           chmod 755 "$res/bin/kiri-moby-host" "$res/bin/docker" \
             "$res/bin/cli-plugins/docker-compose" "$res/bin/cli-plugins/docker-buildx"
+          cp brand/icon/png/kiri-menubar-template@2x.png "$res/"
           cp LICENSE NOTICE "$res/"
           mkdir -p packaged/Kiri.iconset
           for spec in '16 1' '16 2' '32 1' '32 2' '128 1' '128 2' '256 1' '256 2' '512 1' '512 2'; do
