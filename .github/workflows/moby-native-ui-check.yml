@@ -51,6 +51,16 @@ jobs:
           fi
           codesign --force --sign - "$RUNNER_TEMP/kiri-moby-native-ui"
           codesign --verify --strict "$RUNNER_TEMP/kiri-moby-native-ui"
+      - name: Exercise Swift Docker Unix socket client using a local mock dockerd
+        run: |
+          set -euo pipefail
+          sdk="$(xcrun --sdk macosx --show-sdk-path)"
+          swiftc -parse-as-library -O -target x86_64-apple-macosx14.0 -sdk "$sdk" \
+            crates/kiri/native/MobyRuntime.swift \
+            scripts/moby/native-runtime-smoke.swift \
+            -o "$RUNNER_TEMP/native-moby-uds-smoke"
+          "$RUNNER_TEMP/native-moby-uds-smoke"
+
   swift-host:
     name: Compile independent Swift VZ host for Apple Silicon
     runs-on: macos-15-intel
