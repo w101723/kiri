@@ -26,6 +26,8 @@ private struct RootView: View {
     @State private var loadedLogIDs = Set<String>()
     @State private var loadedTerminalIDs = Set<String>()
     @State private var showVMPopover = false
+    @State private var showingPullSheet = false
+    @State private var showingNetworkSheet = false
     @Environment(\.openWindow) private var openWindow
     // Three true navigation columns share a single native macOS titlebar.
     var body: some View {
@@ -212,6 +214,16 @@ private struct RootView: View {
                 }
             }
                 }
+            }
+        }
+        .sheet(isPresented: $showingPullSheet) {
+            KiriPullImageSheet {
+                model.refresh()
+            }
+        }
+        .sheet(isPresented: $showingNetworkSheet) {
+            KiriNewNetworkSheet {
+                model.refresh()
             }
         }
         .font(.system(size: 12))
@@ -570,6 +582,7 @@ private struct RootView: View {
         case .volumes: return "\(model.volumes.count) 个数据卷"
         case .networks: return "\(model.networks.count) 个网络"
         case .compose: return "\(composeProjects.count) 个项目"
+        case .activity: return "CPU / 内存 / 网络实时采样"
         case .builds: return "Dockerfile / BuildKit"
         case .overview: return model.online ? "标准 Docker Engine 运行中" : "引擎未启动"
         case .settings: return "虚拟机设置与目录授权"
@@ -583,17 +596,13 @@ private struct RootView: View {
                 model.perform(["run", image], title: "新建容器", showResult: false)
             }
         case .images:
-            if let name = model.ask("镜像名称", placeholder: "alpine:3.22") {
-                model.perform(["pull", name], title: "Pull image", showResult: false)
-            }
+            showingPullSheet = true
         case .volumes:
             if let name = model.ask("新 Volume 名称") {
                 model.action("create_volume", fields: ["name": name], title: "Create volume")
             }
         case .networks:
-            if let name = model.ask("网络名称") {
-                model.action("create_network", fields: ["name": name], title: "Create network")
-            }
+            showingNetworkSheet = true
         default: break
         }
     }
@@ -698,6 +707,7 @@ private struct RootView: View {
         case .images: images
         case .volumes: volumes
         case .networks: networks
+        case .activity: KiriActivityView()
         case .compose: compose
         case .builds: builds
         case .settings: settings

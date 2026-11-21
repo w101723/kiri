@@ -460,6 +460,23 @@ enum MobyVM {
 }
 
 enum MobyRuntime {
+    /// Capture (exit code, combined output) for interactive operations driven
+    /// from sheets (pull, network create) that surface errors inline.
+    static func dockerCapture(_ args: [String]) -> (Int32, String) {
+        do { return (0, try docker(args)) }
+        catch { return (1, error.localizedDescription) }
+    }
+
+    /// The bundled CLI + environment invocation for long-running commands that
+    /// stream their own progress (image pull).
+    static func dockerInvocation(_ args: [String]) -> [String] {
+        [MobyPaths.docker.path] + dockerEnvironmentArray() + args
+    }
+
+    static func dockerEnvironmentArray() -> [String] {
+        dockerEnvironment().map { "\($0.key)=\($0.value)" }
+    }
+
     private static func docker(_ args: [String]) throws -> String {
         // Never fall back to another user's Docker CLI, context, or arbitrary PATH.
         let executable = MobyPaths.docker
