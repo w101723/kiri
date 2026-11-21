@@ -127,49 +127,84 @@ private func approvedShares() throws -> ([String: VZSharedDirectory], String) {
 // poll-based duplex relay: byte-exact HTTP, chunked, binary and upgraded PTY streams.
 // Retain VZVirtioSocketConnection for the whole relay; do not close its owned descriptor.
 private enum ByteRelay {
-    static func wait(_ fd: Int32, _ flags: Int16) -> Bool {
-        var desc = pollfd(fd: fd, events: flags, revents: 0)
-        while true {
-            let rc = Darwin.poll(&desc, 1, 3000)
-            if rc > 0 { return (desc.revents & (flags | Int16(POLLHUP) | Int16(POLLERR))) != 0 }
-            if rc == 0 { return true }
-            if errno != EINTR { return false }
+    // Single-worker, nonblocking, poll-driven full duplex pump. Each direction
+    // has a bounded 64 KiB buffer. Preserve independent half-closes and binary
+    // bytes including Docker's 101 Upgrade / exec / attach streams.
+    static func relay(_ client: Int32, _ guest: VZVirtioSocketConnection) {
+        let engine = guest.fileDescriptor
+        let clientFlags = fcntl(client, F_GETFL, 0)
+        let engineFlags = fcntl(engine, F_GETFL, 0)
+        if clientFlags >= 0 { _ = fcntl(client, F_SETFL, clientFlags | O_NONBLOCK) }
+        if engineFlags >= 0 { _ = fcntl(engine, F_SETFL, engineFlags | O_NONBLOCK) }
+        defer {
+            if clientFlags >= 0 { _ = fcntl(client, F_SETFL, clientFlags) }
+            if engineFlags >= 0 { _ = fcntl(engine, F_SETFL, engineFlags) }
         }
-    }
-    static func copy(_ from: Int32, _ to: Int32) {
-        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+
+        var clientEOF = false, engineEOF = false
+        var clientWriteClosed = false, engineWriteClosed = false
+        var upstream = [UInt8](), downstream = [UInt8]()
+        upstream.reserveCapacity(65536)
+        downstream.reserveCapacity(65536)
+
         while true {
-            let n = buffer.withUnsafeMutableBytes { Darwin.read(from, $0.baseAddress, $0.count) }
-            if n == 0 { break }
-            if n < 0 {
+            if clientEOF && upstream.isEmpty && !engineWriteClosed {
+                _ = shutdown(engine, SHUT_WR)
+                engineWriteClosed = true
+            }
+            if engineEOF && downstream.isEmpty && !clientWriteClosed {
+                _ = shutdown(client, SHUT_WR)
+                clientWriteClosed = true
+            }
+            if clientEOF && engineEOF && upstream.isEmpty && downstream.isEmpty { break }
+            var fds = [
+                pollfd(fd: client, events:
+                    ((!clientEOF && upstream.count < 65536) ? Int16(POLLIN) : 0) |
+                    (!downstream.isEmpty ? Int16(POLLOUT) : 0), revents: 0),
+                pollfd(fd: engine, events:
+                    ((!engineEOF && downstream.count < 65536) ? Int16(POLLIN) : 0) |
+                    (!upstream.isEmpty ? Int16(POLLOUT) : 0), revents: 0)
+            ]
+            let status = fds.withUnsafeMutableBufferPointer {
+                Darwin.poll($0.baseAddress, nfds_t($0.count), 3000)
+            }
+            if status < 0 {
                 if errno == EINTR { continue }
-                if (errno == EAGAIN || errno == EWOULDBLOCK) && wait(from, Int16(POLLIN)) { continue }
                 break
             }
-            var sent = 0
-            while sent < n {
-                let written = buffer.withUnsafeBytes {
-                    Darwin.write(to, $0.baseAddress!.advanced(by: sent), n - sent)
+            if status == 0 { continue }
+            if (fds[0].revents & Int16(POLLNVAL | POLLERR)) != 0 ||
+               (fds[1].revents & Int16(POLLNVAL | POLLERR)) != 0 { break }
+
+            func receive(_ source: Int32, _ pending: inout [UInt8], _ eof: inout Bool) {
+                var scratch = [UInt8](repeating: 0, count: 65536 - pending.count)
+                if scratch.isEmpty { return }
+                let count = scratch.withUnsafeMutableBytes { Darwin.read(source, $0.baseAddress, $0.count) }
+                if count == 0 { eof = true }
+                else if count > 0 { pending.append(contentsOf: scratch.prefix(count)) }
+                else if errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK { eof = true }
+            }
+            func transmit(_ target: Int32, _ pending: inout [UInt8], _ eof: inout Bool) {
+                guard !pending.isEmpty else { return }
+                let written = pending.withUnsafeBytes { Darwin.write(target, $0.baseAddress, $0.count) }
+                if written > 0 { pending.removeFirst(written) }
+                else if written < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK {
+                    eof = true
+                    pending.removeAll()
                 }
-                if written > 0 { sent += written; continue }
-                if written < 0 && errno == EINTR { continue }
-                if written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)
-                    && wait(to, Int16(POLLOUT)) { continue }
-                return
+            }
+            // Try pending bytes before reading more; this caps resident buffers.
+            if (fds[1].revents & Int16(POLLOUT)) != 0 { transmit(engine, &upstream, &clientEOF) }
+            if (fds[0].revents & Int16(POLLOUT)) != 0 { transmit(client, &downstream, &engineEOF) }
+            if (fds[0].revents & Int16(POLLIN | POLLHUP)) != 0 && !clientEOF {
+                receive(client, &upstream, &clientEOF)
+            }
+            if (fds[1].revents & Int16(POLLIN | POLLHUP)) != 0 && !engineEOF {
+                receive(engine, &downstream, &engineEOF)
             }
         }
-        _ = shutdown(to, SHUT_WR)
-    }
-    static func relay(_ client: Int32, _ guest: VZVirtioSocketConnection) {
-        let vsock = guest.fileDescriptor
-        let done = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .utility).async {
-            _ = guest
-            copy(client, vsock)
-            done.signal()
-        }
-        copy(vsock, client)
-        done.wait()
+        _ = shutdown(client, SHUT_RDWR)
+        _ = shutdown(engine, SHUT_RDWR)
     }
 }
 private func unixListen(_ path: URL) throws -> Int32 {
