@@ -683,6 +683,28 @@ private func sizeLabel(_ value: Int64?) -> String {
     return String(format: index == 0 ? "%.0f %@" : "%.1f %@", scaled, sizes[index])
 }
 
+/// Render registry / namespace in secondary gray, identity in primary ink,
+/// and the image tag in secondary gray without splitting the row into columns.
+private func styledImageName(_ raw: String) -> Text {
+    let slash = raw.lastIndex(of: "/")
+    let colon = raw.lastIndex(of: ":")
+    let tagIndex: String.Index? = {
+        guard let colon, slash == nil || colon > slash! else { return nil }
+        return colon
+    }()
+    let repository = tagIndex.map { String(raw[..<$0]) } ?? raw
+    let tag = tagIndex.map { String(raw[$0...]) } ?? ""
+    if let separator = repository.lastIndex(of: "/") {
+        let prefix = String(repository[...separator])
+        let name = String(repository[repository.index(after: separator)...])
+        return Text(prefix).foregroundColor(.secondary)
+            + Text(name).foregroundColor(.primary)
+            + Text(tag).foregroundColor(.secondary)
+    }
+    return Text(repository).foregroundColor(.primary)
+        + Text(tag).foregroundColor(.secondary)
+}
+
 // A separate native log window, matching the reference's floating black console.
 // This uses bounded polling over Kiri's private backend; it does not claim a
 // Docker streaming connection when the transport is actually snapshot-based.
@@ -1872,66 +1894,82 @@ private struct ContainerWorkspaceDetail: View {
     }
 }
 
-/// Mail-style 44pt native list row: identity first, hover-only controls.
+/// Airy, semantically colored native resource row. Stopped containers are
+/// visually subdued; all actions remain accessible on hover/context menu.
 private struct CompactContainerRow: View {
     let item: ContainerItem
     let onAction: (String) -> Void
     @State private var hovered = false
 
-    private var portHint: String {
-        guard let port = item.Ports?.first(where: { $0.PublicPort != nil })?.PublicPort else {
-            return ""
+    private var running: Bool { item.State == "running" }
+
+    private var brand: (symbol: String, color: Color) {
+        let name = (item.title + " " + (item.Image ?? "")).lowercased()
+        if ["mysql", "postgres", "mariadb", "mongo"].contains(where: name.contains) {
+            return ("cylinder.split.1x2", .indigo)
         }
-        return ":\(port)"
+        if ["redis", "memcached"].contains(where: name.contains) {
+            return ("bolt.horizontal.circle.fill", .orange)
+        }
+        if ["nginx", "caddy", "traefik", "apache"].contains(where: name.contains) {
+            return ("globe", .green)
+        }
+        return ("shippingbox.fill", .blue)
+    }
+
+    private var portHint: String? {
+        item.Ports?.first(where: { $0.Type == "tcp" && $0.PublicPort != nil })
+            .flatMap { $0.PublicPort.map(String.init) }
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "shippingbox.fill")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 24, height: 24)
-                .background(Color.accentColor.opacity(0.085),
-                            in: RoundedRectangle(cornerRadius: 6))
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 11) {
+            Image(systemName: brand.symbol)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(running ? brand.color : Color.secondary)
+                .frame(width: 30, height: 30)
+                .background(
+                    (running ? brand.color : Color.secondary).opacity(0.075),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
                 Text(item.title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(running ? Color.primary : Color.secondary)
                     .lineLimit(1)
-                Text(item.Image ?? "—")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                styledImageName(item.Image ?? "—")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .opacity(running ? 1 : 0.62)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            Spacer(minLength: 0)
+            Spacer(minLength: 2)
             if hovered {
                 Button {
-                    onAction(item.State == "running" ? "stop" : "start")
+                    onAction(running ? "stop" : "start")
                 } label: {
-                    Image(systemName: item.State == "running" ? "stop.fill" : "play.fill")
+                    Image(systemName: running ? "stop.fill" : "play.fill")
                 }
-                .help(item.State == "running" ? "停止" : "启动")
+                .help(running ? "停止" : "启动")
                 Button { onAction("exec") } label: {
                     Image(systemName: "terminal")
                 }
-                .disabled(item.State != "running")
+                .disabled(!running)
                 .help("打开终端")
             } else {
-                VStack(alignment: .trailing, spacing: 5) {
+                HStack(spacing: 7) {
                     Circle()
-                        .fill(item.State == "running" ? Color.green : Color.gray)
-                        .frame(width: 7, height: 7)
-                    if !portHint.isEmpty {
-                        Text(portHint)
-                            .font(.system(size: 9, design: .monospaced))
+                        .fill(running ? Color.green : Color.secondary.opacity(0.45))
+                        .frame(width: 6, height: 6)
+                    if let portHint {
+                        Text(":\(portHint)")
+                            .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.tertiary)
-                            .lineLimit(1)
                     }
                 }
             }
         }
         .buttonStyle(.plain)
-        .frame(height: 40)
+        .frame(height: 48)
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
     }
@@ -1942,7 +1980,6 @@ private struct RootView: View {
     @State private var selectedContainerIDs = Set<String>()
     @State private var selectedInspectorID: String?
     @State private var hoveredActionRowID: String?
-    @State private var showInspector = true
     @State private var isSearching = false
     @FocusState private var searchFocused: Bool
     @State private var activeDetailTab: ContainerDetailTab = .overview
@@ -2154,7 +2191,6 @@ private struct RootView: View {
                 let previewID = "a000000000000000"
                 selectedContainerIDs = [previewID]
                 selectedInspectorID = previewID
-                showInspector = true
                 activeDetailTab = .overview
                 // Screenshot assertions must capture an active, focused Mac
                 // window; unfocused macOS sidebars are intentionally dimmed.
@@ -2189,7 +2225,6 @@ private struct RootView: View {
         .onChange(of: selectedContainerIDs) { old, new in
             if let added = new.subtracting(old).first {
                 selectedInspectorID = added
-                showInspector = true
             } else if new.isEmpty {
                 selectedInspectorID = nil
             } else if let current = selectedInspectorID, !new.contains(current) {
@@ -2345,7 +2380,6 @@ private struct RootView: View {
         model.page = .containers
         selectedContainerIDs = [containerID]
         selectedInspectorID = containerID
-        showInspector = true
         activeDetailTab = kind == .exec ? .terminal : .logs
         if kind == .exec { loadedTerminalIDs.insert(containerID) }
         else { loadedLogIDs.insert(containerID) }
@@ -2590,7 +2624,7 @@ private struct RootView: View {
     @ViewBuilder private var content: some View {
         switch model.page {
         case .overview: overview
-        case .containers: containers
+        case .containers: containerList
         case .images: images
         case .volumes: volumes
         case .networks: networks
@@ -2842,95 +2876,94 @@ private struct RootView: View {
         }
     }
 
-    // Mail-style native container list, with details in the third column.
-    // Only Containers uses an inner HSplitView. VM and Settings stay full width.
-    private var containers: some View {
-        HSplitView {
-            containerList
-                .frame(minWidth: 230, idealWidth: 250, maxWidth: 260,
-                       maxHeight: .infinity)
-            if showInspector {
-                if let selected = model.containers.first(where: {
-                    $0.Id == selectedInspectorID
-                }) {
-                    ContainerWorkspaceDetail(
-                        container: selected,
-                        activeTab: $activeDetailTab,
-                        loadedLogIDs: $loadedLogIDs,
-                        loadedTerminalIDs: $loadedTerminalIDs,
-                        onAction: { action, item in
-                            if action == "restart" &&
-                                !model.confirm("重启 \(item.title)？",
-                                    detail: "运行中的服务会短暂中断。") {
-                                return
-                            }
-                            containerOp(action, item)
-                        }
-                    )
-                    .environmentObject(model)
-                    .frame(minWidth: 420, idealWidth: 500, maxWidth: .infinity,
-                           maxHeight: .infinity)
-                } else {
-                    ContentUnavailableView("选择一个容器",
-                        systemImage: "sidebar.right",
-                        description: Text("在列表中选择容器以查看概览、日志与终端。"))
-                        .frame(minWidth: 420, idealWidth: 500, maxWidth: .infinity,
-                               maxHeight: .infinity)
-                }
-            }
-        }
-    }
-
     private var containerList: some View {
         List(selection: $selectedContainerIDs) {
-            ForEach(filteredContainers.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }) { item in
-                CompactContainerRow(item: item, onAction: { action in
-                    if action == "exec" {
-                        openConsole(.exec, containerID: item.Id, name: item.title)
-                    } else {
-                        containerOp(action, item)
-                    }
-                })
-                .tag(item.Id)
-                .onTapGesture(count: 2) {
-                    if item.State == "running" {
-                        openConsole(.exec, containerID: item.Id, name: item.title)
-                    }
-                }
-                .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
-                .contextMenu {
-                    Button("概览") {
-                        selectedContainerIDs = [item.Id]
-                        selectedInspectorID = item.Id
-                        activeDetailTab = .overview
-                    }
-                    Button("终端") {
-                        openConsole(.exec, containerID: item.Id, name: item.title)
-                    }
-                    .disabled(item.State != "running")
-                    Button("日志") {
-                        openConsole(.logs, containerID: item.Id, name: item.title)
-                    }
-                    Divider()
-                    Button(item.State == "running" ? "停止" : "启动") {
-                        containerOp(item.State == "running" ? "stop" : "start", item)
-                    }
-                    Button("重启") { containerOp("restart", item) }
-                        .disabled(item.State != "running")
-                    Button(item.State == "paused" ? "恢复" : "暂停") {
-                        containerOp(item.State == "paused" ? "unpause" : "pause", item)
-                    }
-                    Divider()
-                    Button("删除容器", role: .destructive) {
-                        if model.confirm("删除 \(item.title)？",
-                                         detail: "将移除容器，但不会自动删除命名数据卷。") {
-                            containerOp("remove", item)
+            ForEach([true, false], id: \.self) { running in
+                let items = filteredContainers
+                    .filter { ($0.State == "running") == running }
+                    .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+                if !items.isEmpty {
+                    Section(running ? "运行中" : "已停止") {
+                        ForEach(items) { item in
+                            CompactContainerRow(item: item, onAction: { action in
+                                if action == "exec" {
+                                    openConsole(.exec, containerID: item.Id, name: item.title)
+                                } else {
+                                    containerOp(action, item)
+                                }
+                            })
+                            .tag(item.Id)
+                            .onTapGesture(count: 2) {
+                                if item.State == "running" {
+                                    openConsole(.exec, containerID: item.Id, name: item.title)
+                                }
+                            }
+                            .listRowInsets(EdgeInsets(top: 0, leading: 9, bottom: 0, trailing: 9))
+                            .listRowSeparator(.hidden)
+                            .contextMenu {
+                                Button("概览") {
+                                    selectedContainerIDs = [item.Id]
+                                    selectedInspectorID = item.Id
+                                    activeDetailTab = .overview
+                                }
+                                Button("终端") {
+                                    openConsole(.exec, containerID: item.Id, name: item.title)
+                                }
+                                .disabled(item.State != "running")
+                                Button("日志") {
+                                    openConsole(.logs, containerID: item.Id, name: item.title)
+                                }
+                                Divider()
+                                Button(item.State == "running" ? "停止" : "启动") {
+                                    containerOp(item.State == "running" ? "stop" : "start", item)
+                                }
+                                Button("重启") { containerOp("restart", item) }
+                                    .disabled(item.State != "running")
+                                Button(item.State == "paused" ? "恢复" : "暂停") {
+                                    containerOp(item.State == "paused" ? "unpause" : "pause", item)
+                                }
+                                Divider()
+                                Button("删除容器", role: .destructive) {
+                                    if model.confirm("删除 \(item.title)？",
+                                        detail: "将移除容器，但不会自动删除命名数据卷。") {
+                                        containerOp("remove", item)
+                                    }
+                                }
+                            }
                         }
                     }
+                }
+            }
+            if model.containers.isEmpty {
+                Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("开始使用 Docker", systemImage: "shippingbox")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("运行你的第一个容器")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Text("docker run -it -p 80:80 nginx:alpine")
+                            .font(.system(size: 10, design: .monospaced))
+                            .textSelection(.enabled)
+                            .lineLimit(2)
+                        Button("拉取 nginx:alpine") {
+                            model.perform(["pull", "nginx:alpine"],
+                                          title: "Pull image", showResult: false)
+                        }
+                        .font(.system(size: 11))
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.primary.opacity(0.04),
+                                in: RoundedRectangle(cornerRadius: 10))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 }
             }
         }
         .listStyle(.inset)
+        .scrollContentBackground(.hidden)
+        .background(Color(nsColor: .textBackgroundColor))
     }
 
     private var images: some View {
