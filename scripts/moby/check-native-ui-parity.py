@@ -133,10 +133,17 @@ for label in ("Containers", "Images", "Volumes", "Networks", "Compose", "Builds"
     has(NEW, label, "Native navigation")
 
 has(WORKFLOW, "CFBundleExecutable</key><string>kiri-moby-ui", "Native Finder binary")
-has(NEW, 'Bundle.main.url(forResource: "Kiri", withExtension: "icns")',
-    "Menubar uses same Kiri.icns as Finder")
-has(NEW, 'icon.isTemplate = false', "Brand icon is not an SF Symbol mask")
-has(NEW, '.renderingMode(.original)', "Menu-bar icon preserves brand colors")
+has(NEW, 'NSImage(size: size, flipped: false)', "Menu-bar renders a vector NSImage")
+has(NEW, 'NSSize(width: 18, height: 18)', "18pt native status-bar mark")
+has(NEW, 'let outline = NSBezierPath()', "Open-backed six-sided brand silhouette")
+has(NEW, 'let folds = NSBezierPath()', "Inverted-Y cube folds")
+has(NEW, 'for corner in [top, lowerLeft, lowerRight]', "Three-way cube face alignment")
+has(NEW, 'image.isTemplate = true', "System-tinted monochrome menu-bar icon")
+has(NEW, '.renderingMode(.template)', "SwiftUI honors template rendering")
+if 'Bundle.main.url(forResource: "Kiri", withExtension: "icns")' in NEW:
+    errors.append("Colorful Dock app icon must not be reused for the status bar")
+if '.renderingMode(.original)' in NEW or 'image.isTemplate = false' in NEW:
+    errors.append("Status bar icon must adapt to light/dark system appearance")
 if "kiri-menubar-template@2x.png" in NEW or "kiri-menubar-template@2x.png" in WORKFLOW:
     errors.append("Retired standalone menu-bar icon must not be bundled")
 for text, label in [(SIGNER, "Personal signer"), (INSTALL, "Local installer")]:

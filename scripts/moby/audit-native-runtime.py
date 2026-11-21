@@ -46,10 +46,15 @@ def verify_source(errors: list[str]) -> None:
             if pattern.search(content):
                 errors.append(f"Web/frontend API or obsolete icon reference in {file.name}: {pattern.pattern}")
     app = SOURCES[0].read_text(encoding="utf-8")
-    if 'Bundle.main.url(forResource: "Kiri", withExtension: "icns")' not in app:
-        errors.append("Menu-bar must use the same Kiri.icns that is configured in Info.plist")
-    if "icon.isTemplate = false" not in app or ".renderingMode(.original)" not in app:
-        errors.append("Full-color brand icon cannot be forced into an opaque template mask")
+    for needle in ('NSImage(size: size, flipped: false)', 'NSSize(width: 18, height: 18)',
+                   'let outline = NSBezierPath()', 'let folds = NSBezierPath()',
+                   'image.isTemplate = true', '.renderingMode(.template)'):
+        if needle not in app:
+            errors.append(f"Native monochrome status bar drawing missing: {needle}")
+    for needle in ('Bundle.main.url(forResource: "Kiri", withExtension: "icns")',
+                   '.renderingMode(.original)', 'image.isTemplate = false'):
+        if needle in app:
+            errors.append(f"Colorful Dock icon leaked into status-bar rendering: {needle}")
     if not (ROOT / "brand/icon/png/kiri-app-icon-1024.png").is_file():
         errors.append("Current branded icon source missing")
     if (ROOT / "brand/icon/png/kiri-menubar-template@2x.png").exists():
@@ -66,13 +71,13 @@ def verify_app(root: pathlib.Path, errors: list[str]) -> None:
     resources = root / "Contents/Resources"
     icon = resources / "Kiri.icns"
     if not icon.is_file() or icon.stat().st_size < 1000:
-        errors.append("Missing or empty Kiri.icns for Finder and the menu-bar item")
+        errors.append("Missing or empty Kiri.icns for the Finder/Dock app icon")
     import plistlib
     try:
         with (root / "Contents/Info.plist").open("rb") as stream:
             info = plistlib.load(stream)
         if info.get("CFBundleIconFile") != "Kiri":
-            errors.append("Info.plist / menu bar icon mismatch: CFBundleIconFile must be Kiri")
+            errors.append("Finder/Dock app icon mismatch: CFBundleIconFile must be Kiri")
     except (OSError, ValueError, plistlib.InvalidFileException) as exc:
         errors.append(f"Invalid native app Info.plist: {exc}")
     for f in root.rglob("*"):
@@ -108,7 +113,7 @@ def main() -> int:
     if errors:
         print("FAIL: Native-only runtime audit:\n - " + "\n - ".join(errors), file=sys.stderr)
         return 1
-    print("PASS: native App sources, unified brand icon and no web frontend assets"
+    print("PASS: native App sources, monochrome template menu-bar mark and no web frontend assets"
           + (" / framework links" if args.app else ""))
     return 0
 

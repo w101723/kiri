@@ -13,21 +13,59 @@ import SwiftTerm
 // SwiftTerm also declares a Color type; UI code uses SwiftUI.Color exclusively.
 private typealias Color = SwiftUI.Color
 
-/// The menu-bar mark must use the exact Finder/Dock brand asset that was
-/// packaged for this App build. A separate status PNG can silently go stale.
+/// A compact monochrome outline of the Dock brand's hexagonal cube.
+///
+/// Unlike the full-color Finder icon, a macOS status item must have no rounded
+/// square background. The system renders this NSImage template in black/white
+/// to match the current menu bar appearance.
 private enum KiriMenuBarIcon {
     static let image: NSImage = {
-        guard let brandURL = Bundle.main.url(forResource: "Kiri", withExtension: "icns"),
-              let brand = NSImage(contentsOf: brandURL) else {
-            // Preview / ad-hoc executable without an app bundle: use the
-            // running application's icon, never an unrelated system glyph.
-            return NSApplication.shared.applicationIconImage
+        let size = NSSize(width: 18, height: 18)
+        let image = NSImage(size: size, flipped: false) { _ in
+            let center = NSPoint(x: 9, y: 9)
+            let radius: CGFloat = 7
+
+            func vertex(_ degrees: CGFloat) -> NSPoint {
+                let radians = degrees * .pi / 180
+                return NSPoint(x: center.x + radius * cos(radians),
+                               y: center.y + radius * sin(radians))
+            }
+
+            let top = vertex(90)
+            let upperRight = vertex(30)
+            let lowerRight = vertex(-30)
+            let bottom = vertex(-90)
+            let lowerLeft = vertex(-150)
+            let upperLeft = vertex(150)
+
+            NSColor.black.setStroke()
+
+            // One unfilled six-sided contour; no colored square/backplate.
+            let outline = NSBezierPath()
+            outline.lineWidth = 1.5
+            outline.lineJoinStyle = .round
+            outline.lineCapStyle = .round
+            outline.move(to: top)
+            for corner in [upperRight, lowerRight, bottom, lowerLeft, upperLeft] {
+                outline.line(to: corner)
+            }
+            outline.close()
+            outline.stroke()
+
+            // Interior three-way inverted-Y cube folds, matching the Dock mark.
+            let folds = NSBezierPath()
+            folds.lineWidth = 1.25
+            folds.lineJoinStyle = .round
+            folds.lineCapStyle = .round
+            for corner in [top, lowerLeft, lowerRight] {
+                folds.move(to: center)
+                folds.line(to: corner)
+            }
+            folds.stroke()
+            return true
         }
-        let icon = (brand.copy() as? NSImage) ?? brand
-        // The logo is a multicolor brand asset, not a monochrome status mask.
-        icon.isTemplate = false
-        icon.size = NSSize(width: 18, height: 18)
-        return icon
+        image.isTemplate = true
+        return image
     }()
 }
 
@@ -3537,7 +3575,7 @@ private struct KiriMobyNativeApp: App {
             Button("退出 Kiri Moby") { NSApplication.shared.terminate(nil) }
         } label: {
             Image(nsImage: KiriMenuBarIcon.image)
-                .renderingMode(.original)
+                .renderingMode(.template)
         }
     }
 }
