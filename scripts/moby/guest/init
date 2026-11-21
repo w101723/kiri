@@ -137,6 +137,17 @@ $udhcpc_bin -i eth0 -s /usr/local/sbin/kiri-udhcpc -n -q -t 12 || die "guest DHC
 # DHCP-provided resolver list is empty or malformed.
 grep -qs "nameserver" /etc/resolv.conf || echo "nameserver 10.0.2.2" > /etc/resolv.conf
 
+# The launcher may inject the pinned Docker Engine binaries read-only under
+# the "docker" VirtioFS tag (OrbStack-style app-side engine). Prefer them;
+# fall back to the engine shipped in this seed when the tag is absent.
+mkdir -p /run/docker-host
+if mount -t virtiofs docker /run/docker-host 2>/dev/null && [ -x /run/docker-host/bin/dockerd ]; then
+    export PATH="/run/docker-host/bin:$PATH"
+    log "Using injected Docker Engine from /run/docker-host/bin"
+else
+    umount /run/docker-host 2>/dev/null || true
+    log "Using the seed's Docker Engine"
+fi
 containerd --root /var/lib/containerd --state /run/containerd >/dev/console 2>&1 &
 containerd_pid=$!
 dockerd --host unix:///run/docker.sock --containerd /run/containerd/containerd.sock \

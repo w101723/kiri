@@ -25,7 +25,7 @@ int32_t kiri_hvf_check(void) {
 
 static int32_t run(const char *directory, uint32_t memory_mib, uint8_t cpus,
                    bool helper, const char *share_spec, const char *const *shares, uint8_t share_count,
-                   const char *rosetta_directory) {
+                   const char *rosetta_directory, const char *docker_directory) {
     char kernel[PATH_MAX], initrd[PATH_MAX], data[PATH_MAX], seed[PATH_MAX], console[PATH_MAX];
     char docker[sizeof(((struct sockaddr_un *)0)->sun_path)], stop[sizeof(docker)],
          telemetry[sizeof(docker)], ports[sizeof(docker)];
@@ -79,6 +79,7 @@ static int32_t run(const char *directory, uint32_t memory_mib, uint8_t cpus,
         CHECK(krun_add_virtiofs(ctx, tag, shares[i]));
     }
     if (rosetta_directory) CHECK(krun_add_virtiofs3(ctx, "rosetta", rosetta_directory, 0, true));
+    if (docker_directory) CHECK(krun_add_virtiofs3(ctx, "docker", docker_directory, 0, true));
     CHECK(krun_set_reset_exit_code(ctx, 70));
     CHECK(kiri_hvf_network_start(&network_fd));
     // No checksum or segmentation offloads: the NAT peer receives Ethernet frames.
@@ -97,12 +98,13 @@ cleanup:
 }
 
 int32_t kiri_hvf_run(const char *directory, uint32_t memory_mib, uint8_t cpus,
-                    const char *rosetta_directory) {
-    return run(directory, memory_mib, cpus, false, "", NULL, 0, rosetta_directory);
+                    const char *rosetta_directory, const char *docker_directory) {
+    return run(directory, memory_mib, cpus, false, "", NULL, 0, rosetta_directory, docker_directory);
 }
 
 int32_t kiri_hvf_run_helper(const char *directory, uint32_t memory_mib, uint8_t cpus,
                             const char *share_spec, const char *const *shares, uint8_t share_count,
-                            const char *rosetta_directory) {
-    return run(directory, memory_mib, cpus, true, share_spec, shares, share_count, rosetta_directory);
+                            const char *rosetta_directory, const char *docker_directory) {
+    return run(directory, memory_mib, cpus, true, share_spec, shares, share_count,
+               rosetta_directory, docker_directory);
 }

@@ -179,6 +179,23 @@ private final class HVFHelper {
         return (exports, encoded)
     }
 
+    // The bundled Docker Engine binaries live in the app bundle
+    // (Resources/docker/bin). Exported read-only under the "docker" tag when
+    // complete; a missing bundle keeps the guest on its seed's engine.
+    static func bundledEngineDirectory() -> String? {
+        let root = Bundle.main.bundleURL
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Resources/docker", isDirectory: true)
+        let bin = root.appendingPathComponent("bin", isDirectory: true)
+        for name in ["dockerd", "containerd", "runc"] {
+            var info = stat()
+            guard lstat(bin.appendingPathComponent(name).path, &info) == 0,
+                  info.st_mode & S_IFMT == S_IFREG else { return nil }
+        }
+        return root.path
+    }
+
     // Same host validation as the probe: Apple-owned, unwritable by group and
     // others, executable interpreter. Opt-out or a missing runtime keeps the
     // helper fully ARM64-capable without failing the VM.
@@ -277,18 +294,27 @@ private final class HVFHelper {
         } else {
             trace("Apple Linux translation runtime unavailable; amd64 images will not run")
         }
+        let engine = HVFHelper.bundledEngineDirectory()
+        if let engine {
+            trace("Injected Docker Engine: \(engine)")
+        } else {
+            trace("No bundled Docker Engine; the guest seed's engine will be used")
+        }
         trace("Starting in-process libkrun in Helper PID \(getpid())")
-        let launch: (UnsafePointer<CChar>?) -> Int32 = { [self] translation in
+        let launch: (UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> Int32 = { [self] translation, engineDir in
             data.path.withCString { directory in
                 spec.withCString { mapping in
                     exports.withUnsafeBufferPointer { buffer in
                         kiri_hvf_run_helper(directory, UInt32(ram), UInt8(cpus), mapping,
-                                            buffer.baseAddress, UInt8(shares.count), translation)
+                                            buffer.baseAddress, UInt8(shares.count),
+                                            translation, engineDir)
                     }
                 }
             }
         }
-        let result = rosetta.map { launch($0) } ?? launch(nil)
+        let result = rosetta.map { translation in
+            launch(translation, engine)
+        } ?? launch(nil, engine)
         throw hostError("libkrun returned during launch (\(result)); see logs/console.log")
     }
 }

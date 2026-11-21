@@ -45,6 +45,18 @@ cp "$resources/Kiri.icns" "$res/"
 cp "$root/LICENSE" "$root/NOTICE" "$res/"
 cp "$work/libkrun/LICENSE" "$res/LICENSE-libkrun"
 cp "$work/libslirp/COPYRIGHT" "$res/COPYRIGHT-libslirp"
+# Pinned Docker Engine (docker-ce binaries), exported to the Guest read-only
+# under the "docker" VirtioFS tag. OrbStack-style: engine binaries live in the
+# app bundle, so engine upgrades do not rebuild the Guest seed.
+engine_version="${KIRI_MOBY_DOCKER_VERSION:-29.10.0}"
+engine_tgz="$work/docker-$engine_version-aarch64.tgz"
+mkdir -p "$res/docker/bin"
+if [[ ! -x "$res/docker/bin/dockerd" ]]; then
+  curl -fsSL "https://download.docker.com/linux/static/stable/aarch64/docker-$engine_version.tgz" -o "$engine_tgz"
+  tar -xzf "$engine_tgz" -C "$work"
+  cp "$work/docker/dockerd" "$work/docker/containerd" "$work/docker/containerd-shim-runc-v2" \
+     "$work/docker/runc" "$work/docker/docker-init" "$work/docker/docker-proxy" "$res/docker/bin/"
+fi
 cp "$resources/bin/docker" "$res/bin/"
 for name in docker-compose docker-buildx; do cp "$resources/bin/cli-plugins/$name" "$res/bin/cli-plugins/"; done
 cat > "$app/Contents/Info.plist" <<'PLIST'
