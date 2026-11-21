@@ -47,7 +47,11 @@ def verify_source(errors: list[str]) -> None:
                 errors.append(f"Web/frontend API or obsolete icon reference in {file.name}: {pattern.pattern}")
     app = SOURCES[0].read_text(encoding="utf-8")
     for needle in ('NSImage(size: size, flipped: false)', 'NSSize(width: 18, height: 18)',
-                   'let outline = NSBezierPath()', 'let folds = NSBezierPath()',
+                   'func face(_ vertices: [NSPoint], alpha: CGFloat)',
+                   'let radius: CGFloat = 6.2',
+                   'context.compositingOperation = .destinationOut',
+                   'gaps.lineWidth = 1.2',
+                   '.opacity(model.online ? 1 : 0.42)',
                    'image.isTemplate = true', '.renderingMode(.template)'):
         if needle not in app:
             errors.append(f"Native monochrome status bar drawing missing: {needle}")
@@ -62,6 +66,8 @@ def verify_source(errors: list[str]) -> None:
     # Prevent reintroducing the retired second PTY engine, orphaned UI helpers,
     # or host-side Rust responsibilities already migrated to Swift.
     retired_ui = (
+        "HSplitView {", ".searchable(text: $model.search, placement: .toolbar",
+        "private var detailHeader: some View",
         "ExecTerminalSession", "openpty(", "ContainerRowView: View",
         "func overviewCard(", "func localPortShortcut(",
         "func containerStateBadge(", "func containerSelection(",
