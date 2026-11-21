@@ -133,6 +133,12 @@ for label in ("Containers", "Images", "Volumes", "Networks", "Compose", "Builds"
     has(NEW, label, "Native navigation")
 
 has(WORKFLOW, "CFBundleExecutable</key><string>kiri-moby-ui", "Native Finder binary")
+has(NEW, 'Bundle.main.url(forResource: "Kiri", withExtension: "icns")',
+    "Menubar uses same Kiri.icns as Finder")
+has(NEW, 'icon.isTemplate = false', "Brand icon is not an SF Symbol mask")
+has(NEW, '.renderingMode(.original)', "Menu-bar icon preserves brand colors")
+if "kiri-menubar-template@2x.png" in NEW or "kiri-menubar-template@2x.png" in WORKFLOW:
+    errors.append("Retired standalone menu-bar icon must not be bundled")
 for text, label in [(SIGNER, "Personal signer"), (INSTALL, "Local installer")]:
     has(text, "Contents/MacOS/kiri-moby-ui", label)
 

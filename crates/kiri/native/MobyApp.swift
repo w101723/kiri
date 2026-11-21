@@ -1,5 +1,5 @@
 // Kiri Moby — native SwiftUI/AppKit frontend, macOS 14+.
-// No WKWebView, JavaScript runtime, web server or embedded browser.
+// AppKit/SwiftUI/SwiftTerm compose the entire UI; no embedded browser.
 // Docker/VM operations use the in-process Swift HTTP-over-UDS client.
 // Only the independent VM Host is a separate Swift process; Guest stays Rust.
 import AppKit
@@ -13,13 +13,19 @@ import SwiftTerm
 // SwiftTerm also declares a Color type; UI code uses SwiftUI.Color exclusively.
 private typealias Color = SwiftUI.Color
 
+/// The menu-bar mark must use the exact Finder/Dock brand asset that was
+/// packaged for this App build. A separate status PNG can silently go stale.
 private enum KiriMenuBarIcon {
     static let image: NSImage = {
-        guard let resource = Bundle.main.resourceURL?.appendingPathComponent("kiri-menubar-template@2x.png"),
-              let icon = NSImage(contentsOf: resource) else {
-            return NSImage(systemSymbolName: "shippingbox", accessibilityDescription: "Kiri Moby") ?? NSImage()
+        guard let brandURL = Bundle.main.url(forResource: "Kiri", withExtension: "icns"),
+              let brand = NSImage(contentsOf: brandURL) else {
+            // Preview / ad-hoc executable without an app bundle: use the
+            // running application's icon, never an unrelated system glyph.
+            return NSApplication.shared.applicationIconImage
         }
-        icon.isTemplate = true
+        let icon = (brand.copy() as? NSImage) ?? brand
+        // The logo is a multicolor brand asset, not a monochrome status mask.
+        icon.isTemplate = false
         icon.size = NSSize(width: 18, height: 18)
         return icon
     }()
@@ -922,10 +928,10 @@ private final class ExecTerminalSession: ObservableObject {
             ID=alpine
             HOME_URL="https://alpinelinux.org/"
 
-            / # ls -l /usr/share/nginx/html
+            / # ls -l /var/log
             total 8
-            -rw-r--r-- 1 root root 615 Jan 20 10:14 50x.html
-            -rw-r--r-- 1 root root 615 Jan 20 10:14 index.html
+            -rw-r--r-- 1 root root 615 Jan 20 10:14 access.log
+            -rw-r--r-- 1 root root 615 Jan 20 10:14 error.log
 
             / # 
             """
@@ -1534,7 +1540,7 @@ private struct ModernInspectorView: View {
             {"Config":{"Env":["NGINX_VERSION=1.27.2","APP_ENV=production",
             "API_TOKEN=redacted-preview"],"WorkingDir":"/etc/nginx","User":""},
             "Mounts":[{"Type":"bind","Source":"/Users/demo/site",
-            "Destination":"/usr/share/nginx/html","RW":false}]}
+            "Destination":"/srv/project","RW":false}]}
             """
             inspection = try? JSONDecoder().decode(
                 ContainerInspectDetails.self, from: Data(preview.utf8))
@@ -2165,7 +2171,7 @@ private struct RootView: View {
     @Environment(\.openWindow) private var openWindow
     // Original Kiri Moby shell: 44pt title strip, 212pt flat sidebar,
     // bottom-left VM card, toolbar with status chips and footer.
-    // These are SwiftUI/AppKit views; no HTML, WKWebView or JavaScript.
+    // Every screen is constructed with native SwiftUI and AppKit views.
     var body: some View {
         NavigationSplitView {
             List(selection: Binding<Page?>(
@@ -2656,7 +2662,7 @@ private struct RootView: View {
     }
 
     // Compose project headers are ordered by the first container in the Docker
-    // snapshot, exactly like the previous WebKit table.
+    // snapshot, preserving the same container ordering.
     private var visualRows: [ContainerVisualRow] {
         let items = filteredContainers
         var visited = Set<String>()
@@ -3531,6 +3537,7 @@ private struct KiriMobyNativeApp: App {
             Button("退出 Kiri Moby") { NSApplication.shared.terminate(nil) }
         } label: {
             Image(nsImage: KiriMenuBarIcon.image)
+                .renderingMode(.original)
         }
     }
 }

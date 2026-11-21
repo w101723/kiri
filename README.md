@@ -36,3 +36,14 @@ cargo build --release --target aarch64-unknown-linux-musl -p kiri-moby-bridge --
 CI builds signed arm64 Host+UI, the Linux Guest, verifies real AppKit screenshots with synthetic fixture data, and packages a single `.app`/DMG. See [native GUI](docs/MOBY_NATIVE_GUI.md), [engine](docs/MOBY_ENGINE.md), and [install](docs/MOBY_LOCAL_INSTALL_MACOS.md).
 
 Licensed under Apache-2.0. Third-party copyright notices: [NOTICE](NOTICE).
+
+## Native-only resource guarantee
+
+The menu-bar item loads the same `Kiri.icns` as Finder, without the retired
+standalone status icon. CI checks native source, compiled framework links and
+the assembled app for browser runtimes and web frontend assets using
+`scripts/moby/audit-native-runtime.py`. Browser-opening actions use the
+system browser outside the app; the app itself renders only SwiftUI/AppKit.
+The historical dependency ledger in `NOTICE` remains in the source tree for
+license provenance; the installed app receives the active-component ledger
+`NOTICE-NATIVE.txt` instead.
