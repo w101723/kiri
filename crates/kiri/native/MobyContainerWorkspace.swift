@@ -177,7 +177,7 @@ struct ContainerWorkspaceDetail: View {
 
     var body: some View {
         ZStack {
-            ModernInspectorView(item: container, telemetry: model.telemetry, onAction: onAction)
+            ModernInspectorView(telemetry: model.telemetry, item: container, onAction: onAction)
                 .opacity(activeTab == .overview ? 1 : 0)
                 .allowsHitTesting(activeTab == .overview)
                 .accessibilityHidden(activeTab != .overview)
