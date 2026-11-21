@@ -124,12 +124,18 @@ final class MobyModel: ObservableObject {
                     block_write_bytes: 31 * 1024 * 1024, pids: 28)
             ]
             telemetry.statsUpdatedAt = .now
-            telemetry.statsHistory["a000000000000000"] = (0..<60).map { index in
-                ContainerHistoryPoint(
-                    timestamp: Date().addingTimeInterval(Double(index - 59) * 5),
-                    cpuPercent: 1.1 + Double((index * 7) % 15) / 3,
-                    memoryPercent: 9.0 + Double((index * 3) % 10) / 4)
+            let previewNow = Date()
+            var previewHistory = [ContainerHistoryPoint]()
+            previewHistory.reserveCapacity(60)
+            for index in 0..<60 {
+                let age: TimeInterval = Double(index - 59) * 5.0
+                let cpu: Double = 1.1 + Double((index * 7) % 15) / 3.0
+                let memory: Double = 9.0 + Double((index * 3) % 10) / 4.0
+                previewHistory.append(ContainerHistoryPoint(
+                    timestamp: previewNow.addingTimeInterval(age),
+                    cpuPercent: cpu, memoryPercent: memory))
             }
+            telemetry.statsHistory["a000000000000000"] = previewHistory
             isLight = true
             return
         }

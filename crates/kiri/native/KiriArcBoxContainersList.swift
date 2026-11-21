@@ -159,24 +159,33 @@ final class KiriArcBoxContainersController: NSViewController,
         }
     }
 
+    // Match upstream ArcBox: classify whole Compose projects by whether any
+    // member is running, rather than duplicating a mixed project in both sections.
     private static func makeTree(_ items: [ContainerViewModel]) -> [ArcBoxKiriNode] {
+        let sorted = items.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+        let grouped = Dictionary(grouping: sorted.filter {
+            $0.composeProject?.isEmpty == false
+        }, by: { $0.composeProject! })
+        let standalone = sorted.filter { $0.composeProject?.isEmpty != false }
         var result: [ArcBoxKiriNode] = []
         for running in [true, false] {
-            let subset = items.filter { $0.isRunning == running }
-                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            if subset.isEmpty { continue }
-            let projects = Array(Set(subset.compactMap(\.composeProject))).sorted()
-            var children: [ArcBoxKiriNode] = []
-            for project in projects {
-                let members = subset.filter { $0.composeProject == project }
-                children.append(ArcBoxKiriNode(.project(project, members), children: members.map {
-                    ArcBoxKiriNode(.container($0))
-                }))
+            let projects = grouped.keys.sorted().filter {
+                (grouped[$0] ?? []).contains(where: { $0.isRunning }) == running
             }
-            children += subset.filter { $0.composeProject == nil || $0.composeProject == "" }
+            var children = projects.map { project -> ArcBoxKiriNode in
+                let members = grouped[project] ?? []
+                return ArcBoxKiriNode(.project(project, members), children: members.map {
+                    ArcBoxKiriNode(.container($0))
+                })
+            }
+            children += standalone.filter { $0.isRunning == running }
                 .map { ArcBoxKiriNode(.container($0)) }
-            result.append(ArcBoxKiriNode(.section(running ? "In Use" : "Stopped"),
-                                         children: children))
+            if !children.isEmpty {
+                result.append(ArcBoxKiriNode(
+                    .section(running ? "In Use" : "Stopped"), children: children))
+            }
         }
         return result
     }
@@ -191,14 +200,27 @@ final class KiriArcBoxContainersController: NSViewController,
         guard let node = item as? ArcBoxKiriNode else { return false }
         return !node.children.isEmpty
     }
+    func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool {
+        guard let node = item as? ArcBoxKiriNode else { return false }
+        if case .section = node.kind { return true }
+        return false
+    }
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
         guard let node = item as? ArcBoxKiriNode else { return false }
-        if case .container = node.kind { return true }
-        return false
+        switch node.kind {
+        case .section: return false
+        case .project:
+            // ArcBox has no system disclosure triangle: clicking a Compose row
+            // expands or collapses it instead of selecting a non-container item.
+            if outlineView.isItemExpanded(node) { outlineView.collapseItem(node) }
+            else { outlineView.expandItem(node) }
+            return false
+        case .container: return true
+        }
     }
     func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
         guard let node = item as? ArcBoxKiriNode else { return AppMetrics.rowHeight }
-        if case .section = node.kind { return 34 }
+        if case .section = node.kind { return 28 }
         return AppMetrics.rowHeight
     }
     func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
@@ -238,7 +260,9 @@ final class KiriArcBoxContainersController: NSViewController,
                            isExpanded: outlineView.isItemExpanded(node),
                            onToggle: { [weak self] in
                                let verb = members.contains(where: \.isRunning) ? "stop" : "start"
-                               for member in members { self?.onAction(verb, member.id) }
+                               for member in members where member.isRunning == (verb == "stop") {
+                                   self?.onAction(verb, member.id)
+                               }
                            }, onDelete: { [weak self] in
                                let alert = NSAlert()
                                alert.messageText = "删除 Compose 项目 \(project) 的容器？"
@@ -288,12 +312,22 @@ final class KiriArcBoxContainersController: NSViewController,
         guard !programmatic,
               let node = notification.userInfo?["NSObject"] as? ArcBoxKiriNode,
               case .project(let project, _) = node.kind else { return }
+        let row = outline.row(forItem: node)
+        if row >= 0 {
+            (outline.view(atColumn: 0, row: row, makeIfNecessary: false)
+                as? ContainerGroupTableCellView)?.setExpanded(true)
+        }
         onGroupExpansion(project, false)
     }
     func outlineViewItemDidCollapse(_ notification: Notification) {
         guard !programmatic,
               let node = notification.userInfo?["NSObject"] as? ArcBoxKiriNode,
               case .project(let project, _) = node.kind else { return }
+        let row = outline.row(forItem: node)
+        if row >= 0 {
+            (outline.view(atColumn: 0, row: row, makeIfNecessary: false)
+                as? ContainerGroupTableCellView)?.setExpanded(false)
+        }
         onGroupExpansion(project, true)
     }
     private func makeMenu(for row: Int) -> NSMenu? {
