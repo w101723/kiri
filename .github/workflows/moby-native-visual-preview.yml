@@ -50,6 +50,8 @@ jobs:
             -target x86_64-apple-macosx14.0 -sdk "$sdk" \
             crates/kiri/native/MobyApp.swift \
             -o "$app/Contents/MacOS/kiri-moby-ui-preview"
+          mkdir -p "$app/Contents/Resources"
+          cp brand/icon/png/kiri-menubar-template@2x.png "$app/Contents/Resources/"
           codesign --force --sign - "$app"
       - name: Render a real AppKit window with explicitly synthetic preview data
         shell: bash
