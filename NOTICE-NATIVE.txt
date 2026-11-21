@@ -4,7 +4,7 @@ Kiri Moby — native Apple Silicon distribution third-party notices
 Kiri Moby itself is licensed under the Apache License, Version 2.0.
 See the accompanying LICENSE file.
 
-Included components (not the legacy Tauri/WebKit/xterm.js desktop):
+Included components (relevant to the native macOS app):
 - SwiftTerm 1.20.0 (migueldeicaza/SwiftTerm), MIT:
   https://github.com/migueldeicaza/SwiftTerm/blob/1.20.0/LICENSE
   Copyright Miguel de Icaza and contributors.
@@ -19,10 +19,9 @@ Included components (not the legacy Tauri/WebKit/xterm.js desktop):
 - The Guest Linux kernel is GPL-2.0-only; source availability and the
   unmodified complete GPL v2 license text are provided below.
 
-Retired web UI packages, browser engines, frontend dependencies and the
-former xterm.js terminal are not included in this macOS App. The full
-historical attribution ledger remains in the repository's root NOTICE
-for preservation of the old project's provenance.
+Retired web UI packages, browser engines and frontend dependencies are
+not included in this macOS App. The historical attribution ledger remains
+in the repository's root NOTICE for preservation of earlier provenance.
 
 MIT License (SwiftTerm / applicable third-party components)
 ------------------------------------------------------------

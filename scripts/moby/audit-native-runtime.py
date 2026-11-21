@@ -64,6 +64,14 @@ def verify_app(root: pathlib.Path, errors: list[str]) -> None:
     icon = resources / "Kiri.icns"
     if not icon.is_file() or icon.stat().st_size < 1000:
         errors.append("Missing or empty Kiri.icns for Finder and the menu-bar item")
+    import plistlib
+    try:
+        with (root / "Contents/Info.plist").open("rb") as stream:
+            info = plistlib.load(stream)
+        if info.get("CFBundleIconFile") != "Kiri":
+            errors.append("Info.plist / menu bar icon mismatch: CFBundleIconFile must be Kiri")
+    except (OSError, ValueError, plistlib.InvalidFileException) as exc:
+        errors.append(f"Invalid native app Info.plist: {exc}")
     for f in root.rglob("*"):
         if not f.is_file():
             continue

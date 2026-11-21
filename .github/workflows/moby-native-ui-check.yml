@@ -6,6 +6,7 @@ on:
     paths:
       - "crates/kiri/native/**"
       - "scripts/moby/check-native-ui-parity.py"
+      - "scripts/moby/audit-native-runtime.py"
       - "Cargo.toml"
       - "crates/kiri/native/KiriMobyHost.swift"
       - ".github/workflows/moby-native-ui-check.yml"
@@ -13,6 +14,7 @@ on:
     paths:
       - "crates/kiri/native/**"
       - "scripts/moby/check-native-ui-parity.py"
+      - "scripts/moby/audit-native-runtime.py"
       - "Cargo.toml"
       - ".github/workflows/moby-native-ui-check.yml"
   workflow_dispatch:
@@ -35,6 +37,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Compare native controls and layout with the original Moby UI
         run: python3 scripts/moby/check-native-ui-parity.py
+      - name: Reject embedded web runtimes and obsolete menu-bar assets
+        run: python3 scripts/moby/audit-native-runtime.py
       - name: Cross-compile actual native SwiftUI app for Apple Silicon
         run: |
           set -euo pipefail

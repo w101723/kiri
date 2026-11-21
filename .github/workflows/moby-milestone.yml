@@ -28,6 +28,8 @@ on:
       - "Cargo.toml"
       - "scripts/moby/check-native-ui-parity.py"
       - "brand/icon/png/**"
+      - "NOTICE-NATIVE.txt"
+      - "scripts/moby/audit-native-runtime.py"
 
 concurrency:
   group: moby-milestone-${{ github.ref }}
