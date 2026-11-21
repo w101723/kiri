@@ -8,6 +8,7 @@ import SwiftUI
 enum ContainerDetailTab: String, CaseIterable, Identifiable, DetailTab {
     case overview = "Info"
     case logs = "Logs"
+    case files = "Files"
     case terminal = "Terminal"
     case metrics = "Metrics"
     var id: String { rawValue }
@@ -109,7 +110,7 @@ struct ContainerWorkspaceDetail: View {
 
     private func ensureCurrentSession() {
         switch activeTab {
-        case .overview, .metrics: break
+        case .overview, .metrics, .files: break
         case .logs: loadedLogIDs.insert(container.Id)
         case .terminal:
             if container.State == "running" { loadedTerminalIDs.insert(container.Id) }
@@ -182,6 +183,9 @@ struct ContainerWorkspaceDetail: View {
             // should only exist while visible to avoid duplicate inspect calls.
             if activeTab == .overview {
                 KiriArcBoxContainerInfoTab(telemetry: model.telemetry, container: container)
+            }
+            if activeTab == .files {
+                KiriFilesTabView(kind: "containers", id: container.Id, image: container.Image)
             }
             if activeTab == .metrics {
                 ModernInspectorView(telemetry: model.telemetry,

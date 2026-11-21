@@ -216,42 +216,17 @@ struct KiriArcBoxResourceDetail: View {
     @EnvironmentObject private var model: MobyModel
     let page: Page
     let selectedID: String?
+    @State private var imageTab: KiriImageDetailTab = .info
 
     var body: some View {
         Group {
             if let id = selectedID, page == .images,
                let image = model.images.first(where: { $0.Id == id }) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        VStack(spacing: 0) {
-                            InfoRow(label: "ID", value: image.Id)
-                            InfoRow(label: "标签", value: image.title)
-                            InfoRow(label: "大小", value: sizeLabel(image.Size))
-                            InfoRow(label: "创建时间",
-                                    value: image.Created.map {
-                                        Date(timeIntervalSince1970: TimeInterval($0)).formatted()
-                                    } ?? "—")
-                        }
-                        .infoSectionStyle()
-                        HStack {
-                            Button("运行容器") {
-                                model.perform(["run", image.title], title: "运行容器", showResult: false)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            Button("查看详情") {
-                                model.action("inspect", fields: ["kind": "images", "id": image.Id],
-                                             title: "inspect")
-                            }
-                            Button("删除", role: .destructive) {
-                                if model.confirm("删除镜像 \(image.title)？",
-                                                 detail: "正在被容器使用的镜像无法删除。") {
-                                    model.perform(["rmi", image.title], title: "删除镜像", showResult: false)
-                                }
-                            }
-                        }
-                    }
-                    .padding(16)
-                }
+                KiriImageDetailView(image: image, activeTab: $imageTab)
+            } else if page == .images {
+                KiriImageDetailView(image: ImageItem(
+                    Id: "", RepoTags: nil, Size: nil, Created: nil),
+                    activeTab: $imageTab)
             } else if let id = selectedID, page == .volumes,
                       let volume = model.volumes.first(where: { $0.Name == id }) {
                 ScrollView {

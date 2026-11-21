@@ -1523,6 +1523,10 @@ private struct KiriMobyNativeApp: App {
                         model.perform(["stop"],title:"Stop VM")
                     }
                 }
+                Divider()
+                Button("关于 Kiri Moby") {
+                    showKiriAboutWindow(model: model)
+                }
             }
         }
 
@@ -1536,18 +1540,8 @@ private struct KiriMobyNativeApp: App {
         .defaultSize(width: 860, height: 550)
 
         MenuBarExtra {
-            Text(model.online ? "Moby VM Running" : "Moby VM Stopped")
-            Button("刷新") { model.refresh() }
-            Button(model.online ? "停止 VM" : "启动 VM") {
-                model.perform([model.online ? "stop" : "start"],
-                              title:"VM",showResult:false)
-            }
-            Divider()
-            Button("显示 Kiri Moby") {
-                NSApplication.shared.activate(ignoringOtherApps:true)
-                NSApplication.shared.windows.first?.makeKeyAndOrderFront(nil)
-            }
-            Button("退出 Kiri Moby") { NSApplication.shared.terminate(nil) }
+            KiriMenuBarPanel()
+                .environmentObject(model)
         } label: {
             Image(nsImage: KiriMenuBarIcon.image)
                 .renderingMode(.template)
