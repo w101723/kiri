@@ -21,22 +21,28 @@ def has(haystack, needle, label):
 if not all(token in NEW for token in (
     "NavigationSplitView {", "List(selection:", ".listStyle(.sidebar)",
     ".navigationSplitViewColumnWidth(", "nativeSidebarItem(.settings)",
-    ".toolbar {", ".searchable(text:", "HSplitView {",
+    ".toolbar {", "} content: {", "} detail: {", ".navigationSubtitle(",
+    "ToolbarItem(placement: .principal)",
 )):
     errors.append("Native macOS split/toolbar/sidebar contract is incomplete")
 
 checks = [
     ('NavigationSplitView {', "System managed split navigation"),
     ('.windowToolbarStyle(.unified)', "Unified native macOS toolbar"),
-    ('sidebarEngineStatus', "Engine status inset in native sidebar"),
+    ('sidebarEngineStatus', "One-line Engine status inset"),
+    ('.frame(height: 44)', "44pt Engine status"),
     ('ContainerWorkspaceDetail(', "Native container workspace is scoped to Containers"),
     ('ModernInspectorView(', "Selected container inspector content"),
-    ('ModernInspectorCard {', "Four grouped inspector cards"),
+    ('ModernInspectorCard {', "Soft grouped inspector sections"),
     ('InspectorMetricTile(', "Compact inspector dashboard metrics"),
     ('LinearGradient(', "Gradient area charts"),
     ('CopyableInspectorTag(', "Copyable native port and mount tags"),
     ('InspectorEnvironmentRow(entry:', "Per-key secret masking controls"),
-    ('CompactContainerRow(item:', "Compact Mail-style container row"),
+    ('CompactContainerRow(item:', "Airy Mail-style container row"),
+    ('Section(running ? "运行中" : "已停止")', "Container state grouping"),
+    ('.frame(height: 48)', "48pt native rows"),
+    ('styledImageName(item.Image ?? "—")', "Two-tone image names"),
+    ('Color.accentColor', "Native sidebar accent"),
     ('List(selection: $selectedContainerIDs)', "Native compact container list"),
     ('.onHover { hovered = $0 }', "Hover-only container actions"),
     ('.defaultSize(width: 940, height: 600)', "Compact default window"),
@@ -44,17 +50,22 @@ checks = [
     ('InspectorAreaChart(', "Real stats time-series visualizations"),
     ('statsHistory', "Bounded history from live Docker stats"),
     ('ContainerInspectDetails: Decodable', "Read-only Docker inspect details"),
-    ('Text("Kiri 私有 Docker · 默认 Context 不变")', "Private Docker context in sidebar"),
+    ('Text("Kiri 私有 Docker · 默认 Context 不变")', "Private Docker context in VM popover"),
     ('iconAction("停止", icon: "stop.circle")', "Borderless SF Symbol container actions"),
     ('private var sidebarEngineStatus: some View', "Sidebar status view"),
 
     ('.listStyle(.sidebar)', "macOS vibrancy sidebar material"),
     ('.badge(count)', "Native sidebar counter badges"),
-    ('.searchable(text: $model.search, placement: .toolbar', "System toolbar search"),
+    ('isSearching.toggle()', "Collapsed search button"),
+    ('.focused($searchFocused)', "Focused native search input"),
+    ('.keyboardShortcut("f", modifiers: .command)', "Command-F search"),
     ('ToolbarItem(placement: .primaryAction)', "Native primary action"),
     ('.popover(isPresented: $showVMPopover)', "Compact VM popover"),
     ('vmResourcePopover', "VM resource and restart popover"),
-    ('HSplitView {', "Resizable full-height container workspace"),
+    ('} content: {', "Native resource second column"),
+    ('} detail: {', "Native workspace third column"),
+    ('.navigationSubtitle(currentPageSubtitle)', "Per-resource native subtitles"),
+    ('ToolbarItem(placement: .principal)', "Native toolbar segmented workspace"),
     ('ContainerDetailTab: String, CaseIterable', "Overview / Logs / Terminal segmented tabs"),
     ('.pickerStyle(.segmented)', "Native segmented detail navigation"),
     ('ForEach(loadedTerminalIDs.sorted()', "SwiftTerm views remain mounted when switching tabs"),
@@ -64,7 +75,7 @@ checks = [
     ('tabbingMode = .preferred', "AppKit native window tabbing"),
     ('ConsoleSession: Codable, Hashable, Identifiable', "Stable typed sessions"),
     ('NativeLogTextView: NSViewRepresentable', "Incremental NSTextView log renderer"),
-    ('ConsoleAppearance.canvas', "Consistent charcoal console canvas"),
+    ('ConsoleAppearance.canvas', "System adaptive cool-neutral console"),
     ('ConsoleAppearance.toolbar', "Card-scoped dark console controls"),
     ('LabeledContent("网络接收（累计）"', "Network and disk moved into detail popover"),
     ('String(published)', "Port number grouping disabled"),
@@ -110,6 +121,12 @@ checks = [
 for key, label in checks:
     has(NEW, key, label)
 
+if "HSplitView {" in NEW:
+    errors.append("Nested HSplitView reintroduced: use native three-column split")
+if ".searchable(text: $model.search, placement: .toolbar" in NEW:
+    errors.append("Wide permanent search field reintroduced")
+if "private var detailHeader: some View" in NEW:
+    errors.append("Duplicate header below native toolbar")
 if any(s in NEW for s in ("VSplitView {", "UnifiedConsoleDrawer(", ".inspector(isPresented:")):
     errors.append("Legacy console drawer or overlay inspector returned")
 if ".safeAreaInset(edge: .bottom, spacing: 0) { footer }" in NEW:
@@ -135,9 +152,14 @@ for label in ("Containers", "Images", "Volumes", "Networks", "Compose", "Builds"
 has(WORKFLOW, "CFBundleExecutable</key><string>kiri-moby-ui", "Native Finder binary")
 has(NEW, 'NSImage(size: size, flipped: false)', "Menu-bar renders a vector NSImage")
 has(NEW, 'NSSize(width: 18, height: 18)', "18pt native status-bar mark")
-has(NEW, 'let outline = NSBezierPath()', "Open-backed six-sided brand silhouette")
-has(NEW, 'let folds = NSBezierPath()', "Inverted-Y cube folds")
-has(NEW, 'for corner in [top, lowerLeft, lowerRight]', "Three-way cube face alignment")
+has(NEW, 'let radius: CGFloat = 6.2', "12.4pt status-bar geometry")
+has(NEW, 'func face(_ vertices: [NSPoint], alpha: CGFloat)', "Three cube faces")
+has(NEW, 'alpha: 0.95', "Primary face")
+has(NEW, 'alpha: 0.62', "Secondary face")
+has(NEW, 'alpha: 0.38', "Tertiary face")
+has(NEW, 'context.compositingOperation = .destinationOut', "Negative space alpha channels")
+has(NEW, 'gaps.lineWidth = 1.2', "1.2pt seams")
+has(NEW, '.opacity(model.online ? 1 : 0.42)', "Stopped status icon transparency")
 has(NEW, 'image.isTemplate = true', "System-tinted monochrome menu-bar icon")
 has(NEW, '.renderingMode(.template)', "SwiftUI honors template rendering")
 if 'Bundle.main.url(forResource: "Kiri", withExtension: "icns")' in NEW:
