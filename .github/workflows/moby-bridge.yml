@@ -5,19 +5,12 @@ on:
     branches: [moby-engine, apple-silicon-native-parity]
     paths:
       - "crates/kiri-moby-bridge/**"
-      - "crates/kiri-vmm/**"
-      - "crates/kiri/src/moby.rs"
-      - "crates/kiri/src/client.rs"
       - "crates/kiri/native/**"
       - "scripts/moby/check-native-ui-parity.py"
-      - "crates/kiri/src/client.rs"
-      - "crates/kiri/src/main.rs"
-      - "crates/kiri/Cargo.toml"
       - ".github/workflows/moby-bridge.yml"
   pull_request:
     paths:
       - 'crates/kiri-moby-bridge/**'
-      - 'crates/kiri-vmm/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/moby-bridge.yml'
@@ -44,55 +37,25 @@ jobs:
         run: cargo check -p kiri-moby-bridge --bin kiri-moby-guest --target aarch64-unknown-linux-musl
 
   macos:
-    name: macOS Intel runner / cross-build Apple Silicon host
-    # macos-15 (arm64) currently frequently fails BEFORE a runner is allocated.
-    # Compile for arm64 on an Intel Mac with Xcode/Apple SDK instead. This
-    # does NOT add an Intel Mac product: the sole artifact is an ARM64 Mach-O.
+    name: Native Swift Host / macOS ARM64
     runs-on: macos-15-intel
     env:
       MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
-      - name: Show cross-build toolchain and SDK
-        run: |
-          uname -m
-          rustc --version
-          xcodebuild -version
-          xcrun --sdk macosx --show-sdk-path
-      - name: Exercise native macOS Docker event parser and socket relay
-        run: cargo test -p kiri-moby-bridge --lib --target x86_64-apple-darwin
-      - name: Cross-compile Moby controller tests for Apple Silicon
-        run: cargo check -p kiri --tests --target aarch64-apple-darwin
-      - name: Verify original Moby UI controls are implemented in native SwiftUI
-        run: python3 scripts/moby/check-native-ui-parity.py
-      - name: Compile complete macOS Kiri GUI against upstream Moby
-        run: cargo check -p kiri --target aarch64-apple-darwin
-      - name: Compile macOS ARM64 host (not run on Intel)
-        run: cargo check -p kiri-moby-bridge --bin kiri-moby-host --target aarch64-apple-darwin
-      - name: Link, verify ARM64 architecture and sign launcher
+      - name: Compile and sign native Swift Host
         run: |
           set -euo pipefail
-          cargo build -p kiri-moby-bridge --release --bin kiri-moby-host --target aarch64-apple-darwin
-          binary="target/aarch64-apple-darwin/release/kiri-moby-host"
-          file "$binary"
-          # lipo expects the input file before its operation. For our
-          # single-architecture product require *exactly* ARM64.
-          archs="$(lipo "$binary" -archs)"
-          if [ "$archs" != "arm64" ]; then
-            echo "Expected an ARM64-only Mach-O; got: $archs" >&2
-            exit 1
-          fi
-          codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$binary"
-          codesign --verify --strict --verbose=2 "$binary"
           mkdir -p target/moby-dist
-          tar -C target/aarch64-apple-darwin/release -czf target/moby-dist/kiri-moby-host-arm64.tgz kiri-moby-host
-      - name: Upload Apple Silicon launcher
-        uses: actions/upload-artifact@v4
+          swiftc -parse-as-library -O -target arm64-apple-macosx14.0 \
+            -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
+            crates/kiri/native/KiriMobyHost.swift -o target/moby-dist/kiri-moby-host
+          test "$(lipo target/moby-dist/kiri-moby-host -archs)" = arm64
+          codesign --force --sign - --entitlements crates/kiri/kiri.entitlements target/moby-dist/kiri-moby-host
+          codesign --verify --strict target/moby-dist/kiri-moby-host
+          tar -C target/moby-dist -czf target/moby-dist/kiri-moby-host-arm64.tgz kiri-moby-host
+      - uses: actions/upload-artifact@v4
         with:
           name: kiri-moby-host-arm64
           path: target/moby-dist/kiri-moby-host-arm64.tgz
-          if-no-files-found: error
           retention-days: 7

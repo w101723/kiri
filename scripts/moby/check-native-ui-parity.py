@@ -141,6 +141,7 @@ for required in ("guest/kernel/build.sh", "scripts/moby/build-guest.sh"):
     if not (ROOT / required).is_file():
         errors.append(f"Required Docker Guest build source missing: {required}")
 for forbidden in (
+    "crates/kiri/src", "crates/kiri-vmm", "xtask",
     "crates/kiri/src/daemon", "crates/kiri/src/ui",
     "crates/kiri-image", "crates/kiri-proto", "crates/kiri-share-proto",
     "crates/kiri-win", "crates/kiri-init", "crates/kiri/src/ui/gtk.rs",
@@ -149,20 +150,17 @@ for forbidden in (
     if (ROOT / forbidden).exists():
         errors.append(f"Unsupported host source remains: {forbidden}")
 
-backend = (ROOT / "crates/kiri/src/moby.rs").read_text(encoding="utf-8")
-main = (ROOT / "crates/kiri/src/main.rs").read_text(encoding="utf-8")
-client = (ROOT / "crates/kiri/src/client.rs").read_text(encoding="utf-8")
-for term in ("mod daemon;", "mod ui;", "mod k8s;", "mod usb;", "mod import;"):
-    if term in main:
-        errors.append(f"Legacy runtime entrypoint restored: {term}")
-for term in ("WKWebView", "/kiri/wake"):
-    if term in backend:
-        errors.append(f"Legacy backend dependency restored: {term}")
-has(main, 'Some("moby-native")', "Moby-only CLI")
-has(client, 'run/docker.sock', "Private standard Docker API socket")
-has(backend, 'pub fn native_command(', "Native command bridge")
-
+runtime = (ROOT / "crates/kiri/native/MobyRuntime.swift").read_text(encoding="utf-8")
+host = (ROOT / "crates/kiri/native/KiriMobyHost.swift").read_text(encoding="utf-8")
+for term in ("Contents/MacOS/kiri", "moby-native", 'systemImage:"shippingbox"'):
+    if term in NEW:
+        errors.append(f"Native GUI still references retired Rust bridge: {term}")
+for token in ("AF_UNIX", "run/docker.sock", "func snapshot()", "func stats()", "terminalEnvironment()"):
+    has(runtime, token, "Native Swift Docker Client")
+for token in ("import Virtualization", "VZVirtualMachineConfiguration", "vsockDocker",
+              "host-control.sock", "VZVirtioTraditionalMemoryBalloonDevice"):
+    has(host, token, "Native independent VM Helper")
 if errors:
     print("FAIL: Native Moby parity contract:\n  - " + "\n  - ".join(errors), file=sys.stderr)
     sys.exit(1)
-print(f"PASS: {len(checks)} native Moby UI parity assertions and macOS-only scope.")
+print(f"PASS: {len(checks)} native Swift Moby UI / Host assertions and macOS-only scope.")

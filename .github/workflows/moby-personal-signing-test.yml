@@ -43,10 +43,9 @@ jobs:
           cat > "$RUNNER_TEMP/test.c" <<'C'
           int main(void) { return 0; }
           C
-          clang -arch x86_64 -o "$app/Contents/MacOS/kiri" "$RUNNER_TEMP/test.c"
-          cp "$app/Contents/MacOS/kiri" "$app/Contents/MacOS/kiri-moby-ui"
-          for bin in kiri-moby-host docker cli-plugins/docker-compose cli-plugins/docker-buildx; do
-            cp "$app/Contents/MacOS/kiri" "$app/Contents/Resources/bin/$bin"
+          clang -arch x86_64 -o "$app/Contents/MacOS/kiri-moby-ui" "$RUNNER_TEMP/test.c"
+                    for bin in kiri-moby-host docker cli-plugins/docker-compose cli-plugins/docker-buildx; do
+            cp "$app/Contents/MacOS/kiri-moby-ui" "$app/Contents/Resources/bin/$bin"
           done
           bash scripts/moby/sign-personal-macos.sh "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
@@ -133,10 +132,9 @@ jobs:
           </dict></plist>
           PLIST
           printf 'int main(void){return 0;}\n' > "$RUNNER_TEMP/fixture.c"
-          clang -arch x86_64 -o "$app/Contents/MacOS/kiri" "$RUNNER_TEMP/fixture.c"
-          cp "$app/Contents/MacOS/kiri" "$app/Contents/MacOS/kiri-moby-ui"
-          for bin in kiri-moby-host docker cli-plugins/docker-compose cli-plugins/docker-buildx; do
-            cp "$app/Contents/MacOS/kiri" "$app/Contents/Resources/bin/$bin"
+          clang -arch x86_64 -o "$app/Contents/MacOS/kiri-moby-ui" "$RUNNER_TEMP/fixture.c"
+                    for bin in kiri-moby-host docker cli-plugins/docker-compose cli-plugins/docker-buildx; do
+            cp "$app/Contents/MacOS/kiri-moby-ui" "$app/Contents/Resources/bin/$bin"
           done
       - name: Sign with the actual P12 and verify the native Finder executable
         shell: bash

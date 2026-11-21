@@ -5,27 +5,15 @@ on:
     branches: [native-swiftui-moby, apple-silicon-native-parity]
     paths:
       - "crates/kiri/native/**"
-      - "crates/kiri/src/moby.rs"
-      - "crates/kiri/src/client.rs"
-      - "crates/kiri/src/main.rs"
       - "scripts/moby/check-native-ui-parity.py"
       - "Cargo.toml"
-      - "crates/kiri/Cargo.toml"
-      - "crates/kiri-vmm/Cargo.toml"
-      - "xtask/src/main.rs"
       - "crates/kiri/native/KiriMobyHost.swift"
       - ".github/workflows/moby-native-ui-check.yml"
   pull_request:
     paths:
       - "crates/kiri/native/**"
-      - "crates/kiri/src/moby.rs"
-      - "crates/kiri/src/client.rs"
-      - "crates/kiri/src/main.rs"
       - "scripts/moby/check-native-ui-parity.py"
       - "Cargo.toml"
-      - "crates/kiri/Cargo.toml"
-      - "crates/kiri-vmm/Cargo.toml"
-      - "xtask/src/main.rs"
       - ".github/workflows/moby-native-ui-check.yml"
   workflow_dispatch:
 
@@ -63,14 +51,6 @@ jobs:
           fi
           codesign --force --sign - "$RUNNER_TEMP/kiri-moby-native-ui"
           codesign --verify --strict "$RUNNER_TEMP/kiri-moby-native-ui"
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
-      - name: Compile existing Rust backend with native command bridge
-        run: cargo check -p kiri --target aarch64-apple-darwin
-      - name: Verify Apple Silicon-only build helper
-        run: cargo check -p xtask --target aarch64-apple-darwin
-
   swift-host:
     name: Compile independent Swift VZ host for Apple Silicon
     runs-on: macos-15-intel

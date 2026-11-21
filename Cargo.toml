@@ -1,8 +1,7 @@
 [workspace]
 resolver = "3"
-# Only macOS Apple Silicon host packages; Linux ARM64 guest is built
-# separately with scripts/moby/build-guest.sh.
-members = ["crates/kiri", "crates/kiri-vmm", "crates/kiri-moby-bridge", "xtask"]
+# Only the minimal Linux ARM64 Guest uses Rust. macOS Host and UI are Swift.
+members = ["crates/kiri-moby-bridge"]
 
 [workspace.package]
 # Not a release number: a release takes its version from its tag (v0.2.0),

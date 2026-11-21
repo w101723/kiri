@@ -1,44 +1,38 @@
 # Kiri Moby
 
-**Native Docker desktop for macOS Apple Silicon (ARM64) only.**
+Native Apple Silicon-only Docker desktop: **SwiftUI/AppKit + SwiftTerm, pure Swift macOS Virtualization Host, and upstream Linux dockerd**. Only the minimal Linux ARM64 Guest transport remains in Rust.
 
-Kiri Moby consists of a SwiftUI/AppKit application with SwiftTerm terminals, Apple's Virtualization.framework for an ARM64 Linux VM, and the **standard upstream Docker Engine (dockerd)** inside the guest. No custom Kiri daemon, WebKit UI, Kubernetes subsystem, or Linux/Windows host app is included.
-
-## Runtime
+## Architecture
 
 ```text
-Kiri Moby.app
-  ├── Contents/MacOS/kiri-moby-ui       SwiftUI / AppKit / SwiftTerm
-  ├── Contents/MacOS/kiri               short-lived JSON / PTY CLI bridge
-  └── Contents/Resources/
-      ├── bin/kiri-moby-host            Apple VZ VM, vsock Docker relay
-      ├── bin/docker                    Docker CLI, Compose and Buildx plugins
-      ├── guest/                        Linux ARM64 kernel / initramfs / ext4
-      ├── Kiri.icns
-      └── kiri-menubar-template@2x.png
-             │
-             ▼
-~/.kiri-moby/run/docker.sock ↔ kiri-moby-host ↔ Linux guest dockerd
+Kiri Moby.app (macOS arm64)
+  Contents/MacOS/kiri-moby-ui    SwiftUI + Docker Unix Socket client
+  Contents/Resources/bin/kiri-moby-host   standalone Swift VZ daemon
+  Contents/Resources/bin/docker           upstream Docker CLI
+  Contents/Resources/bin/cli-plugins/      Compose and Buildx
+  Contents/Resources/guest/                kernel / initramfs / ext4 seed
+
+  GUI ---> ~/.kiri-moby/run/docker.sock ---> Swift Host ---> vsock ---> Guest dockerd
+                                      |                         |
+                            VM lifecycle / virtiofs      Rust kiri-moby-guest
+                            TCP ports / memory balloon
 ```
 
-All Docker data lives in `~/.kiri-moby/vm/data.img`. The application uses its **own private Unix socket** and never changes your existing Docker contexts or contacts the discontinued Kiri daemon.
+The Swift GUI **never launches a Rust controller** or starts a second Docker Engine. Its standard Docker API traffic is direct over a private Unix socket; interactive container terminals launch the bundled Docker CLI with an explicit `DOCKER_HOST`. No WebKit, K8s, proprietary daemon, Windows/Linux host app, or custom container engine remains.
 
-## Supported features
+The Swift Host remains an independent long-lived process, so quitting the GUI does not stop the VM. Docker images/volumes/state stay in `~/.kiri-moby/vm/data.img`. The OS seed is a separate read-only ext4 disk; normal guest reboots do not overwrite user data.
 
-Containers, images, volumes, networks, Compose project inventory, Buildx, live container resource stats, logs, actual PTY terminal, VM CPU/RAM controls, and permissioned Mac folder sharing.
-
-## Development
-
-Requires macOS 14+ on Apple Silicon, Xcode and the Rust ARM64 target.
+## Build and verification
 
 ```bash
-cargo xtask check
-cargo xtask ui
-cargo xtask host
+# macOS 14+ / Apple Silicon with Xcode and Swift 6
+swift build --package-path crates/kiri/native -c release --product kiri-moby-ui
+swiftc -parse-as-library -O crates/kiri/native/KiriMobyHost.swift -o kiri-moby-host
+
+# Guest (Linux arm64, musl):
+cargo build --release --target aarch64-unknown-linux-musl -p kiri-moby-bridge --bin kiri-moby-guest
 ```
 
-The complete Guest + Host + SwiftUI signed app and DMG are built by [Moby milestone CI](.github/workflows/moby-milestone.yml). [Native UI CI](.github/workflows/moby-native-ui-check.yml) cross-compiles the arm64 application and backend. [Visual Preview CI](.github/workflows/moby-native-visual-preview.yml) captures a real AppKit window using synthetic test data.
+CI builds signed arm64 Host+UI, the Linux Guest, verifies real AppKit screenshots with synthetic fixture data, and packages a single `.app`/DMG. See [native GUI](docs/MOBY_NATIVE_GUI.md), [engine](docs/MOBY_ENGINE.md), and [install](docs/MOBY_LOCAL_INSTALL_MACOS.md).
 
-Documentation: [Architecture](docs/MOBY_ENGINE.md) · [Native UI](docs/MOBY_NATIVE_GUI.md) · [macOS installation](docs/MOBY_LOCAL_INSTALL_MACOS.md) · [Signing](docs/MOBY_MACOS_SIGNING.md)
-
-Apache-2.0 licensed. See [NOTICE](NOTICE) for third-party attributions.
+Licensed under Apache-2.0. Third-party copyright notices: [NOTICE](NOTICE).
