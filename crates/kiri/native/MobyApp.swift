@@ -18,6 +18,7 @@ private struct RootView: View {
     @EnvironmentObject private var model: MobyModel
     @State private var selectedContainerIDs = Set<String>()
     @State private var selectedInspectorID: String?
+    @State private var selectedResourceID: String?
     @State private var hoveredActionRowID: String?
     @State private var isSearching = false
     @FocusState private var searchFocused: Bool
@@ -28,32 +29,29 @@ private struct RootView: View {
     @Environment(\.openWindow) private var openWindow
     // Three true navigation columns share a single native macOS titlebar.
     var body: some View {
-        NavigationSplitView {
-            List(selection: Binding<Page?>(
-                get: { model.page },
-                set: { if let page = $0 { model.page = page } }
-            )) {
-                Section("Docker") {
-                    ForEach([Page.containers, .volumes, .images, .builds,
-                             .networks, .compose], id: \.self) { page in
-                        nativeSidebarItem(page)
-                    }
+        Group {
+            if [.overview, .compose, .builds, .settings].contains(model.page) {
+                NavigationSplitView {
+                    arcBoxSidebar
+                } detail: {
+                    content
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(AppColors.background)
+                        .navigationTitle(model.page.displayName)
+                        .navigationSubtitle(currentPageSubtitle)
+                        .toolbar {
+                            ToolbarItem(placement: .primaryAction) {
+                                Button { model.refresh() } label: {
+                                    Image(systemName: "arrow.clockwise")
+                                }
+                                .help("Refresh")
+                            }
+                        }
                 }
-                Section("系统") {
-                    nativeSidebarItem(.overview)
-                    nativeSidebarItem(.settings)
-                }
-            }
-            .listStyle(.sidebar)
-            .tint(Color.accentColor)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                sidebarEngineStatus
-                    .contentShape(Rectangle())
-                    .onTapGesture { showVMPopover.toggle() }
-                    .popover(isPresented: $showVMPopover) { vmResourcePopover }
-            }
-            .navigationSplitViewColumnWidth(min: KiriLayoutMetrics.sidebarMin, ideal: KiriLayoutMetrics.sidebarIdeal, max: KiriLayoutMetrics.sidebarMax)
-        } content: {
+            } else {
+                NavigationSplitView {
+                    arcBoxSidebar
+                } content: {
             VStack(spacing: 0) {
                 if isSearching {
                     HStack(spacing: 9) {
@@ -150,6 +148,9 @@ private struct RootView: View {
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
+                } else if [.images, .volumes, .networks].contains(model.page) {
+                    KiriArcBoxResourceDetail(page: model.page, selectedID: selectedResourceID)
+                        .environmentObject(model)
                 } else if !model.online && model.page != .settings {
                     ContentUnavailableView {
                         Label("Moby VM 未连接",
@@ -173,6 +174,9 @@ private struct RootView: View {
             .toolbar {
                 if model.page == .containers && selectedContainer != nil {
                     DetailTabPicker(selection: $activeDetailTab)
+                } else if [.images, .volumes, .networks].contains(model.page),
+                          selectedResourceID != nil {
+                    DetailTabPicker(selection: .constant(KiriArcBoxResourceInfoTab.info))
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
                     if model.page == .containers, let item = selectedContainer {
@@ -190,7 +194,7 @@ private struct RootView: View {
                         } label: { Image(systemName: "arrow.clockwise") }
                             .disabled(item.State != "running")
                             .help("重启容器")
-                        if activeDetailTab != .overview {
+                        if activeDetailTab == .terminal || activeDetailTab == .logs {
                             Button {
                                 let kind: ConsoleSession.Kind =
                                     activeDetailTab == .terminal ? .exec : .logs
@@ -207,6 +211,8 @@ private struct RootView: View {
                         }
                         .help("刷新资源")
                     }
+                }
+            }
                 }
             }
         }
@@ -249,6 +255,7 @@ private struct RootView: View {
         .onChange(of: model.page) { _, _ in
             model.search = ""
             isSearching = false
+            selectedResourceID = nil
         }
         .onChange(of: selectedContainerIDs) { old, new in
             if let added = new.subtracting(old).first {
@@ -345,6 +352,34 @@ private struct RootView: View {
                     .padding(16)
             }
         }
+    }
+
+    private var arcBoxSidebar: some View {
+            List(selection: Binding<Page?>(
+                get: { model.page },
+                set: { if let page = $0 { model.page = page } }
+            )) {
+                Section("Docker") {
+                    ForEach([Page.containers, .volumes, .images, .builds,
+                             .networks, .compose], id: \.self) { page in
+                        nativeSidebarItem(page)
+                    }
+                }
+                Section("系统") {
+                    nativeSidebarItem(.overview)
+                    nativeSidebarItem(.settings)
+                }
+            }
+            .listStyle(.sidebar)
+            .tint(Color.accentColor)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                sidebarEngineStatus
+                    .contentShape(Rectangle())
+                    .onTapGesture { showVMPopover.toggle() }
+                    .popover(isPresented: $showVMPopover) { vmResourcePopover }
+            }
+            .navigationSplitViewColumnWidth(min: KiriLayoutMetrics.sidebarMin, ideal: KiriLayoutMetrics.sidebarIdeal, max: KiriLayoutMetrics.sidebarMax)
+
     }
 
     @ViewBuilder
@@ -565,78 +600,32 @@ private struct RootView: View {
     // The middle column gives resources an actual navigable identity; the
     // right column retains full management controls for every existing page.
     private var resourceNavigator: some View {
-        List {
+        let entries: [KiriArcBoxResourceEntry] = {
             switch model.page {
             case .images:
-                ForEach(model.images.filter { match([$0.title, $0.Id]) }) { item in
-                    Button {
-                        model.action("inspect", fields: ["kind": "images", "id": item.Id],
-                                     title: "inspect")
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: "square.stack.3d.up.fill")
-                                .foregroundStyle(Color.accentColor)
-                                .frame(width: 25)
-                            VStack(alignment: .leading, spacing: 4) {
-                                styledImageName(item.title)
-                                    .font(.system(size: 12.5))
-                                    .lineLimit(1)
-                                Text(sizeLabel(item.Size))
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .frame(minHeight: 45, alignment: .leading)
-                    }
-                    .buttonStyle(.plain)
+                return model.images.filter { match([$0.title, $0.Id]) }.map {
+                    KiriArcBoxResourceEntry(
+                        id: $0.Id, title: $0.title, subtitle: sizeLabel($0.Size),
+                        symbol: "circle.circle")
                 }
             case .volumes:
-                ForEach(model.volumes.filter { match([$0.Name, $0.Driver ?? ""]) }) { item in
-                    Button {
-                        model.action("inspect", fields: ["kind": "volumes", "id": item.Name],
-                                     title: "inspect")
-                    } label: {
-                        Label(item.Name, systemImage: "externaldrive.fill")
-                            .font(.system(size: 12))
-                            .frame(minHeight: 45, alignment: .leading)
-                    }
-                    .buttonStyle(.plain)
+                return model.volumes.filter { match([$0.Name, $0.Driver ?? ""]) }.map {
+                    KiriArcBoxResourceEntry(
+                        id: $0.Name, title: $0.Name, subtitle: $0.Driver ?? "local",
+                        symbol: "internaldrive")
                 }
             case .networks:
-                ForEach(model.networks.filter { match([$0.Name, $0.Id]) }) { item in
-                    Button {
-                        model.action("inspect", fields: ["kind": "networks", "id": item.Id],
-                                     title: "inspect")
-                    } label: {
-                        Label(item.Name, systemImage: "network")
-                            .font(.system(size: 12))
-                            .frame(minHeight: 45, alignment: .leading)
-                    }
-                    .buttonStyle(.plain)
+                return model.networks.filter { match([$0.Name, $0.Id]) }.map {
+                    KiriArcBoxResourceEntry(
+                        id: $0.Id, title: $0.Name, subtitle: $0.Driver ?? "—",
+                        symbol: "point.3.filled.connected.trianglepath.dotted")
                 }
-            case .compose:
-                ForEach(composeProjects.filter { match([$0]) }, id: \.self) { project in
-                    Label(project, systemImage: "square.3.layers.3d")
-                        .font(.system(size: 12))
-                        .frame(minHeight: 45, alignment: .leading)
-                }
-            case .builds:
-                Label("Dockerfile / BuildKit", systemImage: "hammer.fill")
-                Label(model.buildPlatform, systemImage: "cpu")
-            case .overview:
-                Label("Docker Engine", systemImage: "shippingbox.fill")
-                Label("VM 资源与内存", systemImage: "memorychip")
-                Label("镜像和卷", systemImage: "square.stack.3d.up")
-            case .settings:
-                Label("虚拟机", systemImage: "cpu")
-                Label("CPU 与内存", systemImage: "memorychip")
-                Label("Mac 目录共享", systemImage: "folder")
-            case .containers:
-                EmptyView()
+            default: return []
             }
-        }
-        .listStyle(.inset)
-        .scrollContentBackground(.hidden)
+        }()
+        return KiriArcBoxResourceList(items: entries, selectedID: selectedResourceID,
+                                      onSelect: { selectedResourceID = $0 })
+            .background(AppColors.background)
     }
 
     @ViewBuilder private var content: some View {

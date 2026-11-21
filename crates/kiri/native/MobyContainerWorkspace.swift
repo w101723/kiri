@@ -6,9 +6,10 @@ import SwiftUI
 // The outer NavigationSplitView intentionally stays two columns. Only the
 // Containers page hosts this draggable, full-height native workspace.
 enum ContainerDetailTab: String, CaseIterable, Identifiable, DetailTab {
-    case overview = "概览"
-    case logs = "日志"
-    case terminal = "终端"
+    case overview = "Info"
+    case logs = "Logs"
+    case terminal = "Terminal"
+    case metrics = "Metrics"
     var id: String { rawValue }
 }
 
@@ -108,7 +109,7 @@ struct ContainerWorkspaceDetail: View {
 
     private func ensureCurrentSession() {
         switch activeTab {
-        case .overview: break
+        case .overview, .metrics: break
         case .logs: loadedLogIDs.insert(container.Id)
         case .terminal:
             if container.State == "running" { loadedTerminalIDs.insert(container.Id) }
@@ -177,10 +178,15 @@ struct ContainerWorkspaceDetail: View {
 
     var body: some View {
         ZStack {
-            ModernInspectorView(telemetry: model.telemetry, item: container, onAction: onAction)
+            KiriArcBoxContainerInfoTab(telemetry: model.telemetry, container: container)
                 .opacity(activeTab == .overview ? 1 : 0)
                 .allowsHitTesting(activeTab == .overview)
                 .accessibilityHidden(activeTab != .overview)
+
+            ModernInspectorView(telemetry: model.telemetry, item: container, onAction: onAction)
+                .opacity(activeTab == .metrics ? 1 : 0)
+                .allowsHitTesting(activeTab == .metrics)
+                .accessibilityHidden(activeTab != .metrics)
 
             ForEach(loadedLogIDs.sorted(), id: \.self) { id in
                 EmbeddedContainerLogsView(

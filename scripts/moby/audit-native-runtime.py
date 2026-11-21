@@ -31,6 +31,8 @@ SOURCES = [
     ROOT / "crates/kiri/native/ArcBoxStatusBadge.swift",
     ROOT / "crates/kiri/native/ArcBoxToolbarSeparator.swift",
     ROOT / "crates/kiri/native/KiriArcBoxContainersList.swift",
+    ROOT / "crates/kiri/native/KiriArcBoxContainerInfoTab.swift",
+    ROOT / "crates/kiri/native/KiriArcBoxResourceView.swift",
     ROOT / "crates/kiri/native/MobyUITheme.swift",
     ROOT / "crates/kiri/native/MobyUIModels.swift",
     ROOT / "crates/kiri/native/MobyModel.swift",

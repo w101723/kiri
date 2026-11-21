@@ -131,3 +131,20 @@ CI runs SwiftPM tests and builds the complete SwiftTerm-backed ARM64 app.
 The visual preview uses the same package with test-only synthetic data.
 Actual first-responder focus, large-list scrolling and live Docker workloads
 still require physical Apple Silicon/macOS acceptance beyond compilation.
+
+
+## ArcBox UI transplant (2026-11-21)
+
+Kiri Moby now uses the ArcBox Desktop application design, default 1200x800
+window. The container list adopts upstream AppKit ContainerTableCellView,
+ContainerGroupTableCellView and ResourceListRowView; image/volume/network list
+controllers use matching 44pt native cells. The right-side Info detail uses
+the adapted upstream InfoRow and InfoTableView. SwiftTerm remains Kiri's existing
+working PTY and is kept mounted across tab switches. A Metrics tab preserves
+Kiri's existing resource charts; no fake Files tab is presented.
+
+Resource surfaces use a native three-column split; full-width Overview, Compose,
+Build and Settings destinations switch to a real two-column split as in ArcBox.
+All Docker and VM operations continue to use Kiri's existing private socket.
+ArcBox's daemon, branding, Kubernetes, machines, sandboxes and remote icon assets
+are not shipped. Upstream MIT attribution is retained in NOTICE.

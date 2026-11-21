@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-GUI_FILES = ["MobyApp.swift","MobyRuntime.swift","MobyUITheme.swift","MobyUIModels.swift","MobyModel.swift","MobyTelemetry.swift","MobyDockerEvents.swift","MobyTerminal.swift","MobyUIComponents.swift","MobyContainerWorkspace.swift","ArcBoxContainerModel.swift","ArcBoxAppColors.swift","ArcBoxAppMetrics.swift","ArcBoxLiquidGlass.swift","ArcBoxDetailTabPicker.swift","ArcBoxResourceListRowView.swift","ArcBoxContainerListCells.swift","ArcBoxInfoRow.swift","ArcBoxInfoTableView.swift","ArcBoxIconButton.swift","ArcBoxStatusBadge.swift","ArcBoxToolbarSeparator.swift","KiriArcBoxContainersList.swift"]
+GUI_FILES = ["KiriArcBoxContainerInfoTab.swift", "KiriArcBoxResourceView.swift","MobyApp.swift","MobyRuntime.swift","MobyUITheme.swift","MobyUIModels.swift","MobyModel.swift","MobyTelemetry.swift","MobyDockerEvents.swift","MobyTerminal.swift","MobyUIComponents.swift","MobyContainerWorkspace.swift","ArcBoxContainerModel.swift","ArcBoxAppColors.swift","ArcBoxAppMetrics.swift","ArcBoxLiquidGlass.swift","ArcBoxDetailTabPicker.swift","ArcBoxResourceListRowView.swift","ArcBoxContainerListCells.swift","ArcBoxInfoRow.swift","ArcBoxInfoTableView.swift","ArcBoxIconButton.swift","ArcBoxStatusBadge.swift","ArcBoxToolbarSeparator.swift","KiriArcBoxContainersList.swift"]
 NATIVE = ROOT / "crates/kiri/native"
 NEW = "\n".join((NATIVE / name).read_text(encoding="utf-8") for name in GUI_FILES)
 PACKAGE = (NATIVE / "Package.swift").read_text(encoding="utf-8")
@@ -58,6 +58,9 @@ checks = [
     ('imageLabel.stringValue = container.image', "ArcBox two-line image labels"),
     ('Color.accentColor', "Native sidebar accent"),
     ('KiriArcBoxContainersList(', "ArcBox AppKit container list"),
+    ('KiriArcBoxResourceList(', "ArcBox AppKit resource lists"),
+    ('KiriArcBoxContainerInfoTab(', "ArcBox InfoRow container detail"),
+    ('DetailTabPicker(selection: $activeDetailTab)', "Native ArcBox tabs"),
     ('override func mouseEntered(with event: NSEvent)', "ArcBox hover native actions"),
     ('.defaultSize(width: 1200, height: 800)', "ArcBox original default 1200x800"),
 
