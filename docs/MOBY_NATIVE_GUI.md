@@ -10,10 +10,9 @@ Persistent processes should be:
 - kiri-moby-host (Docker API, VM lifecycle, file sharing)
 - Apple Virtualization.framework XPC VM service (Linux VM memory)
 
-The app also bundles Contents/MacOS/kiri as a **short-lived, local-only**
-Rust command bridge, invoking the exact same Moby controller logic and
-private Unix sockets. There is no new long-running backend server, new
-Docker context, or duplicated container metadata database.
+The app also bundles an in-process Swift Docker client which connects to the private Unix
+socket directly. The Swift VM Host remains a separate process that outlives
+the GUI. Linux Guest's minimal Rust vsock proxy remains unchanged.
 
 ## Native GUI features
 
@@ -78,7 +77,7 @@ unchanged. The native UI sends no network requests to an external service.
 
 ## Package, signing, verification
 
-Full ARM64 build compiles the native SwiftUI frontend and Rust CLI, then
+Full ARM64 build compiles the native SwiftUI frontend and the Swift VZ Host, then
 bundles both into the same signed App. Info.plist CFBundleExecutable is
 kiri-moby-ui. The original fixed personal P12, certificate fingerprint
 and private root CA flow sign both executables and the independent Host,
