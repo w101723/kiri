@@ -95,12 +95,9 @@ host footprint measurement. See:
 - https://github.com/thewesjohnson/macos-virtio-balloon-test
 - https://developer.apple.com/documentation/virtualization/vzvirtiotraditionalmemoryballoondevice/targetvirtualmachinememorysize
 
-Further reducing the VM floor while Ubuntu/Docker are running could cause
-OOMs. The next improvement must be proven using a host-memory A/B test:
-VZ versus a separate libkrun free-page-reporting VM, using the same Guest,
-image/volume workload and Linux MemAvailable measurement. Recent libkrun
-upstream introduced an explicit macOS page-replacement reclamation mode,
-but this does not make it a drop-in backend for Kiri.
+Further reducing the VM floor while dockerd is running could cause OOMs.
+Any further optimization must be backed by repeated host/guest memory tests
+on the same Apple Silicon Mac, workload, Guest and kernel revision.
 
 ## What is still needed for OrbStack-like memory return
 
@@ -108,15 +105,9 @@ Apple documents that VZ's balloon support is partial and released Guest RAM
 may not return to the macOS host. Real host reclamation should be measured
 by Activity Monitor / macOS memory pressure before claiming success.
 
-libkrun has a different Hypervisor.framework backend and a Mac free-page
-reporting "Replace" mode. Integrating it is **not** a drop-in memory tweak:
-the current Kiri guest relies on VZ's NAT NIC, block disk, Rosetta,
-virtiofs, vsock and lifecycle. Switching to libkrun without exercising
-these would break the existing verified Docker/Compose/Buildx GUI.
-
-The libkrun research and cross-backend acceptance matrix are in
-docs/MOBY_LIBKRUN_MEMORY.md. This change intentionally does not introduce
-an untested VMM switch into the user-visible App.
+Kiri Moby ships only Apple's Virtualization.framework (VZ) backend.
+Experimental alternate hypervisors were removed from the production product;
+VM reclamation must be validated against actual macOS process footprints.
 
 ## Verify (on an actual Apple Silicon Mac)
 
@@ -201,6 +192,6 @@ OOM or failures during Docker pulls, Compose, Buildx, restart and stress.
 
 *If Guest Cached falls but macOS footprint does not, the limiting issue is
 VZ physical-page reclamation, not Linux's cache size.* That result would make
-a separate libkrun free-page-reporting backend experiment more valuable than
-further lowering the live Guest balloon floor. Do not reduce the production
+further host physical-footprint and VZ reclamation profiling more valuable than
+lowering the live Guest balloon floor without evidence. Do not reduce the production
 1024 MiB floor to force a 200 MiB number.
