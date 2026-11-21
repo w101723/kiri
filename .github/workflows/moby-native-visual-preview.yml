@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   screenshot:
-    runs-on: macos-15-intel
+    runs-on: macos-26-intel
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -58,12 +58,16 @@ jobs:
             <key>CFBundleVersion</key><string>1</string>
           </dict></plist>
           PLIST
-          swiftc -parse-as-library -D KIRI_UI_PREVIEW \
-            -target x86_64-apple-macosx14.0 -sdk "$sdk" \
-            crates/kiri/native/MobyApp.swift \
-            crates/kiri/native/MobyRuntime.swift \
-            -o "$app/Contents/MacOS/kiri-moby-ui-preview"
-          mkdir -p "$app/Contents/Resources"
+          swift build --package-path crates/kiri/native -c debug \
+            --triple x86_64-apple-macosx14.0 --product kiri-moby-ui \
+            -Xswiftc -DKIRI_UI_PREVIEW
+          swift_dir="$(swift build --package-path crates/kiri/native -c debug \
+            --triple x86_64-apple-macosx14.0 --show-bin-path)"
+          cp "$swift_dir/kiri-moby-ui" "$app/Contents/MacOS/kiri-moby-ui-preview"
+          for bundle in "$swift_dir"/*.bundle; do
+            test -d "$bundle" || continue
+            cp -R "$bundle" "$app/Contents/Resources/"
+          done
           python3 scripts/moby/audit-native-runtime.py --app "$app"
           codesign --force --sign - "$app"
       - name: Render a real AppKit window with explicitly synthetic preview data
@@ -137,7 +141,7 @@ jobs:
         with:
           name: kiri-moby-complete-swiftui-source
           path: |
-            crates/kiri/native/MobyApp.swift
-            crates/kiri/native/MobyRuntime.swift
+            crates/kiri/native/*.swift
             crates/kiri/native/Package.swift
+            crates/kiri/native/Tests/*.swift
           retention-days: 14

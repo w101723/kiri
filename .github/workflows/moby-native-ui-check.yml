@@ -29,7 +29,7 @@ concurrency:
 
 jobs:
   swiftui:
-    runs-on: macos-15-intel
+    runs-on: macos-26-intel
     timeout-minutes: 20
     env:
       MACOSX_DEPLOYMENT_TARGET: "14.0"
@@ -39,22 +39,24 @@ jobs:
         run: python3 scripts/moby/check-native-ui-parity.py
       - name: Reject embedded web runtimes and obsolete menu-bar assets
         run: python3 scripts/moby/audit-native-runtime.py
-      - name: Cross-compile actual native SwiftUI app for Apple Silicon
+      - name: Run native SwiftUI and Docker event parser tests
+        run: swift test --package-path crates/kiri/native -c debug
+      - name: Cross-compile actual SwiftPM native SwiftUI app for Apple Silicon
         run: |
           set -euo pipefail
-          sdk="$(xcrun --sdk macosx --show-sdk-path)"
-          swiftc -parse-as-library -O \
-            -target arm64-apple-macosx14.0 -sdk "$sdk" \
-            crates/kiri/native/MobyApp.swift \
-            crates/kiri/native/MobyRuntime.swift \
-            -o "$RUNNER_TEMP/kiri-moby-native-ui"
-          test "$(lipo "$RUNNER_TEMP/kiri-moby-native-ui" -archs)" = arm64
-          if otool -L "$RUNNER_TEMP/kiri-moby-native-ui" | grep -E 'WebKit|JavaScriptCore'; then
+          swift build --package-path crates/kiri/native -c release \
+            --triple arm64-apple-macosx14.0 --product kiri-moby-ui
+          swift_dir="$(swift build --package-path crates/kiri/native -c release \
+            --triple arm64-apple-macosx14.0 --show-bin-path)"
+          native="$swift_dir/kiri-moby-ui"
+          test -f "$native"
+          test "$(lipo "$native" -archs)" = arm64
+          if otool -L "$native" | grep -E 'WebKit|JavaScriptCore'; then
             echo "Native GUI unexpectedly depends on WebKit/JavaScriptCore" >&2
             exit 1
           fi
-          codesign --force --sign - "$RUNNER_TEMP/kiri-moby-native-ui"
-          codesign --verify --strict "$RUNNER_TEMP/kiri-moby-native-ui"
+          codesign --force --sign - "$native"
+          codesign --verify --strict "$native"
       - name: Exercise Swift Docker Unix socket client using a local mock dockerd
         run: |
           set -euo pipefail
@@ -67,7 +69,7 @@ jobs:
 
   swift-host:
     name: Compile independent Swift VZ host for Apple Silicon
-    runs-on: macos-15-intel
+    runs-on: macos-26-intel
     timeout-minutes: 20
     env:
       MACOSX_DEPLOYMENT_TARGET: "14.0"
@@ -87,7 +89,7 @@ jobs:
 
   swiftterm:
     name: Verify SwiftTerm-backed production terminal on Apple Silicon
-    runs-on: macos-15-intel
+    runs-on: macos-26-intel
     timeout-minutes: 25
     env:
       MACOSX_DEPLOYMENT_TARGET: "14.0"

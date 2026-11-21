@@ -18,6 +18,29 @@ SOURCES = [
     ROOT / "crates/kiri/native/MobyApp.swift",
     ROOT / "crates/kiri/native/MobyRuntime.swift",
     ROOT / "crates/kiri/native/KiriMobyHost.swift",
+    ROOT / "crates/kiri/native/ArcBoxContainerModel.swift",
+    ROOT / "crates/kiri/native/ArcBoxAppColors.swift",
+    ROOT / "crates/kiri/native/ArcBoxAppMetrics.swift",
+    ROOT / "crates/kiri/native/ArcBoxLiquidGlass.swift",
+    ROOT / "crates/kiri/native/ArcBoxDetailTabPicker.swift",
+    ROOT / "crates/kiri/native/ArcBoxResourceListRowView.swift",
+    ROOT / "crates/kiri/native/ArcBoxContainerListCells.swift",
+    ROOT / "crates/kiri/native/ArcBoxInfoRow.swift",
+    ROOT / "crates/kiri/native/ArcBoxInfoTableView.swift",
+    ROOT / "crates/kiri/native/ArcBoxIconButton.swift",
+    ROOT / "crates/kiri/native/ArcBoxStatusBadge.swift",
+    ROOT / "crates/kiri/native/ArcBoxToolbarSeparator.swift",
+    ROOT / "crates/kiri/native/KiriArcBoxContainersList.swift",
+    ROOT / "crates/kiri/native/KiriArcBoxContainerInfoTab.swift",
+    ROOT / "crates/kiri/native/KiriArcBoxResourceView.swift",
+    ROOT / "crates/kiri/native/MobyUITheme.swift",
+    ROOT / "crates/kiri/native/MobyUIModels.swift",
+    ROOT / "crates/kiri/native/MobyModel.swift",
+    ROOT / "crates/kiri/native/MobyTelemetry.swift",
+    ROOT / "crates/kiri/native/MobyDockerEvents.swift",
+    ROOT / "crates/kiri/native/MobyTerminal.swift",
+    ROOT / "crates/kiri/native/MobyUIComponents.swift",
+    ROOT / "crates/kiri/native/MobyContainerWorkspace.swift",
 ]
 ASSET_SUFFIXES = {
     ".html", ".htm", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx",
@@ -45,7 +68,7 @@ def verify_source(errors: list[str]) -> None:
         for pattern in FORBIDDEN_SOURCE:
             if pattern.search(content):
                 errors.append(f"Web/frontend API or obsolete icon reference in {file.name}: {pattern.pattern}")
-    app = SOURCES[0].read_text(encoding="utf-8")
+    app = "\n".join(s.read_text(encoding="utf-8") for s in SOURCES if s.name not in ("MobyRuntime.swift", "KiriMobyHost.swift"))
     for needle in ('NSImage(size: size, flipped: false)', 'NSSize(width: 18, height: 18)',
                    'func face(_ vertices: [NSPoint], alpha: CGFloat)',
                    'let radius: CGFloat = 6.2',

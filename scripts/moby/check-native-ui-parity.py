@@ -7,11 +7,25 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-NEW = (ROOT / "crates/kiri/native/MobyApp.swift").read_text(encoding="utf-8")
+GUI_FILES = ["KiriArcBoxContainerInfoTab.swift", "KiriArcBoxResourceView.swift","MobyApp.swift","MobyRuntime.swift","MobyUITheme.swift","MobyUIModels.swift","MobyModel.swift","MobyTelemetry.swift","MobyDockerEvents.swift","MobyTerminal.swift","MobyUIComponents.swift","MobyContainerWorkspace.swift","ArcBoxContainerModel.swift","ArcBoxAppColors.swift","ArcBoxAppMetrics.swift","ArcBoxLiquidGlass.swift","ArcBoxDetailTabPicker.swift","ArcBoxResourceListRowView.swift","ArcBoxContainerListCells.swift","ArcBoxInfoRow.swift","ArcBoxInfoTableView.swift","ArcBoxIconButton.swift","ArcBoxStatusBadge.swift","ArcBoxToolbarSeparator.swift","KiriArcBoxContainersList.swift"]
+NATIVE = ROOT / "crates/kiri/native"
+NEW = "\n".join((NATIVE / name).read_text(encoding="utf-8") for name in GUI_FILES)
+PACKAGE = (NATIVE / "Package.swift").read_text(encoding="utf-8")
 WORKFLOW = (ROOT / ".github/workflows/moby-milestone.yml").read_text()
 SIGNER = (ROOT / "scripts/moby/sign-personal-macos.sh").read_text()
 INSTALL = (ROOT / "scripts/moby/install-local-macos.sh").read_text()
 errors = []
+for name in GUI_FILES:
+    if f'"{name}"' not in PACKAGE:
+        errors.append(f"SwiftPM executable is missing {name}")
+if "MobyDockerEventStreamDecoder" not in NEW or "scheduleDockerEventRefresh()" not in NEW:
+    errors.append("Missing Docker event-driven refresh")
+if "ContainerLiveMetricsView(telemetry: model.telemetry" not in NEW:
+    errors.append("Hot resource telemetry is not isolated")
+if "KiriLayoutMetrics.contentMin" not in NEW:
+    errors.append("Measured native split constraints missing")
+if not (NATIVE / "Tests/DockerEventStreamDecoderTests.swift").is_file():
+    errors.append("Native event parser tests missing")
 
 def has(haystack, needle, label):
     if needle not in haystack:
@@ -30,7 +44,7 @@ checks = [
     ('NavigationSplitView {', "System managed split navigation"),
     ('.windowToolbarStyle(.unified)', "Unified native macOS toolbar"),
     ('sidebarEngineStatus', "One-line Engine status inset"),
-    ('.frame(height: 44)', "44pt Engine status"),
+    ('.frame(height: KiriLayoutMetrics.sidebarStatusHeight)', "44pt Engine status"),
     ('ContainerWorkspaceDetail(', "Native container workspace is scoped to Containers"),
     ('ModernInspectorView(', "Selected container inspector content"),
     ('ModernInspectorCard {', "Soft grouped inspector sections"),
@@ -38,20 +52,23 @@ checks = [
     ('LinearGradient(', "Gradient area charts"),
     ('CopyableInspectorTag(', "Copyable native port and mount tags"),
     ('InspectorEnvironmentRow(entry:', "Per-key secret masking controls"),
-    ('CompactContainerRow(item:', "Airy Mail-style container row"),
-    ('Section(running ? "运行中" : "已停止")', "Container state grouping"),
-    ('.frame(height: 48)', "48pt native rows"),
-    ('styledImageName(item.Image ?? "—")', "Two-tone image names"),
+    ('ContainerTableCellView', "ArcBox original AppKit container cell"),
+    ('case .section(let title):', "ArcBox native OutlineView sections"),
+    ('static let rowHeight: CGFloat = 44', "ArcBox 44pt native rows"),
+    ('imageLabel.stringValue = container.image', "ArcBox two-line image labels"),
     ('Color.accentColor', "Native sidebar accent"),
-    ('List(selection: $selectedContainerIDs)', "Native compact container list"),
-    ('.onHover { hovered = $0 }', "Hover-only container actions"),
-    ('.defaultSize(width: 940, height: 600)', "Compact default window"),
+    ('KiriArcBoxContainersList(', "ArcBox AppKit container list"),
+    ('KiriArcBoxResourceList(', "ArcBox AppKit resource lists"),
+    ('KiriArcBoxContainerInfoTab(', "ArcBox InfoRow container detail"),
+    ('DetailTabPicker(selection: $activeDetailTab)', "Native ArcBox tabs"),
+    ('override func mouseEntered(with event: NSEvent)', "ArcBox hover native actions"),
+    ('.defaultSize(width: 1200, height: 800)', "ArcBox original default 1200x800"),
 
     ('InspectorAreaChart(', "Real stats time-series visualizations"),
     ('statsHistory', "Bounded history from live Docker stats"),
     ('ContainerInspectDetails: Decodable', "Read-only Docker inspect details"),
     ('Text("Kiri 私有 Docker · 默认 Context 不变")', "Private Docker context in VM popover"),
-    ('iconAction("停止", icon: "stop.circle")', "Borderless SF Symbol container actions"),
+    ('ResourceActionButton', "ArcBox AppKit row actions"),
     ('private var sidebarEngineStatus: some View', "Sidebar status view"),
 
     ('.listStyle(.sidebar)', "macOS vibrancy sidebar material"),
@@ -65,7 +82,7 @@ checks = [
     ('} content: {', "Native resource second column"),
     ('} detail: {', "Native workspace third column"),
     ('.navigationSubtitle(currentPageSubtitle)', "Per-resource native subtitles"),
-    ('ToolbarItem(placement: .principal)', "Native toolbar segmented workspace"),
+    ('DetailTabPicker(selection: $activeDetailTab)', "ArcBox detail tabs"),
     ('ContainerDetailTab: String, CaseIterable', "Overview / Logs / Terminal segmented tabs"),
     ('.pickerStyle(.segmented)', "Native segmented detail navigation"),
     ('ForEach(loadedTerminalIDs.sorted()', "SwiftTerm views remain mounted when switching tabs"),

@@ -102,3 +102,57 @@ Host restart; GUI close/reopen without stopping VM; and VM balloon behavior
 using `vmmap -summary`/real physical footprint. Verify signing certificates,
 DMG install and Gatekeeper behavior separately. A personal self-signed
 certificate is **not** Apple Developer ID notarization.
+
+## Modular native UI architecture (2026-11-21)
+
+The existing three-column navigation and Docker feature contract are preserved.
+SwiftUI owns split navigation and toolbars; AppKit owns terminal and log backing
+views. The Linux Guest, private Docker socket, and VM Host are unchanged.
+
+| Module | Responsibility |
+| --- | --- |
+| `MobyApp.swift` | App entry and three-column navigation |
+| `MobyUITheme.swift` | Native palette, vector status icon, shared layout geometry |
+| `MobyUIModels.swift` | Docker DTOs and request bridge |
+| `MobyModel.swift` | UI actions, VM configuration, snapshot orchestration |
+| `MobyTelemetry.swift` | Independently observed CPU/RAM/IO |
+| `MobyDockerEvents.swift` | Streaming Docker event decoder and reconnecting UDS listener |
+| `MobyTerminal.swift` | SwiftTerm, logs, appearance and first-responder handling |
+| `MobyUIComponents.swift` | Inspector cards/charts and telemetry cells |
+| `MobyContainerWorkspace.swift` | Detail tabs and compact resource rows |
+| `MobyRuntime.swift` | Existing Docker HTTP-over-UDS and VM control |
+
+High-frequency container stats update `MobyTelemetry` independently of
+the navigation model. `ContainerLiveMetricsView` and the inspector observe
+only the telemetry they need. The existing 5-second stats cadence remains.
+The Docker `/events` stream uses the private `~/.kiri-moby/run/docker.sock`,
+accepts plain NDJSON and chunked HTTP, reconnects on failure and debounces
+resource invalidation by 300 ms. The 10-second snapshot fallback remains.
+
+The 940 x 600 default window remains. Shared column constraints enforce
+a 165-205 pt sidebar, 280-440 pt middle pane, and minimum 360 pt detail pane
+while preserving the 820 pt minimum window and native toolbar geometry.
+Compose, Docker actions, terminal, logs, inspector and pinned CLI remain.
+
+The native UI parity/audit scripts now inspect every Swift module. Fast GUI
+CI runs SwiftPM tests and builds the complete SwiftTerm-backed ARM64 app.
+The visual preview uses the same package with test-only synthetic data.
+Actual first-responder focus, large-list scrolling and live Docker workloads
+still require physical Apple Silicon/macOS acceptance beyond compilation.
+
+
+## ArcBox UI transplant (2026-11-21)
+
+Kiri Moby now uses the ArcBox Desktop application design, default 1200x800
+window. The container list adopts upstream AppKit ContainerTableCellView,
+ContainerGroupTableCellView and ResourceListRowView; image/volume/network list
+controllers use matching 44pt native cells. The right-side Info detail uses
+the adapted upstream InfoRow and InfoTableView. SwiftTerm remains Kiri's existing
+working PTY and is kept mounted across tab switches. A Metrics tab preserves
+Kiri's existing resource charts; no fake Files tab is presented.
+
+Resource surfaces use a native three-column split; full-width Overview, Compose,
+Build and Settings destinations switch to a real two-column split as in ArcBox.
+All Docker and VM operations continue to use Kiri's existing private socket.
+ArcBox's daemon, branding, Kubernetes, machines, sandboxes and remote icon assets
+are not shipped. Upstream MIT attribution is retained in NOTICE.
