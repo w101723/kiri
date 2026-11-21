@@ -341,8 +341,33 @@ private enum MobyVM {
         }
     }
 
+    private static func vmDiskIsLocked() -> Bool {
+        // The same flock protocol is used by the standalone Host and asset updater.
+        let path = MobyPaths.data.appendingPathComponent("moby-vm.lock").path
+        let fd = Darwin.open(path, O_RDWR)
+        if fd < 0 { return false }
+        defer { Darwin.close(fd) }
+        if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+            _ = flock(fd, LOCK_UN)
+            return false
+        }
+        return true
+    }
+
     static func start() throws {
         if DockerUnixHTTP.ping() { return }
+        // A second GUI may open while the first Host is booting. Reuse it instead
+        // of racing a new Helper for the same ext4 writable disk.
+        if vmDiskIsLocked() {
+            for _ in 0..<160 {
+                if DockerUnixHTTP.ping() { return }
+                if !vmDiskIsLocked() { break }
+                Thread.sleep(forTimeInterval: 0.25)
+            }
+            if vmDiskIsLocked() {
+                throw fail("An existing Kiri Moby Host owns the VM disk but Docker did not become ready")
+            }
+        }
         try installGuestAssets()
         // A signed Swift GUI must launch only its bundled Swift Host; no stale Rust fallback.
         let helper = MobyPaths.resources.appendingPathComponent("bin/kiri-moby-host")
@@ -381,13 +406,22 @@ private enum MobyVM {
     }
 
     static func stop() throws {
-        if !DockerUnixHTTP.ping() { return }
-        _ = try control("STOP\n")
-        for _ in 0..<160 {
-            if !DockerUnixHTTP.ping() { return }
+        // Do not confuse a crashed/not-yet-ready dockerd with a stopped VM.
+        // The Host must remain stoppable even if its Docker API is unavailable.
+        if !vmDiskIsLocked() && !DockerUnixHTTP.ping() { return }
+        for _ in 0..<40 {
+            if fm.fileExists(atPath: MobyPaths.control.path) { break }
             Thread.sleep(forTimeInterval: 0.25)
         }
-        throw fail("Moby VM shutdown timed out")
+        guard fm.fileExists(atPath: MobyPaths.control.path) else {
+            throw fail("VM still owns its data disk, but the Host control socket is unavailable")
+        }
+        _ = try control("STOP\n")
+        for _ in 0..<160 {
+            if !vmDiskIsLocked() && !DockerUnixHTTP.ping() { return }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        throw fail("Moby VM shutdown did not release its data disk")
     }
 }
 
