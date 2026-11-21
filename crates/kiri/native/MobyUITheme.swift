@@ -79,9 +79,9 @@ enum KiriPalette {
 
 /// Reusable native layout constraints. Keep toolbar space inside its owning column.
 enum KiriLayoutMetrics {
-    static let sidebarMin: CGFloat = 180
-    static let sidebarIdeal: CGFloat = 180
-    static let sidebarMax: CGFloat = 220
+    static let sidebarMin: CGFloat = 196
+    static let sidebarIdeal: CGFloat = 204
+    static let sidebarMax: CGFloat = 240
     static let contentMin: CGFloat = 316
     static let contentIdeal: CGFloat = 340
     static let contentMax: CGFloat = 600

@@ -44,7 +44,7 @@ private struct RootView: View {
                                 Button { model.refresh() } label: {
                                     Image(systemName: "arrow.clockwise")
                                 }
-                                .help("Refresh")
+                                .help("刷新")
                             }
                         }
                 }
@@ -143,10 +143,8 @@ private struct RootView: View {
                         )
                         .environmentObject(model)
                     } else {
-                        Text("未选择项目")
-                            .font(.title3.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        ContentUnavailableView("未选择项目", systemImage: "cube",
+                            description: Text("从列表中选择一项以查看详情。"))
                     }
                 } else if [.images, .volumes, .networks].contains(model.page) {
                     KiriArcBoxResourceDetail(page: model.page, selectedID: selectedResourceID)
@@ -205,7 +203,7 @@ private struct RootView: View {
                             }
                             .help("在原生多标签窗口中弹出")
                         }
-                    } else if model.page != .containers {
+                    } else {
                         Button { model.refresh() } label: {
                             Image(systemName: "arrow.clockwise")
                         }
@@ -359,16 +357,16 @@ private struct RootView: View {
                 get: { model.page },
                 set: { if let page = $0 { model.page = page } }
             )) {
-                Section("SYSTEM") {
+                Section("系统") {
                     nativeSidebarItem(.overview)
                 }
-                Section("DOCKER") {
+                Section("Docker") {
                     ForEach([Page.containers, .volumes, .images, .networks,
                              .compose, .builds], id: \.self) { page in
                         nativeSidebarItem(page)
                     }
                 }
-                Section("KIRI") {
+                Section("Kiri") {
                     nativeSidebarItem(.settings)
                 }
             }
@@ -477,7 +475,7 @@ private struct RootView: View {
                 if !model.sidebarCollapsed {
                     Text("Linux VM").fontWeight(.semibold)
                     Spacer(minLength: 1)
-                    Text(model.online ? "Running" : "Off")
+                    Text(model.online ? "运行中" : "已停止")
                         .foregroundStyle(KiriPalette.muted(model.isLight))
                 }
             }
@@ -489,9 +487,9 @@ private struct RootView: View {
                 }
                 HStack {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("Running")
-                        Text("CPUs")
-                        Text("Balloon")
+                        Text("运行中容器")
+                        Text("CPU 核数")
+                        Text("内存 Balloon")
                     }.foregroundStyle(KiriPalette.muted(model.isLight))
                     Spacer(minLength: 3)
                     VStack(alignment: .trailing, spacing: 7) {
@@ -512,7 +510,7 @@ private struct RootView: View {
                     }
                 }
                 .frame(height: 4)
-                Button(model.online ? "Stop" : "Start") {
+                Button(model.online ? "停止虚拟机" : "启动虚拟机") {
                     if model.online &&
                         !model.confirm("停止 Moby VM？", detail: "运行中的容器会被停止。") { return }
                     model.perform([model.online ? "stop" : "start"],
@@ -538,20 +536,22 @@ private struct RootView: View {
     private var sidebarEngineStatus: some View {
         VStack(spacing: 0) {
             Divider().opacity(0.45)
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 Circle()
                     .fill(model.online ? Color.green : Color.secondary)
                     .frame(width: 8, height: 8)
                 Text(model.online ? "Engine 运行中" : "Engine 已停止")
                     .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                 Spacer(minLength: 3)
                 Text(model.snapshot?.version?.Version.map { "v" + $0 } ?? "—")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 8)
             .frame(height: KiriLayoutMetrics.sidebarStatusHeight)
         }
     }
@@ -601,14 +601,43 @@ private struct RootView: View {
 
     // The middle column gives resources an actual navigable identity; the
     // right column retains full management controls for every existing page.
+    // Distinct SF Symbols + restrained native tints; no remote image downloads.
+    private func imagePresentation(_ name: String) -> (symbol: String, color: NSColor) {
+        let lower = name.lowercased()
+        if lower.contains("alpine") {
+            return ("mountain.2.fill", NSColor(srgbRed: 0.13, green: 0.58, blue: 0.72, alpha: 1))
+        }
+        if lower.contains("ubuntu") {
+            return ("circle.hexagongrid.fill", NSColor(srgbRed: 0.84, green: 0.39, blue: 0.15, alpha: 1))
+        }
+        if lower.contains("debian") {
+            return ("circle.hexagongrid.fill", NSColor(srgbRed: 0.78, green: 0.24, blue: 0.34, alpha: 1))
+        }
+        if lower.contains("nginx") || lower.contains("caddy") {
+            return ("globe", NSColor(srgbRed: 0.20, green: 0.60, blue: 0.38, alpha: 1))
+        }
+        if ["mysql", "postgres", "mongo", "mariadb"].contains(where: lower.contains) {
+            return ("cylinder.split.1x2", NSColor(srgbRed: 0.42, green: 0.38, blue: 0.70, alpha: 1))
+        }
+        if lower.contains("redis") {
+            return ("bolt.horizontal.circle.fill", NSColor(srgbRed: 0.84, green: 0.34, blue: 0.32, alpha: 1))
+        }
+        if lower.contains("hello-world") {
+            return ("terminal.fill", NSColor(srgbRed: 0.45, green: 0.56, blue: 0.69, alpha: 1))
+        }
+        return ("shippingbox.fill", NSColor(srgbRed: 0.30, green: 0.49, blue: 0.78, alpha: 1))
+    }
+
     private var resourceNavigator: some View {
         let entries: [KiriArcBoxResourceEntry] = {
             switch model.page {
             case .images:
-                return model.images.filter { match([$0.title, $0.Id]) }.map {
-                    KiriArcBoxResourceEntry(
-                        id: $0.Id, title: $0.title, subtitle: sizeLabel($0.Size),
-                        symbol: "circle.circle")
+                return model.images.filter { match([$0.title, $0.Id]) }.map { image in
+                    let presentation = imagePresentation(image.title)
+                    return KiriArcBoxResourceEntry(
+                        id: image.Id, title: image.title, subtitle: sizeLabel(image.Size),
+                        symbol: presentation.symbol, tintColor: presentation.color,
+                        styledImageTitle: true)
                 }
             case .volumes:
                 return model.volumes.filter { match([$0.Name, $0.Driver ?? ""]) }.map {
@@ -625,9 +654,42 @@ private struct RootView: View {
             default: return []
             }
         }()
-        return KiriArcBoxResourceList(items: entries, selectedID: selectedResourceID,
-                                      onSelect: { selectedResourceID = $0 })
-            .background(AppColors.background)
+        let emptyState: (title: String, symbol: String, description: String, action: String) = {
+            switch model.page {
+            case .volumes:
+                return ("暂无存储卷", "internaldrive",
+                        "创建存储卷以持久化保存容器数据。", "新建存储卷")
+            case .images:
+                return ("暂无镜像", "square.stack.3d.up",
+                        "从镜像仓库拉取镜像后即可创建容器。", "拉取镜像")
+            case .networks:
+                return ("暂无网络", "network",
+                        "创建网络以连接需要互通的容器。", "新建网络")
+            default:
+                return ("暂无资源", "square.stack", "当前没有可显示的项目。", "新建")
+            }
+        }()
+        return Group {
+            if entries.isEmpty {
+                if !model.search.isEmpty {
+                    ContentUnavailableView.search(text: model.search)
+                } else {
+                    ContentUnavailableView {
+                        Label(emptyState.title, systemImage: emptyState.symbol)
+                    } description: {
+                        Text(emptyState.description)
+                    } actions: {
+                        Button(emptyState.action) { createResource() }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+            } else {
+                KiriArcBoxResourceList(items: entries, selectedID: selectedResourceID,
+                                       onSelect: { selectedResourceID = $0 })
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(AppColors.background)
     }
 
     @ViewBuilder private var content: some View {
@@ -657,22 +719,24 @@ private struct RootView: View {
                     metric("镜像", model.images.count.description, "square.stack.3d.up")
                     metric("数据卷", model.volumes.count.description, "externaldrive")
                 }
-                HStack(alignment: .top) {
-                    vmCard.frame(width: 240)
-                    Spacer()
+                HStack(alignment: .top, spacing: 16) {
+                    vmCard.frame(width: 280)
+                    GroupBox("标准 Docker Engine") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            LabeledContent("版本", value: model.snapshot?.version?.Version ?? "—")
+                            LabeledContent("架构", value: model.snapshot?.info?.Architecture ?? "arm64")
+                            LabeledContent("驱动", value: model.snapshot?.info?.Driver ?? "—")
+                            LabeledContent("CPU", value: model.snapshot?.info?.NCPU.map(String.init) ?? "—")
+                            LabeledContent("虚拟机内存上限", value: sizeLabel(model.snapshot?.info?.MemTotal))
+                            LabeledContent("当前 Balloon 目标",
+                                value: model.snapshot?.memory?.balloon_target_mib.map { "\($0) MiB" } ?? "—")
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                GroupBox("标准 Docker Engine") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        LabeledContent("版本", value: model.snapshot?.version?.Version ?? "—")
-                        LabeledContent("架构", value: model.snapshot?.info?.Architecture ?? "arm64")
-                        LabeledContent("驱动", value: model.snapshot?.info?.Driver ?? "—")
-                        LabeledContent("CPU", value: model.snapshot?.info?.NCPU.map(String.init) ?? "—")
-                        LabeledContent("虚拟机内存上限", value: sizeLabel(model.snapshot?.info?.MemTotal))
-                        LabeledContent("当前 Balloon 目标",
-                            value: model.snapshot?.memory?.balloon_target_mib.map { "\($0) MiB" } ?? "—")
-                    }.padding(12)
-                }
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }.padding(22)
         }
     }
@@ -877,12 +941,12 @@ private struct RootView: View {
         ZStack {
             if model.containers.isEmpty {
                 ContentUnavailableView {
-                    Label("No Containers", systemImage: "shippingbox")
+                    Label("暂无容器", systemImage: "shippingbox")
                 } description: {
-                    Text(model.online ? "Run your first container with Docker." :
-                         "Start the Kiri Linux VM to manage containers.")
+                    Text(model.online ? "运行你的第一个 Docker 容器。" :
+                         "启动 Kiri Linux 虚拟机后即可管理容器。")
                 } actions: {
-                    Button("New Container") { createResource() }
+                    Button("新建容器") { createResource() }
                 }
             } else {
                 KiriArcBoxContainersList(
@@ -1131,117 +1195,122 @@ private struct RootView: View {
     }
 
     private var compose: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Text("Compose 项目")
-                    .font(.system(size: 14, weight: .semibold))
-                Text("\(composeProjects.count) 个项目")
-                    .foregroundStyle(KiriPalette.muted(model.isLight))
-                    .font(.system(size: 11))
-                Spacer()
-                Text("按 Docker Compose 项目分组 · 展开查看容器")
-                    .foregroundStyle(KiriPalette.muted(model.isLight))
-                    .font(.system(size: 11))
-                Button("刷新") { model.refresh() }
-            }
-            .padding(.horizontal, 20)
-            .frame(height: 52)
-            ScrollView(.horizontal) {
-                ScrollView(.vertical) {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                    if composeProjects.isEmpty {
-                        VStack(spacing: 9) {
-                            Image(systemName: "square.3.layers.3d")
-                                .font(.system(size: 28))
-                            Text("暂无 Compose 项目")
-                                .font(.system(size: 14, weight: .medium))
-                            Text("使用 Docker Compose 创建的容器会自动按项目归类显示。")
-                                .font(.system(size: 12))
-                        }
-                        .foregroundStyle(KiriPalette.muted(model.isLight))
-                        .frame(maxWidth: .infinity, minHeight: 220)
+        Group {
+            if composeProjects.isEmpty {
+                ContentUnavailableView("暂无 Compose 项目",
+                                       systemImage: "square.3.layers.3d",
+                                       description: Text("使用 Docker Compose 创建的容器会自动按项目归类显示。"))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack(spacing: 0) {
+                    HStack(spacing: 10) {
+                        Text("Compose 项目")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("\(composeProjects.count) 个项目")
+                            .font(.system(size: 11))
+                            .foregroundStyle(KiriPalette.muted(model.isLight))
+                        Spacer(minLength: 0)
                     }
-                    ForEach(composeProjects, id: \.self) { project in
-                        let members = model.containers.filter { $0.composeProject == project }
-                        let running = members.filter { $0.State == "running" }.count
-                        let expanded = !model.collapsedProjects.contains(project)
-                        VStack(spacing: 0) {
-                            Button {
-                                if expanded {
-                                    model.collapsedProjects.insert(project)
-                                } else {
-                                    model.collapsedProjects.remove(project)
-                                }
-                            } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                                        .font(.system(size: 11, weight: .bold))
-                                        .frame(width: 14)
-                                    Image(systemName: "square.3.layers.3d")
-                                        .font(.system(size: 17))
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(project)
-                                            .font(.system(size: 14, weight: .semibold))
-                                        Text("\(members.count) 个容器 · \(running) 个运行中")
-                                            .font(.system(size: 11))
-                                            .foregroundStyle(KiriPalette.muted(model.isLight))
-                                    }
-                                    Spacer()
-                                    Text(running == members.count ? "运行中" :
-                                         running == 0 ? "已停止" : "部分运行")
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(running > 0 ? KiriPalette.mint :
-                                            KiriPalette.muted(model.isLight))
-                                }
-                                .padding(.horizontal, 16)
-                                .frame(height: 64)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            if expanded {
-                                tableDivider
-                                HStack(spacing: 0) {
-                                    tableTitle("服务 / 容器", width: 260)
-                                    tableTitle("状态", width: 135)
-                                    tableTitle("CPU / 内存", width: 230)
-                                    tableTitle("端口", width: 165)
-                                    tableTitle("操作", width: 280)
-                                }
-                                tableDivider
-                                ForEach(members) { container in
-                                    HStack(spacing: 0) {
-                                        tableValue(
-                                            VStack(alignment: .leading, spacing: 3) {
-                                                Text(container.Labels?["com.docker.compose.service"]
-                                                     ?? container.title)
-                                                    .fontWeight(.semibold)
-                                                    .foregroundStyle(KiriPalette.link(model.isLight))
-                                                Text(container.title + " · " + (container.Image ?? ""))
-                                                    .font(.system(size: 10))
-                                                    .foregroundStyle(KiriPalette.muted(model.isLight))
+                    .padding(.horizontal, 20)
+                    .frame(height: 42)
+
+                    ScrollView(.vertical) {
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            ForEach(composeProjects, id: \.self) { project in
+                                let members = model.containers.filter { $0.composeProject == project }
+                                let running = members.filter { $0.State == "running" }.count
+                                let expanded = !model.collapsedProjects.contains(project)
+                                VStack(spacing: 0) {
+                                    Button {
+                                        if expanded { model.collapsedProjects.insert(project) }
+                                        else { model.collapsedProjects.remove(project) }
+                                    } label: {
+                                        HStack(spacing: 12) {
+                                            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                                                .font(.system(size: 11, weight: .bold))
+                                                .frame(width: 14)
+                                            Image(systemName: "square.3.layers.3d")
+                                                .font(.system(size: 17))
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text(project)
+                                                    .font(.system(size: 13, weight: .semibold))
                                                     .lineLimit(1)
-                                            }, width: 260)
-                                        tableValue(
-                                            Text(container.Status ?? container.State ?? "—"),
-                                            width: 135)
-                                        tableValue(containerResourceCell(container), width: 230)
-                                        tableValue(portLinks(container.Ports), width: 165)
-                                        tableValue(containerButtons(container), width: 280)
+                                                Text("\(members.count) 个容器 · \(running) 个运行中")
+                                                    .font(.system(size: 11))
+                                                    .foregroundStyle(KiriPalette.muted(model.isLight))
+                                            }
+                                            Spacer(minLength: 4)
+                                            Text(running == members.count ? "运行中" :
+                                                 running == 0 ? "已停止" : "部分运行")
+                                                .font(.system(size: 11))
+                                                .foregroundStyle(running > 0 ? KiriPalette.mint :
+                                                    KiriPalette.muted(model.isLight))
+                                                .fixedSize(horizontal: true, vertical: false)
+                                        }
+                                        .padding(.horizontal, 16)
+                                        .frame(height: 60)
+                                        .contentShape(Rectangle())
                                     }
-                                    .frame(minHeight: 63)
-                                    tableDivider
+                                    .buttonStyle(.plain)
+
+                                    if expanded {
+                                        tableDivider
+                                        HStack(spacing: 12) {
+                                            Text("服务 / 容器")
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                            Text("状态").frame(width: 92, alignment: .leading)
+                                            Text("CPU / 内存").frame(width: 124, alignment: .leading)
+                                            Text("端口").frame(maxWidth: 124, alignment: .leading)
+                                            Text("操作").frame(width: 118, alignment: .leading)
+                                        }
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundStyle(KiriPalette.faint(model.isLight))
+                                        .padding(.horizontal, 16)
+                                        .frame(height: 32)
+                                        tableDivider
+
+                                        ForEach(members) { container in
+                                            HStack(spacing: 12) {
+                                                VStack(alignment: .leading, spacing: 3) {
+                                                    Text(container.Labels?["com.docker.compose.service"] ?? container.title)
+                                                        .fontWeight(.semibold)
+                                                        .foregroundStyle(KiriPalette.link(model.isLight))
+                                                        .lineLimit(1)
+                                                    Text(container.title + " · " + (container.Image ?? ""))
+                                                        .font(.system(size: 10))
+                                                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                                                        .lineLimit(1)
+                                                        .truncationMode(.middle)
+                                                }
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .layoutPriority(1)
+
+                                                Text(container.Status ?? container.State ?? "—")
+                                                    .lineLimit(1)
+                                                    .frame(width: 92, alignment: .leading)
+                                                containerResourceCell(container)
+                                                    .frame(width: 124, alignment: .leading)
+                                                portLinks(container.Ports)
+                                                    .frame(maxWidth: 124, alignment: .leading)
+                                                containerButtons(container)
+                                                    .frame(width: 118, alignment: .leading)
+                                            }
+                                            .padding(.horizontal, 16)
+                                            .frame(minHeight: 58)
+                                            tableDivider
+                                        }
+                                    }
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(KiriPalette.panel(model.isLight))
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .overlay(RoundedRectangle(cornerRadius: 10)
+                                    .stroke(KiriPalette.border(model.isLight)))
                             }
                         }
+                        .padding(20)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(KiriPalette.panel(model.isLight))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10)
-                            .stroke(KiriPalette.border(model.isLight)))
                     }
-                }
-                    .padding(20)
-                    .frame(minWidth: 1180, alignment: .leading)
                 }
             }
         }
@@ -1292,13 +1361,17 @@ private struct RootView: View {
                     HStack(spacing:8) {
                         Button("启动 VM") {
                             model.perform(["start"], title:"Start VM",showResult:false)
-                        }.buttonStyle(.borderedProminent)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.online)
                         Button("停止 VM") {
                             if model.confirm("停止 VM 和正在运行的容器？",
                                              detail:"Docker 容器会被停止。") {
                                 model.perform(["stop"],title:"Stop VM",showResult:false)
                             }
-                        }.foregroundStyle(KiriPalette.red)
+                        }
+                        .foregroundStyle(KiriPalette.red)
+                        .disabled(!model.online)
                     }
                 }
                 panelCard {
@@ -1339,9 +1412,8 @@ private struct RootView: View {
                             Slider(
                                 value: Binding(
                                     get: { Double(model.resourceMemoryMiB) },
-                                    set: { model.resourceMemoryMiB = Int($0) }),
-                                in: 1024.0...Double(max(1024, config.max_memory_mib)),
-                                step: 256)
+                                    set: { model.resourceMemoryMiB = Int(($0 / 256.0).rounded()) * 256 }),
+                                in: 1024.0...Double(max(1024, config.max_memory_mib)))
                             HStack {
                                 Text("1 GiB")
                                 Spacer()

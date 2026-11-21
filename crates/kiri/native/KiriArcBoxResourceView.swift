@@ -10,6 +10,8 @@ struct KiriArcBoxResourceEntry: Equatable {
     let title: String
     let subtitle: String
     let symbol: String
+    let tintColor: NSColor? = nil
+    let styledImageTitle: Bool = false
 }
 
 struct KiriArcBoxResourceList: NSViewControllerRepresentable {
@@ -31,6 +33,7 @@ private final class KiriArcBoxResourceCell: NSTableCellView {
     private let symbolView = NSImageView()
     private let nameLabel = NSTextField(labelWithString: "")
     private let subtitleLabel = NSTextField(labelWithString: "")
+    private var currentEntry: KiriArcBoxResourceEntry?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -76,20 +79,55 @@ private final class KiriArcBoxResourceCell: NSTableCellView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
     func configure(_ item: KiriArcBoxResourceEntry) {
-        nameLabel.stringValue = item.title
+        currentEntry = item
         subtitleLabel.stringValue = item.subtitle
         symbolView.image = NSImage(systemSymbolName: item.symbol, accessibilityDescription: nil)
-        symbolView.contentTintColor = .controlAccentColor
+            ?? NSImage(systemSymbolName: "shippingbox.fill", accessibilityDescription: nil)
+        let tint = item.tintColor ?? .controlAccentColor
+        symbolView.contentTintColor = tint
+        iconBox.fillColor = tint.withAlphaComponent(0.11)
+        updateTextAppearance()
+    }
+
+    private func updateTextAppearance() {
+        guard let item = currentEntry else { return }
+        let selected = backgroundStyle == .emphasized
+        let primary: NSColor = selected ? .alternateSelectedControlTextColor : .labelColor
+        let secondary: NSColor = selected
+            ? NSColor.alternateSelectedControlTextColor.withAlphaComponent(0.7)
+            : .secondaryLabelColor
+        subtitleLabel.textColor = secondary
+        if !item.styledImageTitle {
+            nameLabel.stringValue = item.title
+            nameLabel.textColor = primary
+            return
+        }
+
+        // Work with NSString/UTF-16 ranges so registry ports and Unicode names
+        // do not confuse the last slash / tag separator.
+        let title = item.title as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: nameLabel.font ?? NSFont.systemFont(ofSize: 13, weight: .medium),
+            .foregroundColor: primary
+        ]
+        let styled = NSMutableAttributedString(string: item.title, attributes: attributes)
+        let slash = title.range(of: "/", options: .backwards)
+        let prefixEnd = slash.location == NSNotFound ? 0 : NSMaxRange(slash)
+        if prefixEnd > 0 {
+            styled.addAttribute(.foregroundColor, value: secondary,
+                                range: NSRange(location: 0, length: prefixEnd))
+        }
+        let colon = title.range(of: ":", options: .backwards)
+        if colon.location != NSNotFound && colon.location >= prefixEnd {
+            styled.addAttribute(.foregroundColor, value: secondary,
+                                range: NSRange(location: colon.location,
+                                               length: title.length - colon.location))
+        }
+        nameLabel.attributedStringValue = styled
     }
 
     override var backgroundStyle: NSView.BackgroundStyle {
-        didSet {
-            let selected = backgroundStyle == .emphasized
-            nameLabel.textColor = selected ? .alternateSelectedControlTextColor : .labelColor
-            subtitleLabel.textColor = selected
-                ? NSColor.alternateSelectedControlTextColor.withAlphaComponent(0.7)
-                : .secondaryLabelColor
-        }
+        didSet { updateTextAppearance() }
     }
 }
 
@@ -170,7 +208,7 @@ final class KiriArcBoxResourceController: NSViewController, NSTableViewDataSourc
 }
 
 enum KiriArcBoxResourceInfoTab: String, CaseIterable, Identifiable, DetailTab {
-    case info = "Info"
+    case info = "详情"
     var id: String { rawValue }
 }
 
@@ -187,27 +225,27 @@ struct KiriArcBoxResourceDetail: View {
                     VStack(alignment: .leading, spacing: 16) {
                         VStack(spacing: 0) {
                             InfoRow(label: "ID", value: image.Id)
-                            InfoRow(label: "Tag", value: image.title)
-                            InfoRow(label: "Size", value: sizeLabel(image.Size))
-                            InfoRow(label: "Created",
+                            InfoRow(label: "标签", value: image.title)
+                            InfoRow(label: "大小", value: sizeLabel(image.Size))
+                            InfoRow(label: "创建时间",
                                     value: image.Created.map {
                                         Date(timeIntervalSince1970: TimeInterval($0)).formatted()
                                     } ?? "—")
                         }
                         .infoSectionStyle()
                         HStack {
-                            Button("Run Container") {
-                                model.perform(["run", image.title], title: "Run container", showResult: false)
+                            Button("运行容器") {
+                                model.perform(["run", image.title], title: "运行容器", showResult: false)
                             }
                             .buttonStyle(.borderedProminent)
-                            Button("Inspect") {
+                            Button("查看详情") {
                                 model.action("inspect", fields: ["kind": "images", "id": image.Id],
                                              title: "inspect")
                             }
-                            Button("Delete", role: .destructive) {
-                                if model.confirm("Delete image \(image.title)?",
-                                                 detail: "Docker refuses deletion while a container uses it.") {
-                                    model.perform(["rmi", image.title], title: "Remove image", showResult: false)
+                            Button("删除", role: .destructive) {
+                                if model.confirm("删除镜像 \(image.title)？",
+                                                 detail: "正在被容器使用的镜像无法删除。") {
+                                    model.perform(["rmi", image.title], title: "删除镜像", showResult: false)
                                 }
                             }
                         }
@@ -219,21 +257,21 @@ struct KiriArcBoxResourceDetail: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         VStack(spacing: 0) {
-                            InfoRow(label: "Name", value: volume.Name)
-                            InfoRow(label: "Driver", value: volume.Driver ?? "local")
-                            InfoRow(label: "Mountpoint", value: volume.Mountpoint ?? "—")
+                            InfoRow(label: "名称", value: volume.Name)
+                            InfoRow(label: "驱动", value: volume.Driver ?? "local")
+                            InfoRow(label: "挂载点", value: volume.Mountpoint ?? "—")
                         }
                         .infoSectionStyle()
                         HStack {
-                            Button("Inspect") {
+                            Button("查看详情") {
                                 model.action("inspect", fields: ["kind": "volumes", "id": volume.Name],
                                              title: "inspect")
                             }
-                            Button("Delete", role: .destructive) {
-                                if model.confirm("Delete volume \(volume.Name)?",
-                                                 detail: "This may permanently remove stored data.") {
+                            Button("删除", role: .destructive) {
+                                if model.confirm("删除存储卷 \(volume.Name)？",
+                                                 detail: "此操作可能永久删除存储的数据。") {
                                     model.perform(["rmvol", volume.Name],
-                                                  title: "Remove volume", showResult: false)
+                                                  title: "删除存储卷", showResult: false)
                                 }
                             }
                         }
@@ -245,23 +283,23 @@ struct KiriArcBoxResourceDetail: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         VStack(spacing: 0) {
-                            InfoRow(label: "Name", value: network.Name)
+                            InfoRow(label: "名称", value: network.Name)
                             InfoRow(label: "ID", value: network.Id)
-                            InfoRow(label: "Driver", value: network.Driver ?? "—")
-                            InfoRow(label: "Scope", value: network.Scope ?? "—")
+                            InfoRow(label: "驱动", value: network.Driver ?? "—")
+                            InfoRow(label: "范围", value: network.Scope ?? "—")
                         }
                         .infoSectionStyle()
                         HStack {
-                            Button("Inspect") {
+                            Button("查看详情") {
                                 model.action("inspect", fields: ["kind": "networks", "id": network.Id],
                                              title: "inspect")
                             }
                             if !["bridge", "host", "none"].contains(network.Name) {
-                                Button("Delete", role: .destructive) {
-                                    if model.confirm("Delete network \(network.Name)?",
-                                                     detail: "An attached container may block deletion.") {
+                                Button("删除", role: .destructive) {
+                                    if model.confirm("删除网络 \(network.Name)？",
+                                                     detail: "存在关联容器时无法删除此网络。") {
                                         model.perform(["rmnet", network.Id],
-                                                      title: "Remove network", showResult: false)
+                                                      title: "删除网络", showResult: false)
                                     }
                                 }
                             }
@@ -270,8 +308,8 @@ struct KiriArcBoxResourceDetail: View {
                     .padding(16)
                 }
             } else {
-                ContentUnavailableView("No Selection", systemImage: "cube",
-                    description: Text("Select a resource from the list."))
+                ContentUnavailableView("未选择项目", systemImage: "cube",
+                    description: Text("从列表中选择一项以查看详情。"))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
