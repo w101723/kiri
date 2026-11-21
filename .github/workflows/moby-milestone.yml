@@ -54,6 +54,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Guard original Moby UI feature parity on Apple Silicon
         run: python3 scripts/moby/check-native-ui-parity.py
+      - name: Reject obsolete browser runtimes, web assets and icon divergence
+        run: python3 scripts/moby/audit-native-runtime.py
       - name: Verify real private certificate and full CA chain
         shell: bash
         run: |
