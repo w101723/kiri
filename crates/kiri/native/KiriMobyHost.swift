@@ -84,8 +84,10 @@ private func prepareDisks(_ data: URL) throws -> (URL, URL) {
         let handle = try FileHandle(forReadingFrom: staged)
         _ = fsync(handle.fileDescriptor)
         try handle.close()
-        if fm.fileExists(atPath: seed.path) { try fm.removeItem(at: seed) }
-        try fm.moveItem(at: staged, to: seed)
+        // Atomic replacement: never delete a working seed before the new one is committed.
+        guard Darwin.rename(staged.path, seed.path) == 0 else {
+            throw hostError("Atomic system seed replacement failed: \(String(cString: strerror(errno)))")
+        }
         try fm.removeItem(at: stage)
         try Data("\(revision)\n".utf8).write(to: stamp, options: .atomic)
     }
@@ -300,9 +302,28 @@ private struct MemoryGovernor {
     }
 }
 
+private final class PortListener {
+    let fd: Int32
+    let guestPort: UInt16
+    private let lock = NSLock()
+    private var cancelled = false
+    init(fd: Int32, guestPort: UInt16) { self.fd = fd; self.guestPort = guestPort }
+    var active: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return !cancelled
+    }
+    func stop() {
+        lock.lock()
+        defer { lock.unlock() }
+        if !cancelled {
+            cancelled = true
+            Darwin.close(fd)
+        }
+    }
+}
 private final class LocalListeners {
     private let lock = NSLock()
-    private var sockets: [UInt16: (Int32, UInt16)] = [:]
+    private var sockets: [UInt16: PortListener] = [:]
     private let shouldStop: () -> Bool
     private let connector: (UInt32) throws -> VZVirtioSocketConnection
     init(shouldStop: @escaping () -> Bool, connector: @escaping (UInt32) throws -> VZVirtioSocketConnection) {
@@ -311,24 +332,31 @@ private final class LocalListeners {
     }
     func reconcile(_ needed: [UInt16: UInt16]) {
         lock.lock()
-        let outdated = sockets.filter { needed[$0.key] != $0.value.1 }
-        for (port, item) in outdated { Darwin.close(item.0); sockets.removeValue(forKey: port) }
+        let outdated = sockets.filter { needed[$0.key] != $0.value.guestPort }
+        for (port, listener) in outdated {
+            listener.stop()
+            sockets.removeValue(forKey: port)
+        }
         let missing = needed.filter { sockets[$0.key] == nil }
         lock.unlock()
         for (port, guestPort) in missing {
             do {
-                let fd = try tcpListen(port)
+                let item = PortListener(fd: try tcpListen(port), guestPort: guestPort)
                 lock.lock()
-                sockets[port] = (fd, guestPort)
+                sockets[port] = item
                 lock.unlock()
                 trace("127.0.0.1:\(port) -> Linux Guest TCP:\(guestPort)")
                 DispatchQueue.global(qos: .utility).async {
-                    while !self.shouldStop() {
-                        var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-                        guard Darwin.poll(&pfd, 1, 1000) >= 0 else { break }
+                    while !self.shouldStop() && item.active {
+                        var pfd = pollfd(fd: item.fd, events: Int16(POLLIN), revents: 0)
+                        let rc = Darwin.poll(&pfd, 1, 1000)
+                        if rc < 0 && errno == EINTR { continue }
+                        guard rc >= 0, item.active else { break }
+                        if (pfd.revents & Int16(POLLNVAL | POLLERR)) != 0 { break }
                         guard (pfd.revents & Int16(POLLIN)) != 0 else { continue }
-                        let client = Darwin.accept(fd, nil, nil)
-                        if client < 0 { break }
+                        let client = Darwin.accept(item.fd, nil, nil)
+                        if client < 0 { continue }
+                        guard item.active else { Darwin.close(client); break }
                         DispatchQueue.global(qos: .utility).async {
                             defer { Darwin.close(client) }
                             do {
@@ -348,7 +376,7 @@ private final class LocalListeners {
     }
     func stop() {
         lock.lock()
-        for item in sockets.values { Darwin.close(item.0) }
+        for item in sockets.values { item.stop() }
         sockets.removeAll()
         lock.unlock()
     }
@@ -369,6 +397,7 @@ private final class KiriMobyHost: NSObject, VZVirtualMachineDelegate, VZVirtioSo
     private var controlListener: Int32 = -1
     private var diskLock: Int32 = -1
     private var tcp: LocalListeners?
+    private var signalSources: [DispatchSourceSignal] = []
     private let data: URL
     private let memoryLimit: Int
 
@@ -711,6 +740,14 @@ private final class KiriMobyHost: NSObject, VZVirtualMachineDelegate, VZVirtioSo
     }
     func run() throws {
         try startup()
+        // A Helper survives UI termination but must stop the Guest cleanly on SIGTERM.
+        for signum in [SIGINT, SIGTERM] {
+            _ = Darwin.signal(signum, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: signum, queue: .global(qos: .utility))
+            source.setEventHandler { [weak self] in self?.setStopped() }
+            source.resume()
+            signalSources.append(source)
+        }
         acceptLoop(dockerListener) { [weak self] client in self?.handleDocker(client) }
         acceptLoop(controlListener) { [weak self] client in self?.handleControl(client) }
         startPortsWatcher()
@@ -733,6 +770,8 @@ private enum HostMain {
             print("kiri-moby-host swift-native")
             return
         }
+        // Ignore writes to disconnected Docker peers; one EPIPE must not kill the VM.
+        _ = Darwin.signal(SIGPIPE, SIG_IGN)
         let env = ProcessInfo.processInfo.environment
         let data = URL(fileURLWithPath: env["KIRI_MOBY_DATA_DIR"] ??
             fm.homeDirectoryForCurrentUser.appendingPathComponent(".kiri-moby").path)
