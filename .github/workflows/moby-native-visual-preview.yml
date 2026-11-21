@@ -6,12 +6,15 @@ on:
     paths:
       - "crates/kiri/native/MobyApp.swift"
       - "scripts/moby/check-native-ui-parity.py"
+      - "brand/icon/png/**"
+      - ".github/workflows/moby-native-visual-preview.yml"
   workflow_dispatch:
   pull_request:
     paths:
       - "crates/kiri/native/MobyApp.swift"
       - "scripts/moby/check-native-ui-parity.py"
       - ".github/workflows/moby-native-visual-preview.yml"
+      - "brand/icon/png/**"
 
 permissions:
   contents: read
@@ -34,7 +37,15 @@ jobs:
           set -euo pipefail
           sdk="$(xcrun --sdk macosx --show-sdk-path)"
           app="$RUNNER_TEMP/Kiri Moby UI Preview.app"
-          mkdir -p "$app/Contents/MacOS"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$RUNNER_TEMP/Kiri.iconset"
+          for spec in '16 1' '16 2' '32 1' '32 2' '128 1' '128 2' '256 1' '256 2' '512 1' '512 2'; do
+            set -- $spec
+            pixels="$(($1 * $2))"
+            name="icon_${1}x${1}"
+            if [ "$2" = 2 ]; then name="${name}@2x"; fi
+            cp "brand/icon/png/kiri-app-icon-${pixels}.png" "$RUNNER_TEMP/Kiri.iconset/${name}.png"
+          done
+          iconutil -c icns -o "$app/Contents/Resources/Kiri.icns" "$RUNNER_TEMP/Kiri.iconset"
           cat > "$app/Contents/Info.plist" <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -42,6 +53,7 @@ jobs:
             <key>CFBundleExecutable</key><string>kiri-moby-ui-preview</string>
             <key>CFBundleIdentifier</key><string>dev.kiri.moby.preview</string>
             <key>CFBundleName</key><string>Kiri Moby UI Preview</string>
+            <key>CFBundleIconFile</key><string>Kiri</string>
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>CFBundleVersion</key><string>1</string>
           </dict></plist>
