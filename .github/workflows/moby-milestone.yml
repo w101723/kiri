@@ -32,6 +32,7 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "scripts/moby/check-native-ui-parity.py"
+      - "brand/icon/png/**"
 
 concurrency:
   group: moby-milestone-${{ github.ref }}
