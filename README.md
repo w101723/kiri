@@ -39,8 +39,10 @@ Licensed under Apache-2.0. Third-party copyright notices: [NOTICE](NOTICE).
 
 ## Native-only resource guarantee
 
-The menu-bar item loads the same `Kiri.icns` as Finder, without the retired
-standalone status icon. CI checks native source, compiled framework links and
+The menu-bar item draws an 18pt monochrome hexagonal-cube outline with
+AppKit `NSBezierPath` and sets `NSImage.isTemplate = true` for automatic
+light/dark appearance. It has no color, rounded-square background or external
+icon file. Finder/Dock retain the separate full-color `Kiri.icns` brand icon. CI checks native source, compiled framework links and
 the assembled app for browser runtimes and web frontend assets using
 `scripts/moby/audit-native-runtime.py`. Browser-opening actions use the
 system browser outside the app; the app itself renders only SwiftUI/AppKit.
