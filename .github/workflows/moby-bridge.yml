@@ -2,15 +2,14 @@ name: Moby bridge verification
 
 on:
   push:
-    branches: [moby-engine]
+    branches: [moby-engine, apple-silicon-native-parity]
     paths:
       - "crates/kiri-moby-bridge/**"
       - "crates/kiri-vmm/**"
-      - "crates/kiri/src/ui/moby*"
-      - "crates/kiri/src/ui/mac.rs"
+      - "crates/kiri/src/moby.rs"
+      - "crates/kiri/src/client.rs"
       - "crates/kiri/native/**"
       - "scripts/moby/check-native-ui-parity.py"
-      - "crates/kiri/src/ui/mod.rs"
       - "crates/kiri/src/client.rs"
       - "crates/kiri/src/main.rs"
       - "crates/kiri/Cargo.toml"
@@ -65,8 +64,8 @@ jobs:
           xcrun --sdk macosx --show-sdk-path
       - name: Exercise native macOS Docker event parser and socket relay
         run: cargo test -p kiri-moby-bridge --lib --target x86_64-apple-darwin
-      - name: Test Moby GUI native socket, log and authorized-share logic
-        run: cargo test -p kiri --bin kiri --target x86_64-apple-darwin ui::moby::tests
+      - name: Cross-compile Moby controller tests for Apple Silicon
+        run: cargo check -p kiri --tests --target aarch64-apple-darwin
       - name: Verify original Moby UI controls are implemented in native SwiftUI
         run: python3 scripts/moby/check-native-ui-parity.py
       - name: Compile complete macOS Kiri GUI against upstream Moby

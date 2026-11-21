@@ -1,91 +1,44 @@
-# Kiri Moby · macOS Apple Silicon
+# Kiri Moby
 
-Kiri Moby is a private **macOS 14+ / Apple Silicon (arm64)** Docker
-application using the standard upstream Moby Docker Engine. It does not
-include Windows, WSL or Linux-host application support. Linux ARM64 remains
-the **Guest operating system inside the Mac virtual machine**, as Docker
-Engine needs Linux kernel namespaces and cgroups.
+**Native Docker desktop for macOS Apple Silicon (ARM64) only.**
 
-## Native UI
+Kiri Moby consists of a SwiftUI/AppKit application with SwiftTerm terminals, Apple's Virtualization.framework for an ARM64 Linux VM, and the **standard upstream Docker Engine (dockerd)** inside the guest. No custom Kiri daemon, WebKit UI, Kubernetes subsystem, or Linux/Windows host app is included.
 
-The Finder-launched application is fully native **SwiftUI + AppKit**.
-The previous HTML/WebKit Moby screen is retained as a compatibility
-reference in the source tree only. The native GUI has the same structure,
-colors, navigation order and control surfaces:
+## Runtime
 
-- 44-point top strip: sidebar rail toggle, search (⌘K), Settings.
-- 212-point sidebar (60-point compact rail): Docker / Kiri navigation,
-  counts, theme toggle and persistent bottom VM status card.
-- Containers: original All / Running / Stopped / Failed tabs,
-  Compose-project collapse/expand, seven columns, inline start/stop/
-  restart/pause/unpause, Exec, Logs, Inspect and Remove, published port links.
-- Images / Volumes / Networks: original rows, columns, action buttons.
-- Compose: choose YAML, Up -d, PS, Logs, Down.
-- Builds: build context, image tag and linux/arm64 or linux/amd64.
-- Settings: VM start/stop, explicit authorized macOS project folders,
-  apply changes with controlled VM restart.
-- Original Docker status footer and independent AppKit menu-bar item.
+```text
+Kiri Moby.app
+  ├── Contents/MacOS/kiri-moby-ui       SwiftUI / AppKit / SwiftTerm
+  ├── Contents/MacOS/kiri               short-lived JSON / PTY CLI bridge
+  └── Contents/Resources/
+      ├── bin/kiri-moby-host            Apple VZ VM, vsock Docker relay
+      ├── bin/docker                    Docker CLI, Compose and Buildx plugins
+      ├── guest/                        Linux ARM64 kernel / initramfs / ext4
+      ├── Kiri.icns
+      └── kiri-menubar-template@2x.png
+             │
+             ▼
+~/.kiri-moby/run/docker.sock ↔ kiri-moby-host ↔ Linux guest dockerd
+```
 
-The SwiftUI Finder executable is **Contents/MacOS/kiri-moby-ui**.
-It calls the signed, short-lived Rust CLI inside the same App bundle for
-Docker/VM operations. No WKWebView runs in the Finder app.
-The separate kiri-moby-host process controls Apple's Virtualization
-framework, private vsock transport and ~/.kiri-moby Docker socket.
-No extra Docker Engine or new user data store is created.
+All Docker data lives in `~/.kiri-moby/vm/data.img`. The application uses its **own private Unix socket** and never changes your existing Docker contexts or contacts the discontinued Kiri daemon.
 
-The old legacy Kiri WebKit GUI source is temporarily preserved for
-visual/functional parity audit; it is not the normal Finder app entrypoint.
-See [Native UI engineering contract](docs/MOBY_NATIVE_GUI.md).
+## Supported features
 
-## macOS install
+Containers, images, volumes, networks, Compose project inventory, Buildx, live container resource stats, logs, actual PTY terminal, VM CPU/RAM controls, and permissioned Mac folder sharing.
 
-Builds and development releases: [Kiri Moby GitHub Actions](https://github.com/w101723/kiri/actions/workflows/moby-milestone.yml).
-Only ARM64 binaries are produced. The app ZIP includes the verified local
-installer. For a personally signed, **non-notarized** build, authorize its
-pinned-certificate installer only once, then use it for later upgrades:
-[Local installation and signing](docs/MOBY_PERSONAL_SIGNING.md).
+## Development
 
-An existing Kiri Moby Docker data disk at ~/.kiri-moby/vm/data.img is not
-overwritten by UI changes. Stop the VM before an App upgrade.
-Personal P12 credentials belong exclusively in GitHub Actions Secrets,
-never in the repository. Apple notarization requires Developer ID.
+Requires macOS 14+ on Apple Silicon, Xcode and the Rust ARM64 target.
 
-## Architecture
+```bash
+cargo xtask check
+cargo xtask ui
+cargo xtask host
+```
 
-    macOS arm64
-    ├── Kiri Moby.app / SwiftUI + AppKit
-    │   └── Contents/MacOS/kiri — short-lived Rust JSON control/CLI
-    ├── kiri-moby-host — VZ VM lifecycle / Docker Unix socket forwarding
-    └── Apple Virtualization.framework
-        └── Linux ARM64 Guest
-            ├── Linux kernel, virtiofs and virtio balloon
-            ├── upstream Moby dockerd / containerd / runc
-            └── persistent ext4 Docker data disk
+The complete Guest + Host + SwiftUI signed app and DMG are built by [Moby milestone CI](.github/workflows/moby-milestone.yml). [Native UI CI](.github/workflows/moby-native-ui-check.yml) cross-compiles the arm64 application and backend. [Visual Preview CI](.github/workflows/moby-native-visual-preview.yml) captures a real AppKit window using synthetic test data.
 
-The VM service's physical footprint is independent of WebKit process
-removal. Balloon target, Guest MemAvailable and Host Physical footprint
-must be measured separately.
+Documentation: [Architecture](docs/MOBY_ENGINE.md) · [Native UI](docs/MOBY_NATIVE_GUI.md) · [macOS installation](docs/MOBY_LOCAL_INSTALL_MACOS.md) · [Signing](docs/MOBY_MACOS_SIGNING.md)
 
-## Build and verification
-
-Use macOS/Xcode with an Apple SDK and Rust targeting Apple Silicon:
-
-    rustup target add aarch64-apple-darwin
-    cargo check -p kiri --target aarch64-apple-darwin
-    python3 scripts/moby/check-native-ui-parity.py
-
-The separate macOS CI pipeline cross-compiles the SwiftUI native app,
-verifies no direct WebKit or JavaScriptCore dependency, checks the Rust
-control bridge and verifies original UI feature parity. The complete
-ARM64 bundle workflow packages and signs the GUI, CLI, Host and Docker
-tools plus matching Linux ARM64 Guest. CI compilation alone does not
-replace a real Apple Silicon screenshot/interaction acceptance test.
-
-## Project lineage and licenses
-
-Kiri Moby is based on the open-source Kiri project. The original Kiri
-engine's Linux/Windows installers and benchmark claims do **not** apply
-to this Apple Silicon/Moby fork. Kiri's name and marks are subject to
-their original trademark terms; source code remains Apache-2.0.
-Third-party attribution is in [NOTICE](NOTICE); Linux Guest source and
-GPL-2.0 source-offer information remain in [guest/kernel](guest/kernel).
+Apache-2.0 licensed. See [NOTICE](NOTICE) for third-party attributions.

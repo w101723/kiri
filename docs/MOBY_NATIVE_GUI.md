@@ -1,10 +1,9 @@
 # Kiri Moby Native SwiftUI/AppKit Frontend
 
-## Architectural choice
+## Apple Silicon-only architecture
 
 The macOS Finder application now launches the arm64 executable
-Contents/MacOS/kiri-moby-ui, written in SwiftUI/AppKit. The previous
-WKWebView-based Rust GUI is not the default application entrypoint.
+Contents/MacOS/kiri-moby-ui, written in SwiftUI/AppKit. The retired WKWebView-based Rust GUI and its daemon are absent from this product.
 
 Persistent processes should be:
 - SwiftUI GUI application (no WebKit WebContent/GPU/Networking helpers)
