@@ -1950,9 +1950,7 @@ private struct RootView: View {
     @State private var loadedTerminalIDs = Set<String>()
     @State private var showVMPopover = false
     @Environment(\.openWindow) private var openWindow
-    // Original Kiri Moby shell: 44pt title strip, 212pt flat sidebar,
-    // bottom-left VM card, toolbar with status chips and footer.
-    // Every screen is constructed with native SwiftUI and AppKit views.
+    // Three true navigation columns share a single native macOS titlebar.
     var body: some View {
         NavigationSplitView {
             List(selection: Binding<Page?>(
@@ -2287,16 +2285,19 @@ private struct RootView: View {
     }
 
     @ViewBuilder
+    @ViewBuilder
     private func nativeSidebarItem(_ page: Page) -> some View {
+        let selected = model.page == page
+        let row = Label {
+            Text(page.displayName)
+        } icon: {
+            Image(systemName: page.symbol)
+                .foregroundStyle(selected ? Color.white : Color.accentColor)
+        }
         if let count = navCount(page) {
-            Label(page.displayName, systemImage: page.symbol)
-                .foregroundStyle(.primary)
-                .badge(count)
-                .tag(page)
+            row.badge(count).tag(page)
         } else {
-            Label(page.displayName, systemImage: page.symbol)
-                .foregroundStyle(.primary)
-                .tag(page)
+            row.tag(page)
         }
     }
 
@@ -2305,6 +2306,12 @@ private struct RootView: View {
             Label(model.online ? "Linux VM 运行中" : "Linux VM 已停止",
                   systemImage: "desktopcomputer")
                 .font(.headline)
+            Divider()
+            Text("Kiri 私有 Docker · 默认 Context 不变")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            LabeledContent("运行中容器", value:
+                "\(model.containers.filter { $0.State == "running" }.count) / \(model.containers.count)")
             Divider()
             LabeledContent("CPU", value: "\(model.snapshot?.info?.NCPU ?? 0) 核")
             LabeledContent("内存使用", value: liveMemoryLabel)
@@ -2440,33 +2447,24 @@ private struct RootView: View {
     // The Engine status lives in the native sidebar rather than beneath the
     // detail pane: dark Exec/Logs can touch the bottom of the main window.
     private var sidebarEngineStatus: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Divider()
-            HStack(spacing: 7) {
-                Circle().fill(model.online ? Color.green : Color.secondary)
-                    .frame(width: 7, height: 7)
+        VStack(spacing: 0) {
+            Divider().opacity(0.45)
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(model.online ? Color.green : Color.secondary)
+                    .frame(width: 8, height: 8)
                 Text(model.online ? "Engine 运行中" : "Engine 已停止")
-                    .font(.system(size: 11, weight: .medium))
-                Spacer(minLength: 0)
-                if let version = model.snapshot?.version?.Version {
-                    Text("v" + version)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                Spacer(minLength: 3)
+                Text(model.snapshot?.version?.Version.map { "v" + $0 } ?? "—")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            Text("Kiri 私有 Docker · 默认 Context 不变")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("\(model.containers.filter { $0.State == "running" }.count) / \(model.containers.count) 个容器运行中")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .frame(height: 44)
         }
-        .padding(.horizontal, 13)
-        .padding(.bottom, 12)
-        .padding(.top, 6)
     }
 
     private var selectedContainer: ContainerItem? {
