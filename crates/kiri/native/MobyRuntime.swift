@@ -18,15 +18,23 @@ enum MobyPaths {
         if let override = ProcessInfo.processInfo.environment["KIRI_MOBY_DATA_DIR"], !override.isEmpty {
             return URL(fileURLWithPath: override, isDirectory: true)
         }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".kiri-moby", isDirectory: true)
+        #if KIRI_HVF_LOCAL
+        let directory = ".kiri-moby-hvf"
+        #else
+        let directory = ".kiri-moby"
+        #endif
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(directory, isDirectory: true)
     }
     static var socket: URL { data.appendingPathComponent("run/docker.sock") }
     static var control: URL { data.appendingPathComponent("run/host-control.sock") }
     static var resources: URL { Bundle.main.bundleURL.appendingPathComponent("Contents/Resources", isDirectory: true) }
     static var docker: URL { resources.appendingPathComponent("bin/docker") }
+    #if KIRI_HVF_LOCAL
+    static var dockerConfig: URL { data.appendingPathComponent("docker-config", isDirectory: true) }
+    #endif
 }
 
-private struct DockerResponse {
+struct DockerResponse {
     let status: Int
     let body: Data
     var json: Any {
@@ -44,7 +52,7 @@ private struct DockerResponse {
 
 // The only raw socket implementation in the macOS GUI. It bounds response size,
 // handles HTTP/1.1 framing and chunked bodies, and never opens a TCP listener.
-private enum DockerUnixHTTP {
+enum DockerUnixHTTP {
     static func connect(_ path: String, timeout: TimeInterval) throws -> Int32 {
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw fail("Unix socket: \(String(cString: strerror(errno)))") }
@@ -186,7 +194,7 @@ private func get(_ value: Any?, _ keys: String...) -> Any? {
 }
 private func jsonValue(_ value: Any?) -> Any { value ?? NSNull() }
 
-private enum MobyConfig {
+enum MobyConfig {
     static let fm = FileManager.default
     static var cpus: Int { min(16, max(1, ProcessInfo.processInfo.activeProcessorCount)) }
     static var memory: Int {
@@ -250,16 +258,21 @@ private enum MobyConfig {
     }
 }
 
-private enum MobyVM {
+enum MobyVM {
     static let fm = FileManager.default
     static func control(_ command: String) throws -> [String: Any] {
         let fd = try DockerUnixHTTP.connect(MobyPaths.control.path, timeout: 2)
         defer { Darwin.close(fd) }
         try DockerUnixHTTP.send(fd, Data(command.utf8))
         var buffer = [UInt8](repeating: 0, count: 1024)
-        let n = Darwin.read(fd, &buffer, buffer.count)
-        guard n > 0 else { throw fail("VM control socket did not respond") }
-        let reply = Data(buffer.prefix(n))
+        var reply = Data()
+        while reply.count < 4096 && !reply.contains(10) {
+            let n = Darwin.read(fd, &buffer, buffer.count)
+            if n < 0 && errno == EINTR { continue }
+            if n <= 0 { break }
+            reply.append(contentsOf: buffer.prefix(n))
+        }
+        guard !reply.isEmpty else { throw fail("VM control socket did not respond") }
         if command == "STOP\n" {
             guard reply == Data("OK\n".utf8) else { throw fail("VM rejected stop") }
             return ["message": "VM stop requested"]
@@ -274,16 +287,20 @@ private enum MobyVM {
         (try? control("STAT\n")) ?? NSNull()
     }
 
-    static func installGuestAssets() throws {
-        let source = MobyPaths.resources.appendingPathComponent("guest")
-        guard fm.fileExists(atPath: source.path) else { return }
+    static func installGuestAssets(from resources: URL = MobyPaths.resources, lockHeld: Bool = false) throws {
+        let source = resources.appendingPathComponent("guest")
+        guard fm.fileExists(atPath: source.path) else {
+            if lockHeld { throw fail("Local HVF bundle has no Guest resources") }
+            return
+        }
         try MobyConfig.ensurePrivate(MobyPaths.data)
         let target = MobyPaths.data.appendingPathComponent("guest")
         let files = ["Image", "initramfs.cpio", "data.img.tgz",
                      "system.img.tgz", "rootfs.revision", "SHA256SUMS"]
-        let revisionFile = MobyPaths.resources.appendingPathComponent("SOURCE_REVISION")
+        let revisionFile = resources.appendingPathComponent("SOURCE_REVISION")
         guard let revision = try? String(contentsOf: revisionFile, encoding: .utf8)
                 .trimmingCharacters(in: .whitespacesAndNewlines) else {
+            guard !lockHeld else { throw fail("Local HVF bundle has no Guest SOURCE_REVISION") }
             try MobyConfig.ensurePrivate(target)
             for file in files where !fm.fileExists(atPath: target.appendingPathComponent(file).path) {
                 let sourceFile = source.appendingPathComponent(file)
@@ -296,14 +313,16 @@ private enum MobyVM {
         guard revision.count == 40, revision.utf8.allSatisfy({
             ($0 >= 48 && $0 <= 57) || ($0 >= 97 && $0 <= 102) || ($0 >= 65 && $0 <= 70)
         }) else { throw fail("Invalid signed Guest SOURCE_REVISION") }
-        let lockPath = MobyPaths.data.appendingPathComponent("moby-vm.lock").path
-        let lockFD = Darwin.open(lockPath, O_CREAT | O_RDWR, mode_t(0o600))
-        guard lockFD >= 0 else { throw fail("Guest lock could not be opened") }
-        defer { Darwin.close(lockFD) }
-        guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
-            throw fail("VM owns the disk; Guest assets cannot be replaced while running")
+        var lockFD: Int32 = -1
+        defer { if lockFD >= 0 { Darwin.close(lockFD) } }
+        if !lockHeld {
+            let lockPath = MobyPaths.data.appendingPathComponent("moby-vm.lock").path
+            lockFD = Darwin.open(lockPath, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
+            guard lockFD >= 0 else { throw fail("Guest lock could not be opened") }
+            guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
+                throw fail("VM owns the disk; Guest assets cannot be replaced while running")
+            }
         }
-        defer { flock(lockFD, LOCK_UN) }
         var isLink = ObjCBool(false)
         if fm.fileExists(atPath: target.path, isDirectory: &isLink) {
             let attributes = try fm.attributesOfItem(atPath: target.path)
@@ -369,16 +388,18 @@ private enum MobyVM {
                 throw fail("An existing Kiri Moby Host owns the VM disk but Docker did not become ready")
             }
         }
+        #if !KIRI_HVF_LOCAL
         try installGuestAssets()
-        // A signed Swift GUI must launch only its bundled Swift Host; no stale Rust fallback.
-        // Launch a nested, independently signed headless Helper, without
-        // changing the VM protocol or the macOS-owned Virtualization XPC worker.
+        #endif
+        // The GUI launches only its bundled and independently signed Helper.
         let helper = Bundle.main.bundleURL
             .appendingPathComponent("Contents/Library/Helpers/Kiri Moby Helper.app/Contents/MacOS/Kiri Moby Helper")
         guard fm.isExecutableFile(atPath: helper.path) else {
             throw fail("Signed Kiri Moby Helper.app is missing from the app")
         }
+        #if !KIRI_HVF_LOCAL
         let cpus = try MobyConfig.readResources()
+        #endif
         try MobyConfig.ensurePrivate(MobyPaths.data.appendingPathComponent("logs"))
         let log = MobyPaths.data.appendingPathComponent("logs/gui-host.log")
         if !fm.fileExists(atPath: log.path) { _ = fm.createFile(atPath: log.path, contents: nil) }
@@ -392,10 +413,12 @@ private enum MobyVM {
             env.removeValue(forKey: key)
         }
         env["KIRI_MOBY_DATA_DIR"] = MobyPaths.data.path
+        #if !KIRI_HVF_LOCAL
         env["KIRI_MOBY_CPUS"] = String(cpus["cpus"] ?? 4)
         env["KIRI_MOBY_MEMORY_MIB"] = String(cpus["memory_mib"] ?? 4096)
         let shares = try MobyConfig.shares()
         if !shares.isEmpty { env["KIRI_MOBY_SHARE_DIRS"] = shares.joined(separator: ",") }
+        #endif
         proc.environment = env
         proc.standardInput = FileHandle.nullDevice
         proc.standardOutput = output
@@ -422,7 +445,14 @@ private enum MobyVM {
         }
         _ = try control("STOP\n")
         for _ in 0..<160 {
-            if !vmDiskIsLocked() && !DockerUnixHTTP.ping() { return }
+            if !vmDiskIsLocked() && !DockerUnixHTTP.ping() {
+                #if KIRI_HVF_LOCAL
+                if fm.fileExists(atPath: MobyPaths.data.appendingPathComponent("run/forced-stop").path) {
+                    throw fail("Guest shutdown timed out; Helper was forced to exit without confirming disk sync")
+                }
+                #endif
+                return
+            }
             Thread.sleep(forTimeInterval: 0.25)
         }
         throw fail("Moby VM shutdown did not release its data disk")
@@ -439,10 +469,7 @@ enum MobyRuntime {
         let task = Process()
         task.executableURL = executable
         task.arguments = args
-        var env = ProcessInfo.processInfo.environment
-        env["DOCKER_HOST"] = "unix://\(MobyPaths.socket.path)"
-        env.removeValue(forKey: "DOCKER_CONTEXT")
-        task.environment = env
+        task.environment = dockerEnvironment()
         let stdout = Pipe(), stderr = Pipe()
         task.standardOutput = stdout
         task.standardError = stderr
@@ -634,7 +661,12 @@ enum MobyRuntime {
             }
         case "build":
             let platform = value["platform"] as? String ?? "linux/arm64"
-            guard ["linux/arm64", "linux/amd64"].contains(platform),
+            #if KIRI_HVF_LOCAL
+            let platforms = ["linux/arm64"]
+            #else
+            let platforms = ["linux/arm64", "linux/amd64"]
+            #endif
+            guard platforms.contains(platform),
                   !name.isEmpty, FileManager.default.fileExists(atPath: path) else {
                 throw fail("Buildx needs a valid context, tag, and supported platform")
             }
@@ -741,11 +773,20 @@ enum MobyRuntime {
         return try JSONSerialization.data(withJSONObject: result, options: [.fragmentsAllowed])
     }
 
-    static func terminalEnvironment() -> [String: String] {
+    private static func dockerEnvironment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["DOCKER_HOST"] = "unix://\(MobyPaths.socket.path)"
-        env["TERM"] = "xterm-256color"
         env.removeValue(forKey: "DOCKER_CONTEXT")
+        #if KIRI_HVF_LOCAL
+        env["DOCKER_CONFIG"] = MobyPaths.dockerConfig.path
+        env.removeValue(forKey: "BUILDX_CONFIG")
+        #endif
+        return env
+    }
+
+    static func terminalEnvironment() -> [String: String] {
+        var env = dockerEnvironment()
+        env["TERM"] = "xterm-256color"
         return env
     }
 }

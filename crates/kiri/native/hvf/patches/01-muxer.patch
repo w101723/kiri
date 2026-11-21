@@ -1,0 +1,21 @@
+--- a/src/devices/src/virtio/vsock/muxer.rs
++++ b/src/devices/src/virtio/vsock/muxer.rs
+@@ -31,8 +31,18 @@
+ #[derive(Debug)]
+ pub enum MuxerRx {
+     Reset {
++        local_port: u32,
++        peer_port: u32,
++    },
++    /// Host-side write half-close, forwarded as `VSOCK_OP_SHUTDOWN` with
++    /// `VSOCK_FLAGS_SHUTDOWN_SEND`. This makes the guest's recv() see EOF
++    /// while keeping the guest -> host direction alive. It must not be
++    /// replaced by Reset: RST discards the guest socket's unsent output.
++    Shutdown {
+         local_port: u32,
+         peer_port: u32,
++        flags: u32,
++        fwd_cnt: u32,
+     },
+     GetnameResponse {
+         local_port: u32,

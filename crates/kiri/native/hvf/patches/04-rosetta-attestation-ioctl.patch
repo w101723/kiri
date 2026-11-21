@@ -1,0 +1,73 @@
+# Header: Apple's Rosetta for Linux self-checks the environment by issuing
+# ioctl 0x80456125 (_IOC(READ, 0x61, 0x25, 0x45)) on /proc/self/exe and aborts
+# with "Rosetta is only intended to run on Apple Silicon with a macOS host
+# using Virtualization.framework with Rosetta mode enabled" when it fails.
+# The answer is a fixed 71-byte watermark. Captured from a real macOS 27 VZ
+# virtual machine with VZLinuxRosettaDirectoryShare (the VZ share carries the
+# misspelled "guarfeded" decoy); the rosetta binary memcmp()s the ioctl buffer
+# against the correctly spelled "guarded" copy inside itself, so this patch
+# serves the guarded spelling. The interpreter accepts it only when the FUSE
+# reply also carries result = 1, so the server reply mirrors that. Data is clamped to the caller's
+# out_size; other ioctls keep the previous error path.
+--- a/src/devices/src/virtio/fs/macos/passthrough.rs
++++ b/src/devices/src/virtio/fs/macos/passthrough.rs
+@@ -14,7 +14,7 @@
+ use std::path::Path;
+ use std::ptr::null_mut;
+ use std::str::FromStr;
+-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
++use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
+ use std::sync::{Arc, Mutex, RwLock};
+ use std::time::Duration;
+ 
+@@ -1636,6 +1636,33 @@
+         self.do_open(&ctx, inode, kill_priv, flags)
+     }
+ 
++    fn ioctl(
++        &self,
++        _ctx: Context,
++        _inode: Inode,
++        _handle: Handle,
++        _flags: u32,
++        cmd: u32,
++        arg: u64,
++        _in_size: u32,
++        out_size: u32,
++        _exit_code: &Arc<AtomicI32>,
++    ) -> io::Result<Vec<u8>> {
++        // Rosetta for Linux attestation: _IOC(READ, 0x61, 0x25, 0x45) issued on
++        // the interpreter file (as /proc/self/exe). Under Virtualization
++        // .framework the Rosetta share answers it with a fixed watermark; the
++        // interpreter compares the buffer and aborts on mismatch. Serve the
++        // same constant bytes, clamped to the caller's output buffer. Every
++        // other ioctl returns ENOTTY as before.
++        if (cmd & 0xffff) == 0x6125 {
++            static PAYLOAD: &[u8] = b"Our hard work\nby these words guarded\nplease don't steal\n\xc2\xa9 Apple Inc\x00";
++            let len = usize::try_from(out_size).unwrap_or(0).min(PAYLOAD.len());
++            Ok(PAYLOAD[..len].to_vec())
++        } else {
++            Err(io::Error::from_raw_os_error(libc::ENOTTY))
++        }
++    }
++
+     fn release(
+         &self,
+         _ctx: Context,
+
+--- a/src/devices/src/virtio/fs/server.rs
++++ b/src/devices/src/virtio/fs/server.rs
+@@ -1217,8 +1217,12 @@
+             exit_code,
+         ) {
+             Ok(data) => {
++                // Rosetta for Linux attestation (_IOC(READ, 0x61, 0x25, 0x45)):
++                // the interpreter accepts the watermark only when the FUSE reply
++                // carries result = 1, matching Apple's Rosetta share behavior.
++                let result = if cmd == 0x8045_6125 { 1 } else { 0 };
+                 let out = IoctlOut {
+-                    result: 0,
++                    result,
+                     ..Default::default()
+                 };
+                 reply_ok(Some(out), Some(&data), in_header.unique, w)

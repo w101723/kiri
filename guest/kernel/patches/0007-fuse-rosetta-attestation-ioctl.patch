@@ -1,0 +1,52 @@
+# Header: Apple's Rosetta for Linux (RosettaLinux, /Library/Apple/usr/libexec/
+# oah/RosettaLinux) self-checks its environment by issuing
+# ioctl 0x80456125 (_IOC(READ, 0x61, 0x25, 0x45)) on /proc/self/exe and aborts
+# with "Rosetta is only intended to run on Apple Silicon with a macOS host
+# using Virtualization.framework with Rosetta mode enabled" on failure.
+# Under Virtualization.framework Apple's Rosetta share answers it; OrbStack
+# answers it from a kernel file-operations shim (fs/krpc.c). A plain FUSE
+# passthrough cannot reproduce the observable behavior exactly: the answer is
+# a fixed 69-byte watermark with ioctl() returning 1 — captured from a real
+# macOS 27 VZ VM. The VZ share carries the misspelled "guarfeded" decoy in its
+# plain-text copy; the rosetta binary compares against the correctly spelled
+# "guarded" copy inside itself (memcmp of 69 bytes at 0x8000000315fc), so the
+# correct spelling is what makes the self-check pass. Two more commands follow:
+# 0x80806123 reads a 128-byte capability block (zeroed under VZ) and 0x00006124
+# takes no payload; both return 1 as well. Intercept those three commands in
+# the FUSE ioctl path and answer them directly; every other command takes the
+# normal path untouched.
+--- a/fs/fuse/ioctl.c
++++ b/fs/fuse/ioctl.c
+@@ -426,6 +426,32 @@
+ 
+ long fuse_file_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+ {
++	/* Rosetta for Linux attestation (_IOC(READ, 0x61, 0x25, 0x45)).
++	 * Answer with the fixed watermark observed from Apple's Rosetta share
++	 * under Virtualization.framework: 71 bytes including the trailing NUL,
++	 * ioctl returning 1. Guarded by access_ok; every other command falls
++	 * through to the FUSE round trip untouched. */
++	if ((cmd & 0xffff) == 0x6125 || (cmd & 0xffff) == 0x6123 ||
++	    (cmd & 0xffff) == 0x6124) {
++		/* 0x80456125: the 69-byte watermark the interpreter memcmp()s.
++		 * 0x80806123: a 128-byte capability block; Virtualization
++		 * .framework returns it zeroed. 0x00006124: no payload. All
++		 * three return 1, matching the VZ Rosetta share. */
++		static const char rosetta_watermark[69] =
++			"Our hard work\nby these words guarded\n"
++			"please don't steal\n\xc2\xa9 Apple Inc\0";
++		static const char rosetta_caps[128];
++		const char *payload = (cmd & 0xffff) == 0x6125 ? rosetta_watermark
++				    : (cmd & 0xffff) == 0x6123 ? rosetta_caps : NULL;
++		size_t len = (cmd & 0xffff) == 0x6125 ? sizeof(rosetta_watermark)
++			   : (cmd & 0xffff) == 0x6123 ? sizeof(rosetta_caps) : 0;
++		void __user *buf = (void __user *)arg;
++
++		if (payload && (!buf || !access_ok(buf, len) ||
++				copy_to_user(buf, payload, len)))
++			return -EFAULT;
++		return 1;
++	}
+ 	return fuse_ioctl_common(file, cmd, arg, 0);
+ }
+ 

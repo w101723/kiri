@@ -1,8 +1,20 @@
 // Kiri Moby Host — independent Swift Virtualization.framework daemon.
 // macOS arm64 only. Guest agent remains Rust; wire protocol and disk ABI unchanged.
 import Foundation
+#if !KIRI_HVF_LOCAL
 import Virtualization
+#endif
 import Darwin
+
+#if KIRI_HVF_LOCAL
+final class VMConnection {
+    let fileDescriptor: Int32
+    init(_ fd: Int32) { fileDescriptor = fd }
+    deinit { Darwin.close(fileDescriptor) }
+}
+#else
+typealias VMConnection = VZVirtioSocketConnection
+#endif
 
 private enum HostError: LocalizedError {
     case problem(String)
@@ -11,8 +23,8 @@ private enum HostError: LocalizedError {
         return "Kiri Moby Host failed"
     }
 }
-private func hostError(_ message: String) -> HostError { .problem(message) }
-private func trace(_ message: String) {
+func hostError(_ message: String) -> LocalizedError { HostError.problem(message) }
+func trace(_ message: String) {
     let line = "[Kiri Moby Host] \(message)\n"
     FileHandle.standardError.write(Data(line.utf8))
 }
@@ -22,8 +34,11 @@ private let vsockShutdown: UInt32 = 2376
 private let vsockPorts: UInt32 = 2377
 private let vsockMemory: UInt32 = 2378
 
-private func guardedDirectory(_ url: URL) throws {
+func guardedDirectory(_ url: URL) throws {
     try fm.createDirectory(at: url, withIntermediateDirectories: true)
+    var info = stat()
+    guard lstat(url.path, &info) == 0, info.st_uid == getuid(),
+          info.st_mode & S_IFMT == S_IFDIR else { throw hostError("Unsafe directory: \(url.path)") }
     try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
 }
 
@@ -47,7 +62,7 @@ private func installDisk(_ archive: URL, _ disk: URL, _ member: String) throws {
 private func readLineFile(_ path: URL) throws -> String {
     try String(contentsOf: path, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
 }
-private func prepareDisks(_ data: URL) throws -> (URL, URL) {
+func prepareDisks(_ data: URL) throws -> (URL, URL) {
     let guest = data.appendingPathComponent("guest")
     for name in ["Image", "initramfs.cpio", "data.img.tgz", "system.img.tgz", "rootfs.revision"] {
         guard fm.fileExists(atPath: guest.appendingPathComponent(name).path) else {
@@ -93,6 +108,7 @@ private func prepareDisks(_ data: URL) throws -> (URL, URL) {
     }
     return (disk, seed)
 }
+#if !KIRI_HVF_LOCAL
 private func approvedShares() throws -> ([String: VZSharedDirectory], String) {
     let raw = ProcessInfo.processInfo.environment["KIRI_MOBY_SHARE_DIRS"] ?? ""
     guard !raw.isEmpty else { return ([:], "") }
@@ -125,14 +141,15 @@ private func approvedShares() throws -> ([String: VZSharedDirectory], String) {
     guard encoded.utf8.count <= 1800 else { throw hostError("Share map exceeds Linux kernel command line limit") }
     return (dirs, encoded)
 }
+#endif
 
 // poll-based duplex relay: byte-exact HTTP, chunked, binary and upgraded PTY streams.
-// Retain VZVirtioSocketConnection for the whole relay; do not close its owned descriptor.
-private enum ByteRelay {
+enum ByteRelay {
     // Single-worker, nonblocking, poll-driven full duplex pump. Each direction
     // has a bounded 64 KiB buffer. Preserve independent half-closes and binary
     // bytes including Docker's 101 Upgrade / exec / attach streams.
-    static func relay(_ client: Int32, _ guest: VZVirtioSocketConnection) {
+    static func relay(_ client: Int32, _ guest: VMConnection) {
+        defer { withExtendedLifetime(guest) {} }
         let engine = guest.fileDescriptor
         let clientFlags = fcntl(client, F_GETFL, 0)
         let engineFlags = fcntl(engine, F_GETFL, 0)
@@ -209,7 +226,7 @@ private enum ByteRelay {
         _ = shutdown(engine, SHUT_RDWR)
     }
 }
-private func unixListen(_ path: URL) throws -> Int32 {
+func unixListen(_ path: URL) throws -> Int32 {
     let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { throw hostError("Could not create Unix listener") }
     do {
@@ -257,7 +274,7 @@ private func tcpListen(_ port: UInt16) throws -> Int32 {
     return fd
 }
 
-private struct GuestMemory {
+struct GuestMemory {
     let total: Int
     let available: Int
     let cached: Int
@@ -321,12 +338,12 @@ private final class PortListener {
         }
     }
 }
-private final class LocalListeners {
+final class LocalListeners {
     private let lock = NSLock()
     private var sockets: [UInt16: PortListener] = [:]
     private let shouldStop: () -> Bool
-    private let connector: (UInt32) throws -> VZVirtioSocketConnection
-    init(shouldStop: @escaping () -> Bool, connector: @escaping (UInt32) throws -> VZVirtioSocketConnection) {
+    private let connector: (UInt32) throws -> VMConnection
+    init(shouldStop: @escaping () -> Bool, connector: @escaping (UInt32) throws -> VMConnection) {
         self.shouldStop = shouldStop
         self.connector = connector
     }
@@ -382,6 +399,7 @@ private final class LocalListeners {
     }
 }
 
+#if !KIRI_HVF_LOCAL
 private final class KiriMobyHost: NSObject, VZVirtualMachineDelegate {
     private let queue = DispatchQueue(label: "dev.kiri.moby.host.virtualization")
     private let stateLock = NSLock()
@@ -809,3 +827,4 @@ private enum HostMain {
         }
     }
 }
+#endif

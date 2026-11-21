@@ -2419,7 +2419,7 @@ private struct RootView: View {
             LabeledContent("CPU", value: "\(model.snapshot?.info?.NCPU ?? 0) 核")
             LabeledContent("内存使用", value: liveMemoryLabel)
             LabeledContent("Balloon 目标", value:
-                "\(model.snapshot?.memory?.balloon_target_mib ?? 0) MiB")
+                model.snapshot?.memory?.balloon_target_mib.map { "\($0) MiB" } ?? "—")
             LabeledContent("磁盘可用", value: diskFreeLabel)
             HStack {
                 Button("资源设置") {
@@ -2510,8 +2510,7 @@ private struct RootView: View {
                     VStack(alignment: .trailing, spacing: 7) {
                         Text(model.online ? "\(model.containers.filter {$0.State == "running"}.count)" : "—")
                         Text(model.online ? "\(model.snapshot?.info?.NCPU ?? 4)" : "—")
-                        Text(model.online ?
-                             "\(model.snapshot?.memory?.balloon_target_mib ?? 0) MiB" : "—")
+                        Text(model.snapshot?.memory?.balloon_target_mib.map { "\($0) MiB" } ?? "—")
                     }.font(.system(size: 11, weight: .medium, design: .monospaced))
                 }
                 GeometryReader { proxy in
@@ -3388,7 +3387,9 @@ private struct RootView: View {
                 fieldLabel("目标架构")
                 Picker("",selection:$model.buildPlatform) {
                     Text("linux/arm64").tag("linux/arm64")
+                    #if !KIRI_HVF_LOCAL
                     Text("linux/amd64").tag("linux/amd64")
+                    #endif
                 }
                 .labelsHidden().frame(width:165)
                 Button("构建镜像") {

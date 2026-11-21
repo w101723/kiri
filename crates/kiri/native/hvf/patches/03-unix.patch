@@ -1,0 +1,358 @@
+--- a/src/devices/src/virtio/vsock/unix.rs
++++ b/src/devices/src/virtio/vsock/unix.rs
+@@ -202,6 +202,42 @@
+         push_packet(self.cid, rx, &self.rxq, &self.queue, &self.mem);
+     }
+ 
++    /// The host peer stopped sending (its write half is gone, e.g. the Docker
++    /// CLI calling CloseWrite() after hijacking an attach/exec connection).
++    /// Report it as a vsock SHUTDOWN(SEND), never as an RST: an RST destroys
++    /// the guest socket and discards everything it has not flushed yet, which
++    /// silently truncates container stdout/PTY output that arrives after the
++    /// host-side stdin half-close.
++    fn push_shutdown_send(&self) {
++        debug!(
++            "push_shutdown_send: id: {}, peer_port: {}, local_port: {}",
++            self.id, self.peer_port, self.local_port
++        );
++
++        let rx = MuxerRx::Shutdown {
++            local_port: self.local_port,
++            peer_port: self.peer_port,
++            flags: uapi::VSOCK_FLAGS_SHUTDOWN_SEND,
++            fwd_cnt: self.tx_cnt.0,
++        };
++
++        push_packet(self.cid, rx, &self.rxq, &self.queue, &self.mem);
++    }
++
++    /// Distinguish a peer half-close (peer write ended, peer still reading)
++    /// from a full close: a zero-byte send succeeds on the former and fails
++    /// with EPIPE/ENOTCONN on the latter.
++    fn peer_can_still_receive(&self) -> bool {
++        let mut buf = [];
++        match send(self.fd.as_raw_fd(), &mut buf, MsgFlags::MSG_DONTWAIT) {
++            Ok(_) => true,
++            Err(e) => {
++                debug!("peer_can_still_receive: id={}, err={e}", self.id);
++                false
++            }
++        }
++    }
++
+     fn peer_avail_credit(&self) -> usize {
+         (Wrapping(self.peer_buf_alloc) - (self.rx_cnt - self.peer_fwd_cnt)).0 as usize
+     }
+@@ -557,6 +593,7 @@
+         self.push_reset();
+         let mut update = self.release();
+         self.status = ProxyStatus::Closed;
++        update.polling = Some((self.id, self.fd.as_raw_fd(), EventSet::empty()));
+         update.signal_queue = true;
+         update
+     }
+@@ -626,6 +663,26 @@
+                 }
+ 
+                 if self.status == ProxyStatus::Closed {
++                    if self.peer_can_still_receive() {
++                        // Peer half-close: its stdin is done, but it is still
++                        // reading. Forward EOF as SHUTDOWN(SEND), keep the
++                        // connection, and relay any further guest output.
++                        debug!(
++                            "process_event: peer write half-closed, forwarding SHUTDOWN: id={}",
++                            self.id
++                        );
++                        self.push_shutdown_send();
++                        update.signal_queue = true;
++                        // Stop reading (EOF is level-reported), watch for the
++                        // write side to die so a full close still ends in RST.
++                        update.polling = Some((
++                            self.id(),
++                            self.fd.as_raw_fd(),
++                            EventSet::OUT | EventSet::EDGE_TRIGGERED,
++                        ));
++                        return update;
++                    }
++
+                     debug!(
+                         "process_event: endpoint closed, sending reset: id={}",
+                         self.id
+@@ -652,6 +709,11 @@
+                 self.push_connect_rsp(0);
+                 update.signal_queue = true;
+                 update.polling = Some((self.id(), self.fd.as_raw_fd(), EventSet::IN));
++            } else if self.status == ProxyStatus::Closed {
++                // Edge-triggered notification from re-arming the write filter
++                // after the peer half-close; the peer is still reading. Only
++                // a write-side HANG_UP (full close) tears the proxy down.
++                debug!("process_event: spurious OUT after half-close: id={}", self.id);
+             } else {
+                 error!("EventSet::OUT while not connecting");
+             }
+@@ -747,6 +809,23 @@
+                 Ok(accept_fd) => {
+                     // Safe because we've just obtained the FD from the `accept` call above.
+                     let new_fd = unsafe { OwnedFd::from_raw_fd(accept_fd) };
++                    #[cfg(target_os = "macos")]
++                    {
++                        // The accepted socket is handed to a UnixProxy whose
++                        // write path (and half-close probe) must surface EPIPE
++                        // instead of raising SIGPIPE, which a non-Rust host
++                        // process does not ignore by default.
++                        let option_value: libc::c_int = 1;
++                        unsafe {
++                            libc::setsockopt(
++                                new_fd.as_raw_fd(),
++                                libc::SOL_SOCKET,
++                                libc::SO_NOSIGPIPE,
++                                &option_value as *const _ as *const libc::c_void,
++                                std::mem::size_of_val(&option_value) as libc::socklen_t,
++                            )
++                        };
++                    }
+                     update.new_proxy = Some((
+                         self.peer_port,
+                         new_fd,
+@@ -767,3 +846,241 @@
+         self.fd.as_raw_fd()
+     }
+ }
++
++#[cfg(test)]
++mod halfclose_tests {
++    use super::*;
++    use std::os::unix::net::UnixStream;
++    use vm_memory::{Bytes, GuestAddress};
++
++    const QSIZE: u16 = 16;
++    const DESC_OFF: u64 = 0;
++    const AVAIL_OFF: u64 = 0x1000;
++    const USED_OFF: u64 = 0x2000;
++    const BUF_OFF: u64 = 0x3000;
++    const BUF_SIZE: u64 = 44 + 4096;
++    const VRING_DESC_F_WRITE: u16 = 2;
++
++    struct TestGuest {
++        mem: GuestMemoryMmap,
++        queue: Arc<Mutex<VirtQueue>>,
++        rxq: Arc<Mutex<MuxerRxQ>>,
++    }
++
++    impl TestGuest {
++        fn new() -> Self {
++            let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10_000)]).unwrap();
++            let mut queue = VirtQueue::new(QSIZE);
++            queue.size = QSIZE;
++            queue.ready = true;
++            queue.desc_table = GuestAddress(DESC_OFF);
++            queue.avail_ring = GuestAddress(AVAIL_OFF);
++            queue.used_ring = GuestAddress(USED_OFF);
++            mem.write_obj::<u16>(0u16, GuestAddress(USED_OFF + 2)).unwrap();
++            Self {
++                mem,
++                queue: Arc::new(Mutex::new(queue)),
++                rxq: Arc::new(Mutex::new(MuxerRxQ::new())),
++            }
++        }
++
++        /// Publish `count` writable single-descriptor packet buffers (44-byte header + data).
++        fn push_buffers(&self, count: u16) {
++            for i in 0..count {
++                let d = DESC_OFF + u64::from(i) * 16;
++                let base = BUF_OFF + u64::from(i) * BUF_SIZE;
++                self.mem.write_obj::<u64>(base, GuestAddress(d)).unwrap();
++                self.mem.write_obj::<u32>(BUF_SIZE as u32, GuestAddress(d + 8)).unwrap();
++                self.mem.write_obj::<u16>(VRING_DESC_F_WRITE, GuestAddress(d + 12)).unwrap();
++                self.mem
++                    .write_obj::<u16>(i, GuestAddress(AVAIL_OFF + 4 + u64::from(i) * 2))
++                    .unwrap();
++            }
++            self.mem.write_obj::<u16>(count, GuestAddress(AVAIL_OFF + 2)).unwrap();
++        }
++
++        fn used_count(&self) -> u16 {
++            self.mem.read_obj::<u16>(GuestAddress(USED_OFF + 2)).unwrap()
++        }
++
++        fn pkt_op(&self, i: u16) -> u16 {
++            let b = BUF_OFF + u64::from(i) * BUF_SIZE;
++            self.mem.read_obj::<u16>(GuestAddress(b + 30)).unwrap()
++        }
++
++        fn pkt_flags(&self, i: u16) -> u32 {
++            let b = BUF_OFF + u64::from(i) * BUF_SIZE;
++            self.mem.read_obj::<u32>(GuestAddress(b + 32)).unwrap()
++        }
++
++        fn pkt_ports(&self, i: u16) -> (u32, u32) {
++            let b = BUF_OFF + u64::from(i) * BUF_SIZE;
++            (
++                self.mem.read_obj::<u32>(GuestAddress(b + 16)).unwrap(),
++                self.mem.read_obj::<u32>(GuestAddress(b + 20)).unwrap(),
++            )
++        }
++
++        fn pkt_data(&self, i: u16) -> Vec<u8> {
++            let b = BUF_OFF + u64::from(i) * BUF_SIZE;
++            let len = self.mem.read_obj::<u32>(GuestAddress(b + 24)).unwrap() as usize;
++            let mut v = vec![0u8; len];
++            self.mem.read_slice(&mut v, GuestAddress(b + 44)).unwrap();
++            v
++        }
++
++        /// Craft a guest->host packet the way the TX queue would deliver it.
++        /// Shrinks the next available descriptor to header+payload first, so the
++        /// proxy's send() writes exactly `payload` and not the whole buffer.
++        fn build_packet(&self, op: u16, flags: u32, payload: &[u8]) -> VsockPacket {
++            let mut q = self.queue.lock().unwrap();
++            let pos = (q.next_avail.0 % q.actual_size()) as u64;
++            let desc_idx: u16 = self
++                .mem
++                .read_obj(GuestAddress(AVAIL_OFF + 4 + pos * 2))
++                .unwrap();
++            self.mem
++                .write_obj::<u32>(
++                    (44 + payload.len().max(1)) as u32,
++                    GuestAddress(DESC_OFF + u64::from(desc_idx) * 16 + 8),
++                )
++                .unwrap();
++            let head = q.pop(&self.mem).unwrap();
++            let mut pkt = VsockPacket::from_rx_virtq_head(&head).unwrap();
++            pkt.set_op(op)
++                .set_src_cid(self.cid())
++                .set_dst_cid(uapi::VSOCK_HOST_CID)
++                .set_src_port(2375)
++                .set_dst_port(9000)
++                .set_type(uapi::VSOCK_TYPE_STREAM)
++                .set_flags(flags)
++                .set_buf_alloc(defs::CONN_TX_BUF_SIZE as u32)
++                .set_fwd_cnt(0)
++                .set_len(payload.len() as u32);
++            if !payload.is_empty() {
++                pkt.buf_mut().unwrap()[..payload.len()].copy_from_slice(payload);
++            }
++            pkt
++        }
++
++        fn cid(&self) -> u64 {
++            3
++        }
++    }
++
++    fn connected_proxy(g: &TestGuest) -> (UnixStream, UnixProxy) {
++        let (cli, host) = UnixStream::pair().unwrap();
++        let proxy_fd = OwnedFd::from(host);
++        let mut proxy =
++            UnixProxy::new_reverse(7, g.cid(), 9000, 2375, proxy_fd, g.mem.clone(), g.queue.clone(), g.rxq.clone());
++        proxy.status = ProxyStatus::Connected;
++        proxy.peer_buf_alloc = defs::CONN_TX_BUF_SIZE as u32;
++        proxy.peer_fwd_cnt = Wrapping(0);
++        (cli, proxy)
++    }
++
++    /// `docker run`/attach/PTY contract: after the CLI hijacks and CloseWrite()s its
++    /// stdin (docker/cli beginInputStream), the guest half-close is a HALF-CLOSE,
++    /// not a connection kill. The proxy must relay SHUTDOWN(SEND) to the guest and
++    /// keep relaying guest->host output (the container stdout arrives after stdin EOF).
++    #[test]
++    fn host_half_close_relay_is_shutdown_not_reset() {
++        let g = TestGuest::new();
++        g.push_buffers(6);
++        let (mut cli, mut proxy) = connected_proxy(&g);
++
++        // CLI sends the hijack request, then half-closes write (CloseWrite).
++        let req = b"POST /v1.41/containers/abc/attach?stream=1&stdout=1 HTTP/1.1\r\n\r\n";
++        cli.write_all(req).unwrap();
++        cli.shutdown(std::net::Shutdown::Write).unwrap();
++
++        let update = proxy.process_event(EventSet::IN | EventSet::READ_HANG_UP);
++
++        // desc0: request relayed as RW; desc1: EOF translated, NOT a reset.
++        assert_eq!(g.used_count(), 2, "request + shutdown notice must reach the guest");
++        assert_eq!(g.pkt_op(0), uapi::VSOCK_OP_RW);
++        assert_eq!(g.pkt_data(0), req);
++        assert_eq!(
++            g.pkt_op(1),
++            uapi::VSOCK_OP_SHUTDOWN,
++            "host half-close must be SHUTDOWN, not RST (RST flushes guest output)"
++        );
++        assert_eq!(g.pkt_flags(1), uapi::VSOCK_FLAGS_SHUTDOWN_SEND);
++        assert_eq!(g.pkt_ports(1), (9000, 2375));
++        assert!(matches!(update.remove_proxy, ProxyRemoval::Keep));
++
++        // Guest output arriving AFTER the half-close must still reach the CLI
++        // (this is where attached `docker run` stdout was being dropped).
++        let frame = b"\x01\x00\x00\x00\x00\x00\x00\x1fHello from Docker!\n";
++        let pkt = g.build_packet(uapi::VSOCK_OP_RW, 0, frame);
++        proxy.sendmsg(&pkt);
++        let mut got = vec![0u8; frame.len()];
++        cli.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
++        let n = std::io::Read::read(&mut cli, &mut got).unwrap();
++        assert_eq!(&got[..n], frame, "guest stdout must survive the host half-close");
++
++        // A spurious edge-triggered writable notification must not do anything.
++        let update = proxy.process_event(EventSet::OUT);
++        assert!(matches!(update.remove_proxy, ProxyRemoval::Keep));
++
++        // Full close of the CLI (both halves gone): only now is RST correct.
++        let update = proxy.process_event(EventSet::OUT | EventSet::HANG_UP);
++        // desc2 holds the crafted guest RW frame; the muxer's RST lands on desc3.
++        assert_eq!(g.used_count(), 3);
++        assert_eq!(g.pkt_op(3), uapi::VSOCK_OP_RST);
++        assert!(matches!(update.remove_proxy, ProxyRemoval::Deferred));
++        assert_eq!(update.polling, Some((7, proxy.as_raw_fd(), EventSet::empty())));
++    }
++
++    /// A host peer that is entirely gone must still be reported as a hard close.
++    #[test]
++    fn host_full_close_resets_immediately() {
++        let g = TestGuest::new();
++        g.push_buffers(4);
++        let (cli, mut proxy) = connected_proxy(&g);
++        drop(cli); // full close, no half-close first
++
++        let update = proxy.process_event(EventSet::IN | EventSet::READ_HANG_UP);
++        let op = g.pkt_op(0);
++        if op == uapi::VSOCK_OP_SHUTDOWN {
++            // probe said half-close but it was not: RST must follow on the hang-up.
++            let update = proxy.process_event(EventSet::OUT | EventSet::HANG_UP);
++            assert_eq!(g.pkt_op(1), uapi::VSOCK_OP_RST);
++            assert!(matches!(update.remove_proxy, ProxyRemoval::Deferred));
++        } else {
++            assert_eq!(op, uapi::VSOCK_OP_RST);
++            assert!(matches!(update.remove_proxy, ProxyRemoval::Deferred));
++        }
++    }
++
++    /// Guest close() after our SHUTDOWN(SEND): both halves must tear down cleanly
++    /// with RST + deferred removal, and the host socket must show EOF to the CLI.
++    #[test]
++    fn guest_full_shutdown_completes_teardown() {
++        let g = TestGuest::new();
++        g.push_buffers(4);
++        let (mut cli, mut proxy) = connected_proxy(&g);
++
++        // guest -> host payload, then guest close (SHUTDOWN SEND|RCV)
++        let out = b"HTTP/1.1 101 UPGRADED\r\n\r\n";
++        let pkt = g.build_packet(uapi::VSOCK_OP_RW, 0, out);
++        proxy.sendmsg(&pkt);
++
++        let flags = uapi::VSOCK_FLAGS_SHUTDOWN_SEND | uapi::VSOCK_FLAGS_SHUTDOWN_RCV;
++        let pkt = g.build_packet(uapi::VSOCK_OP_SHUTDOWN, flags, &[]);
++        let update = proxy.shutdown(&pkt);
++
++        assert_eq!(g.used_count(), 1);
++        // desc0/desc1 were consumed building the guest packets; RST lands on desc2.
++        assert_eq!(g.pkt_op(2), uapi::VSOCK_OP_RST);
++        assert!(matches!(update.remove_proxy, ProxyRemoval::Deferred));
++        assert_eq!(update.polling, Some((7, proxy.as_raw_fd(), EventSet::empty())));
++        // CLI sees EOF only after the buffered payload.
++        let mut got = Vec::new();
++        std::io::Read::read_to_end(&mut cli, &mut got).unwrap();
++        assert_eq!(got, out);
++    }
++
++    use std::io::Write;
++    use std::time::Duration;
++}

@@ -83,6 +83,14 @@ rootfs generation, signing and packaging are in `guest/kernel/` and
 - `.github/workflows/moby-milestone.yml`: full same-commit Guest+Host+SwiftUI
   application and DMG packaging, triggered manually on this feature branch
 
+## Local macOS 27 in-process VMM
+
+The [local Kiri Moby HVF build](MOBY_HVF_PROBE.md) runs libkrun and
+Hypervisor.framework inside its signed Helper, without linking
+Virtualization.framework or launching an Apple Virtualization worker. It has
+its own GUI bundle and data directory; the published VZ app described above is
+unchanged.
+
 ## Physical Apple Silicon acceptance required
 
 CI cross-compilation on Intel macOS runners cannot substitute for hardware

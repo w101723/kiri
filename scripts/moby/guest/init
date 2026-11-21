@@ -28,10 +28,12 @@ printf '%s\n' 160 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null || true
 # The Apple VZ guest RTC may initially be 1970. Sync BEFORE dockerd.
 boot_epoch=""
 idle_drop_caches=0
+hvf_rosetta=0
 for arg in $(cat /proc/cmdline); do
     case "$arg" in
         kiri.moby_boot_time=*) boot_epoch="${arg#*=}" ;;
         kiri.moby_idle_drop_caches=1) idle_drop_caches=1 ;;
+        kiri.moby_hvf_rosetta=1) hvf_rosetta=1 ;;
     esac
 done
 case "$boot_epoch" in
@@ -49,25 +51,82 @@ mkdir -p /var/lib/docker /var/lib/containerd /run/containerd /run/docker /var/lo
 # Explicit project shares use hex-coded mount mappings from the trusted
 # Mac launcher; legacy full /Users and /Volumes access requires an explicit
 # KIRI_MOBY_SHARE_MAC=1 opt-in on the Host.
+# Two share layouts are understood:
+#   * default (shipping VZ Helper): one 'kiri-mac' VirtioFS tag whose root
+#     already contains s0, s1, ... subdirectories (VZMultipleDirectoryShare).
+#   * kiri.moby_share_layout=per-directory (in-process HVF/libkrun opt-in):
+#     the launcher registers one VirtioFS tag per approved share, named
+#     kiri-s0, kiri-s1, ... Mount every tag at <mac_root>/sN so the
+#     unchanged Rust --mount-shares decoder validates the hex spec and
+#     binds each slot to its exact authorized Guest path. Without the
+#     cmdline option the original VZ path behaves exactly as before.
 share_spec=""
+share_layout=""
 for arg in $(cat /proc/cmdline); do
-    case "$arg" in kiri.moby_shares=*) share_spec="${arg#*=}" ;; esac
+    case "$arg" in
+        kiri.moby_shares=*) share_spec="${arg#*=}" ;;
+        kiri.moby_share_layout=*) share_layout="${arg#*=}" ;;
+    esac
 done
-if mount -t virtiofs kiri-mac /mnt/mac; then
-    if [ -n "$share_spec" ]; then
-        /usr/local/sbin/kiri-moby-guest --mount-shares "$share_spec" ||
-            die "authorized Mac directory mounts failed"
+# --- kiri-share-layout begin (extracted by test-share-layout.sh) ---
+# KIRI_MOBY_MAC_MOUNT and KIRI_MOBY_GUEST_BIN are test seams; production
+# launchers set neither, so the defaults below are the only real values.
+mac_root="${KIRI_MOBY_MAC_MOUNT:-/mnt/mac}"
+guest_bin="${KIRI_MOBY_GUEST_BIN:-/usr/local/sbin/kiri-moby-guest}"
+case "$share_layout" in
+per-directory)
+    if [ -z "$share_spec" ]; then
+        log "Mac host file shares disabled"
     else
-        [ ! -d /mnt/mac/Users ] ||
-            mount --bind /mnt/mac/Users /Users || die "Mac /Users bind failed"
-        [ ! -d /mnt/mac/Volumes ] ||
-            mount --bind /mnt/mac/Volumes /Volumes || die "Mac /Volumes bind failed"
+        # Count comma-separated spec entries. The trusted launcher emits
+        # only [A-Za-z0-9@,.] here, and never more than 16 slots: the same
+        # MAX_SHARES bound the Rust decoder enforces. A malformed spec
+        # still reaches Rust, which rejects it regardless of this count.
+        slots=0
+        rest="$share_spec"
+        while [ -n "$rest" ]; do
+            slots=$((slots + 1))
+            [ "$slots" -le 16 ] ||
+                die "per-directory share layout: too many share entries"
+            case "$rest" in *,*) rest="${rest#*,}" ;; *) rest="" ;; esac
+        done
+        i=0
+        while [ "$i" -lt "$slots" ]; do
+            mkdir -p "$mac_root/s$i" || die "cannot create $mac_root/s$i"
+            # Deliberately NO fallback to a broad kiri-mac mount or the
+            # legacy /Users bind: a missing per-share tag means the
+            # launcher configured the VM wrong and must fail closed.
+            mount -t virtiofs "kiri-s$i" "$mac_root/s$i" ||
+                die "VirtioFS per-share mount kiri-s$i failed"
+            i=$((i + 1))
+        done
+        "$guest_bin" --mount-shares "$share_spec" ||
+            die "authorized Mac directory mounts failed"
     fi
-else
-    [ -z "$share_spec" ] || die "VirtioFS required for authorized Mac directory shares"
-    log "Mac host file shares disabled"
+    ;;
+*)
+    if mount -t virtiofs kiri-mac "$mac_root"; then
+        if [ -n "$share_spec" ]; then
+            "$guest_bin" --mount-shares "$share_spec" ||
+                die "authorized Mac directory mounts failed"
+        else
+            [ ! -d "$mac_root/Users" ] ||
+                mount --bind "$mac_root/Users" /Users || die "Mac /Users bind failed"
+            [ ! -d "$mac_root/Volumes" ] ||
+                mount --bind "$mac_root/Volumes" /Volumes || die "Mac /Volumes bind failed"
+        fi
+    else
+        [ -z "$share_spec" ] || die "VirtioFS required for authorized Mac directory shares"
+        log "Mac host file shares disabled"
+    fi
+    ;;
+esac
+# --- kiri-share-layout end ---
+if [ "$hvf_rosetta" = 1 ]; then
+    /usr/local/sbin/kiri-rosetta --diagnose || log "Apple Intel translation setup failed in HVF"
+elif [ "$share_layout" != per-directory ]; then
+    /usr/local/sbin/kiri-rosetta || log "Rosetta not available"
 fi
-/usr/local/sbin/kiri-rosetta || log "Rosetta not available"
 
 ip link set lo up
 ip link set eth0 up || die "guest eth0 missing"

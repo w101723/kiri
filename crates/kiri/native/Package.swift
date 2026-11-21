@@ -18,6 +18,7 @@ let package = Package(
             name: "KiriMobyUI",
             dependencies: [.product(name: "SwiftTerm", package: "SwiftTerm")],
             path: ".",
+            exclude: ["KiriMobyHost.swift", "hvf"],
             sources: ["MobyApp.swift", "MobyRuntime.swift"]
         )
     ],
