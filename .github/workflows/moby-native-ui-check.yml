@@ -53,6 +53,7 @@ jobs:
           swiftc -parse-as-library -O \
             -target arm64-apple-macosx14.0 -sdk "$sdk" \
             crates/kiri/native/MobyApp.swift \
+            crates/kiri/native/MobyRuntime.swift \
             -o "$RUNNER_TEMP/kiri-moby-native-ui"
           test "$(lipo "$RUNNER_TEMP/kiri-moby-native-ui" -archs)" = arm64
           if otool -L "$RUNNER_TEMP/kiri-moby-native-ui" | grep -E 'WebKit|JavaScriptCore'; then

@@ -18,7 +18,7 @@ let package = Package(
             name: "KiriMobyUI",
             dependencies: [.product(name: "SwiftTerm", package: "SwiftTerm")],
             path: ".",
-            sources: ["MobyApp.swift"]
+            sources: ["MobyApp.swift", "MobyRuntime.swift"]
         )
     ],
     swiftLanguageModes: [.v5]

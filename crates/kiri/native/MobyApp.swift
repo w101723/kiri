@@ -279,28 +279,9 @@ private enum NativeError: Error, LocalizedError {
     }
 }
 
-/// No shell command, PATH lookup, network listener, environment Docker context
-/// or dynamically selected executable: the signer-verified app's own Rust binary.
+/// Native in-process Docker/VM client. No short-lived Rust subcommand per refresh.
 private func bridge(_ arguments: [String]) throws -> Data {
-    let url = Bundle.main.bundleURL
-        .appendingPathComponent("Contents/MacOS/kiri", isDirectory: false)
-    guard FileManager.default.isExecutableFile(atPath: url.path) else {
-        throw NativeError.malformed("Kiri CLI is missing inside the installed app.")
-    }
-    let process = Process()
-    process.executableURL = url
-    process.arguments = ["moby-native"] + arguments
-    process.standardInput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    try process.run()
-    let bytes = pipe.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
-    guard process.terminationStatus == 0 else {
-        throw NativeError.malformed("Kiri native backend failed (exit \(process.terminationStatus)).")
-    }
-    return bytes
+    try MobyRuntime.request(arguments)
 }
 
 private func request<T: Decodable>(_ args: [String], as: T.Type) throws -> T {
@@ -967,12 +948,12 @@ private final class ExecTerminalSession: ObservableObject {
         master = masterHandle
         slave = slaveHandle
         let child = Process()
-        child.executableURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/kiri")
-        child.arguments = ["moby-native", "terminal", containerID]
+        child.executableURL = MobyPaths.docker
+        child.arguments = ["exec", "-it", containerID, "/bin/sh"]
         child.standardInput = slaveHandle
         child.standardOutput = slaveHandle
         child.standardError = slaveHandle
-        child.environment = ProcessInfo.processInfo.environment.merging(["TERM": "xterm-256color"]) { _, new in new }
+        child.environment = MobyRuntime.terminalEnvironment()
         child.terminationHandler = { [weak self] ended in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -1065,17 +1046,15 @@ private struct NativeSwiftTermExecView: NSViewRepresentable {
         view.nativeBackgroundColor = ConsoleAppearance.canvasNS(colorScheme)
         view.nativeForegroundColor = ConsoleAppearance.foregroundNS(colorScheme)
         controls.terminal = view
-        let cli = Bundle.main.bundleURL.appendingPathComponent(
-            "Contents/MacOS/kiri").path
+        let cli = MobyPaths.docker.path
         guard FileManager.default.isExecutableFile(atPath: cli) else {
             view.feed(byteArray: Array("Kiri CLI 不存在：\(cli)\r\n".utf8)[...])
             return view
         }
-        var env = ProcessInfo.processInfo.environment
-        env["TERM"] = "xterm-256color"
+        let env = MobyRuntime.terminalEnvironment()
         let environment = env.map { "\($0.key)=\($0.value)" }.sorted()
         view.startProcess(executable: cli,
-                          args: ["moby-native", "terminal", containerID],
+                          args: ["exec", "-it", containerID, "/bin/sh"],
                           environment: environment)
         return view
     }
