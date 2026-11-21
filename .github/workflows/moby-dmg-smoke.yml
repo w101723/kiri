@@ -2,7 +2,7 @@ name: Kiri Moby DMG packaging smoke test (macOS)
 
 on:
   push:
-    branches: [apple-silicon-native-parity]
+    branches: [main]
     paths:
       - "scripts/moby/package-dmg-macos.sh"
       - ".github/workflows/moby-dmg-smoke.yml"

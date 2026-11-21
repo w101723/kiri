@@ -2,7 +2,7 @@ name: Native Moby visual screenshot (source-rendered)
 
 on:
   push:
-    branches: [apple-silicon-native-parity]
+    branches: [main]
     paths:
       - "crates/kiri/native/**"
       - "scripts/moby/check-native-ui-parity.py"

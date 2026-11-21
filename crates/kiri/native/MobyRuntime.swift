@@ -371,9 +371,12 @@ private enum MobyVM {
         }
         try installGuestAssets()
         // A signed Swift GUI must launch only its bundled Swift Host; no stale Rust fallback.
-        let helper = MobyPaths.resources.appendingPathComponent("bin/kiri-moby-host")
+        // Launch a nested, independently signed headless Helper, without
+        // changing the VM protocol or the macOS-owned Virtualization XPC worker.
+        let helper = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Library/Helpers/Kiri Moby Helper.app/Contents/MacOS/Kiri Moby Helper")
         guard fm.isExecutableFile(atPath: helper.path) else {
-            throw fail("Signed Kiri Moby Swift Host helper is missing from the app")
+            throw fail("Signed Kiri Moby Helper.app is missing from the app")
         }
         let cpus = try MobyConfig.readResources()
         try MobyConfig.ensurePrivate(MobyPaths.data.appendingPathComponent("logs"))

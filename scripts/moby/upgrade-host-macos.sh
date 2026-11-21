@@ -13,7 +13,7 @@ data="${KIRI_MOBY_DATA_DIR:-$HOME/.kiri-moby}"
 [ ! -L "$data" ] || { echo "Refusing symlink data dir" >&2; exit 2; }
 [ -d "$data/bin" ] || { echo "Missing Host install: $data/bin" >&2; exit 2; }
 [ -f "$1" ] || { echo "Artifact zip missing: $1" >&2; exit 2; }
-if pgrep -x kiri-moby-host >/dev/null 2>&1; then
+if pgrep -x "Kiri Moby Helper" >/dev/null 2>&1 || pgrep -x kiri-moby-host >/dev/null 2>&1; then
     echo "Stop kiri-moby-host with Ctrl+C before upgrading." >&2
     exit 2
 fi

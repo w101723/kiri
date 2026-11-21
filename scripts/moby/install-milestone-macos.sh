@@ -14,7 +14,7 @@ for bin in unzip tar shasum codesign lipo mktemp; do
   command -v "$bin" >/dev/null || { echo "Missing: $bin" >&2; exit 2; }
 done
 [ -f "$1" ] || { echo "Artifact not found: $1" >&2; exit 2; }
-if pgrep -x kiri-moby-host >/dev/null 2>&1; then
+if pgrep -x "Kiri Moby Helper" >/dev/null 2>&1 || pgrep -x kiri-moby-host >/dev/null 2>&1; then
   echo "Stop the existing Kiri Moby Host before upgrading its Guest." >&2
   exit 2
 fi

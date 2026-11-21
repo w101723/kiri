@@ -64,7 +64,8 @@ than silently claiming that an ad-hoc app is a release.
 `~/.kiri-moby/bin/kiri-moby-host` installed from an old `milestone-host`
 tarball, that binary remains ad-hoc-signed and may still prompt Gatekeeper.
 The trusted distribution includes a separately Developer ID-signed Host at
-`Kiri Moby.app/Contents/Resources/bin/kiri-moby-host`; launch the
+`Kiri Moby.app/Contents/Library/Helpers/Kiri Moby Helper.app` (with executable
+`Contents/MacOS/Kiri Moby Helper`); launch the
 installed **Kiri Moby.app** so its GUI uses that signed helper. The Linux
 Guest `data.img` and `system.img` are not macOS executable code and do
 not themselves need Apple code signing.

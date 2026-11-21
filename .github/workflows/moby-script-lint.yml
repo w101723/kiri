@@ -2,7 +2,7 @@ name: Moby shell script syntax
 
 on:
   push:
-    branches: [moby-engine, apple-silicon-native-parity]
+    branches: [main]
     paths:
       - "scripts/moby/**"
       - ".github/workflows/moby-script-lint.yml"
@@ -31,6 +31,7 @@ jobs:
           bash -n scripts/moby/install-milestone-macos.sh
           bash -n scripts/moby/sign-notarize-macos.sh
           bash -n scripts/moby/sign-personal-macos.sh
+          bash -n scripts/moby/package-helper-macos.sh
           bash -n scripts/moby/setup-personal-signing-macos.sh
           bash -n scripts/moby/install-local-macos.sh
           bash -n scripts/moby/package-dmg-macos.sh

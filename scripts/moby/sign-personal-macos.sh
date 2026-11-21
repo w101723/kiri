@@ -145,7 +145,12 @@ sign() {
   codesign --force --sign "$identity" --keychain "$keychain" --timestamp=none "$@"
 }
 res="$app/Contents/Resources"
-sign --entitlements crates/kiri/kiri.entitlements "$res/bin/kiri-moby-host"
+helper="$app/Contents/Library/Helpers/Kiri Moby Helper.app"
+[[ -f "$helper/Contents/MacOS/Kiri Moby Helper" ]] || {
+  echo "Missing nested Kiri Moby Helper.app executable" >&2; exit 2;
+}
+# The bundle (not just its inner Mach-O) is the nested code-signing unit.
+sign --entitlements crates/kiri/kiri.entitlements "$helper"
 for bin in "$res/bin/docker" "$res/bin/cli-plugins/docker-compose" "$res/bin/cli-plugins/docker-buildx"; do
   sign "$bin"
 done

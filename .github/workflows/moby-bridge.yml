@@ -2,7 +2,7 @@ name: Moby bridge verification
 
 on:
   push:
-    branches: [moby-engine, apple-silicon-native-parity]
+    branches: [main]
     paths:
       - "crates/kiri-moby-bridge/**"
       - "crates/kiri/native/**"

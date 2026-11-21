@@ -12,7 +12,8 @@ or Windows/Linux host application.
 | Component | Language | Process | Responsibility |
 | --- | --- | --- | --- |
 | `kiri-moby-ui` | Swift | Finder macOS GUI | Containers, images, volumes, networks, Compose inventory, Buildx, logs, terminal, VM controls |
-| `kiri-moby-host` | Swift | Independent long-lived Helper | Apple Virtualization.framework VM lifecycle, Docker API / Unix-vsock relay, published localhost TCP ports, VirtioFS and memory balloon |
+| `Kiri Moby Helper.app` (`Kiri Moby Helper` process) | Swift | Independently signed headless agent bundled inside the GUI app | Apple Virtualization.framework VM lifecycle, Docker API / Unix-vsock relay, published localhost TCP ports, VirtioFS and memory balloon |
+| `com.apple.Virtualization.VirtualMachine.xpc` | Apple system service | Separate macOS-managed VM worker | Executes the virtual machine; macOS controls its process identity and display name |
 | `kiri-moby-guest` | Rust | Linux ARM64 Guest | Standard Docker socket vsock proxy, shutdown port, published TCP forwarding, memory telemetry, authorized shares and clock synchronization |
 | `dockerd` | Upstream | Linux ARM64 Guest | Container state, image layers, volumes, networks and BuildKit |
 
@@ -32,6 +33,13 @@ executes the **bundled Docker CLI** with
 against Kiri Moby's private socket, not the user's default engine.
 
 ## Independent Host and disk safety
+
+The Swift Host is bundled at `Kiri Moby.app/Contents/Library/Helpers/Kiri Moby Helper.app`,
+with `LSUIElement=true`, its own bundle identifier, and an independent
+virtualization-entitled code signature. The GUI launches the helper directly
+using `Process`, without launchd registration or elevated privileges; no
+second Dock icon is created. The underlying Apple Virtualization XPC worker
+remains a separate system process and is not renamed by packaging the Helper.
 
 The Swift Host runs in a separate process. Quitting or crashing the GUI does
 not intentionally stop the VM; reopening the GUI reconnects via the private socket.

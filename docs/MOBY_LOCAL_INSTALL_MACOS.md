@@ -3,6 +3,12 @@
 **默认安装方式已经改为标准 DMG：** 下载 GitHub Actions
 `Kiri-Moby-macos-arm64-DMG`，解压 ZIP 并双击 DMG，在 Finder 中将
 `Kiri Moby.app` 拖到 `Applications` 即可。**首次安装不再需要运行 .sh。**
+
+正式构建将原有 Swift `kiri-moby-host` 封装为
+`Kiri Moby.app/Contents/Library/Helpers/Kiri Moby Helper.app`。
+Helper 独立签名，名称为 **Kiri Moby Helper**，不显示 Dock 图标；
+原本由 macOS 启动的 Virtualization XPC 虚拟机服务仍会单独存在。
+安装器验证嵌套 App 的 bundle ID、ARM64 架构和签名。
 具体参见 `docs/MOBY_MACOS_DMG.md`。
 
 下文是仅在你希望对未来的 Ad-hoc 开发版进行“一次明确授权、以后少弹 Gatekeeper”

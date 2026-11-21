@@ -17,7 +17,7 @@ name: CodeQL
 on:
   pull_request:
   push:
-    branches: [main, apple-silicon-native-parity]
+    branches: [main]
   schedule:
     - cron: "27 4 * * 1"
 

@@ -11,11 +11,12 @@ on:
     # Release branch only. Feature-branch commits run the fast native GUI
     # and bridge checks. A full signed feature bundle can still be started
     # deliberately via workflow_dispatch to avoid repeated kernel builds.
-    branches: [moby-engine]
+    branches: [main]
     paths:
       - ".github/workflows/moby-milestone.yml"
       - "scripts/moby/sign-notarize-macos.sh"
       - "scripts/moby/sign-personal-macos.sh"
+      - "scripts/moby/package-helper-macos.sh"
       - "scripts/moby/install-local-macos.sh"
       - "scripts/moby/package-dmg-macos.sh"
       - "scripts/moby/build-guest.sh"
@@ -73,9 +74,10 @@ jobs:
           PLIST
           printf 'int main(void){return 0;}\n' > "$RUNNER_TEMP/kiri-signing-probe.c"
           clang -arch x86_64 -o "$app/Contents/MacOS/kiri-moby-ui" "$RUNNER_TEMP/kiri-signing-probe.c"
-          for bin in kiri-moby-host docker cli-plugins/docker-compose cli-plugins/docker-buildx; do
+          for bin in docker cli-plugins/docker-compose cli-plugins/docker-buildx; do
             cp "$app/Contents/MacOS/kiri-moby-ui" "$app/Contents/Resources/bin/$bin"
           done
+          bash scripts/moby/package-helper-macos.sh "$app" "$app/Contents/MacOS/kiri-moby-ui"
           bash scripts/moby/sign-personal-macos.sh "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
           echo "PASS: fixed P12 identity can sign an App before building Linux Guest."
@@ -300,13 +302,13 @@ jobs:
           cp assembled/guest/Image assembled/guest/initramfs.cpio \
              assembled/guest/data.img.tgz assembled/guest/system.img.tgz \
              assembled/guest/rootfs.revision assembled/guest/SHA256SUMS "$res/guest/"
-          cp assembled/bin/kiri-moby-host "$res/bin/kiri-moby-host"
+          bash scripts/moby/package-helper-macos.sh "$app" assembled/bin/kiri-moby-host
           cp assembled/SOURCE_REVISION "$res/SOURCE_REVISION"
           tar -xzf downloaded/cli/docker.tgz -C downloaded/cli docker/docker
           cp downloaded/cli/docker/docker "$res/bin/docker"
           cp downloaded/cli/docker-compose "$res/bin/cli-plugins/docker-compose"
           cp downloaded/cli/docker-buildx "$res/bin/cli-plugins/docker-buildx"
-          chmod 755 "$res/bin/kiri-moby-host" "$res/bin/docker" \
+          chmod 755 "$res/bin/docker" \
             "$res/bin/cli-plugins/docker-compose" "$res/bin/cli-plugins/docker-buildx"
           cp LICENSE NOTICE "$res/"
           mkdir -p packaged/Kiri.iconset
@@ -347,8 +349,10 @@ jobs:
           plutil -replace CFBundleVersion -string "${GITHUB_RUN_NUMBER:-1}" "$app/Contents/Info.plist"
           plutil -lint "$app/Contents/Info.plist"
           python3 scripts/moby/audit-native-runtime.py --app "$app"
-          test "$(lipo "$res/bin/kiri-moby-host" -archs)" = "arm64"
-          codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$res/bin/kiri-moby-host"
+          helper="$app/Contents/Library/Helpers/Kiri Moby Helper.app"
+          test "$(lipo "$helper/Contents/MacOS/Kiri Moby Helper" -archs)" = "arm64"
+          codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$helper"
+          codesign --verify --strict "$helper"
           for binary in "$res/bin/docker" \
             "$res/bin/cli-plugins/docker-compose" "$res/bin/cli-plugins/docker-buildx"; do
             test "$(lipo "$binary" -archs)" = "arm64"

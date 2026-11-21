@@ -63,7 +63,7 @@ fi
 for tool in python3 shasum codesign lipo xattr tar; do
   command -v "$tool" >/dev/null || { echo "Missing $tool" >&2; exit 2; }
 done
-if ! $verify && pgrep -x kiri-moby-host >/dev/null 2>&1; then
+if ! $verify && { pgrep -x "Kiri Moby Helper" >/dev/null 2>&1 || pgrep -x kiri-moby-host >/dev/null 2>&1; }; then
   echo "Stop Kiri Moby VM before upgrading to preserve the Docker disk." >&2
   exit 2
 fi
@@ -143,8 +143,20 @@ entry="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$candidate/Cont
 revision="$candidate/Contents/Resources/SOURCE_REVISION"
 [[ -f "$revision" ]] || { echo "Missing source revision" >&2; exit 2; }
 grep -Eq '^[0-9a-fA-F]{40}$' "$revision" || { echo "Invalid source revision" >&2; exit 2; }
+helper_app="$candidate/Contents/Library/Helpers/Kiri Moby Helper.app"
+helper_plist="$helper_app/Contents/Info.plist"
+helper_exec="$helper_app/Contents/MacOS/Kiri Moby Helper"
+[[ -f "$helper_plist" && ! -L "$helper_plist" ]] || {
+  echo "Missing nested Kiri Moby Helper.app metadata" >&2; exit 2;
+}
+helper_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$helper_plist")"
+helper_entry="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$helper_plist")"
+[[ "$helper_id" == dev.kiri.app.moby.helper && "$helper_entry" == "Kiri Moby Helper" ]] || {
+  echo "Unexpected nested Helper bundle identity" >&2; exit 2;
+}
+codesign --verify --strict "$helper_app"
 for program in "$candidate/Contents/MacOS/kiri-moby-ui" \
-  "$candidate/Contents/Resources/bin/kiri-moby-host" \
+  "$helper_exec" \
   "$candidate/Contents/Resources/bin/docker" \
   "$candidate/Contents/Resources/bin/cli-plugins/docker-compose" \
   "$candidate/Contents/Resources/bin/cli-plugins/docker-buildx"; do

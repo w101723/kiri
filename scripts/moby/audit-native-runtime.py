@@ -113,15 +113,32 @@ def verify_app(root: pathlib.Path, errors: list[str]) -> None:
             errors.append(f"Web frontend asset in .app: {f.relative_to(root)}")
         if f.name == "kiri-menubar-template@2x.png":
             errors.append("Stale menu-bar icon included in the App resources")
-    for binary in (root / "Contents/MacOS/kiri-moby-ui", resources / "bin/kiri-moby-host"):
-        if not binary.exists():  # The test-only screenshot app lacks a Swift Host.
-            if binary.name == "kiri-moby-host":
-                continue
-            if (root / "Contents/MacOS/kiri-moby-ui-preview").exists():
-                binary = root / "Contents/MacOS/kiri-moby-ui-preview"
-            else:
-                errors.append(f"Missing native App executable: {binary}")
-                continue
+    preview = (root / "Contents/MacOS/kiri-moby-ui-preview").exists()
+    helper_bundle = root / "Contents/Library/Helpers/Kiri Moby Helper.app"
+    helper_binary = helper_bundle / "Contents/MacOS/Kiri Moby Helper"
+    if not preview:
+        try:
+            with (helper_bundle / "Contents/Info.plist").open("rb") as stream:
+                helper_info = plistlib.load(stream)
+            expected = {
+                "CFBundleIdentifier": "dev.kiri.app.moby.helper",
+                "CFBundleExecutable": "Kiri Moby Helper",
+                "CFBundleName": "Kiri Moby Helper",
+                "LSUIElement": True,
+            }
+            for key, value in expected.items():
+                if helper_info.get(key) != value:
+                    errors.append(f"Unexpected Helper {key}: {helper_info.get(key)!r}")
+        except (OSError, ValueError, plistlib.InvalidFileException) as exc:
+            errors.append(f"Invalid nested Kiri Moby Helper.app Info.plist: {exc}")
+    binaries = [root / ("Contents/MacOS/kiri-moby-ui-preview" if preview
+                        else "Contents/MacOS/kiri-moby-ui")]
+    if not preview:
+        binaries.append(helper_binary)
+    for binary in binaries:
+        if not binary.is_file() or binary.is_symlink():
+            errors.append(f"Missing native App executable: {binary}")
+            continue
         result = subprocess.run(["otool", "-L", str(binary)],
                                 capture_output=True, text=True, check=False)
         if result.returncode or re.search(r"WebKit|JavaScriptCore", result.stdout, re.I):

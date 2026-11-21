@@ -2,7 +2,7 @@ name: Native SwiftUI Moby GUI compile and bridge check
 
 on:
   push:
-    branches: [native-swiftui-moby, apple-silicon-native-parity]
+    branches: [main]
     paths:
       - "crates/kiri/native/**"
       - "scripts/moby/check-native-ui-parity.py"

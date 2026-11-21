@@ -12,7 +12,7 @@ dest="${KIRI_MOBY_DATA_DIR:-$HOME/.kiri-moby}"
 [ -f "$1" ] && [ -f "$2" ] || { echo "Missing GitHub Actions artifact ZIP" >&2; exit 2; }
 # Check executable names, not full command lines: this script's ZIP
 # arguments themselves contain 'kiri-moby-host'.
-if pgrep -x kiri-moby-host >/dev/null 2>&1; then
+if pgrep -x "Kiri Moby Helper" >/dev/null 2>&1 || pgrep -x kiri-moby-host >/dev/null 2>&1; then
   echo "A kiri-moby-host process is still running. Stop it with Ctrl+C first." >&2
   exit 2
 fi

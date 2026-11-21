@@ -77,7 +77,11 @@ sign() {
 }
 # Must sign nested Mach-O files before the outer .app; the VZ helper needs
 # com.apple.security.virtualization, the stock Docker tools do not.
-sign "$resource/bin/kiri-moby-host" --entitlements crates/kiri/kiri.entitlements
+helper="$app/Contents/Library/Helpers/Kiri Moby Helper.app"
+[[ -f "$helper/Contents/MacOS/Kiri Moby Helper" ]] || {
+  echo "Missing nested Kiri Moby Helper.app executable" >&2; exit 2;
+}
+sign "$helper" --entitlements crates/kiri/kiri.entitlements
 for item in "$resource/bin/docker" \
             "$resource/bin/cli-plugins/docker-compose" \
             "$resource/bin/cli-plugins/docker-buildx"; do
