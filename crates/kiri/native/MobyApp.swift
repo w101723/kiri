@@ -12,17 +12,14 @@ import SwiftTerm
 // SwiftTerm also declares a Color type; UI code uses SwiftUI.Color exclusively.
 private typealias Color = SwiftUI.Color
 
-/// A compact monochrome outline of the Dock brand's hexagonal cube.
-///
-/// Unlike the full-color Finder icon, a macOS status item must have no rounded
-/// square background. The system renders this NSImage template in black/white
-/// to match the current menu bar appearance.
+/// Three-face negative-space hexagonal cube, 12.4pt tall on an 18pt
+/// transparent canvas. NSImage.isTemplate lets macOS tint it automatically.
 private enum KiriMenuBarIcon {
     static let image: NSImage = {
         let size = NSSize(width: 18, height: 18)
         let image = NSImage(size: size, flipped: false) { _ in
             let center = NSPoint(x: 9, y: 9)
-            let radius: CGFloat = 7
+            let radius: CGFloat = 6.2
 
             func vertex(_ degrees: CGFloat) -> NSPoint {
                 let radians = degrees * .pi / 180
@@ -31,36 +28,43 @@ private enum KiriMenuBarIcon {
             }
 
             let top = vertex(90)
-            let upperRight = vertex(30)
-            let lowerRight = vertex(-30)
+            let topRight = vertex(30)
+            let bottomRight = vertex(-30)
             let bottom = vertex(-90)
-            let lowerLeft = vertex(-150)
-            let upperLeft = vertex(150)
+            let bottomLeft = vertex(-150)
+            let topLeft = vertex(150)
 
-            NSColor.black.setStroke()
-
-            // One unfilled six-sided contour; no colored square/backplate.
-            let outline = NSBezierPath()
-            outline.lineWidth = 1.5
-            outline.lineJoinStyle = .round
-            outline.lineCapStyle = .round
-            outline.move(to: top)
-            for corner in [upperRight, lowerRight, bottom, lowerLeft, upperLeft] {
-                outline.line(to: corner)
+            func face(_ vertices: [NSPoint], alpha: CGFloat) {
+                let path = NSBezierPath()
+                path.move(to: vertices[0])
+                for vertex in vertices.dropFirst() { path.line(to: vertex) }
+                path.close()
+                NSColor.black.withAlphaComponent(alpha).setFill()
+                path.fill()
             }
-            outline.close()
-            outline.stroke()
 
-            // Interior three-way inverted-Y cube folds, matching the Dock mark.
-            let folds = NSBezierPath()
-            folds.lineWidth = 1.25
-            folds.lineJoinStyle = .round
-            folds.lineCapStyle = .round
-            for corner in [top, lowerLeft, lowerRight] {
-                folds.move(to: center)
-                folds.line(to: corner)
+            // Source alpha represents the three light/dark faces. As a template
+            // the artwork remains system black/white without a colored backing.
+            face([top, topRight, bottomRight, center], alpha: 0.95)
+            face([center, bottomRight, bottom, bottomLeft], alpha: 0.62)
+            face([top, center, bottomLeft, topLeft], alpha: 0.38)
+
+            // Cut transparent channels through the actual alpha mask.
+            if let context = NSGraphicsContext.current {
+                let original = context.compositingOperation
+                context.compositingOperation = .destinationOut
+                let gaps = NSBezierPath()
+                gaps.lineWidth = 1.2
+                gaps.lineJoinStyle = .round
+                gaps.lineCapStyle = .round
+                for corner in [top, bottomLeft, bottomRight] {
+                    gaps.move(to: center)
+                    gaps.line(to: corner)
+                }
+                NSColor.black.setStroke()
+                gaps.stroke()
+                context.compositingOperation = original
             }
-            folds.stroke()
             return true
         }
         image.isTemplate = true
@@ -3464,6 +3468,7 @@ private struct KiriMobyNativeApp: App {
         } label: {
             Image(nsImage: KiriMenuBarIcon.image)
                 .renderingMode(.template)
+                .opacity(model.online ? 1 : 0.42)
         }
     }
 }
