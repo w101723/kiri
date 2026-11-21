@@ -59,7 +59,7 @@ checks = [
     ('isSearching.toggle()', "Collapsed search button"),
     ('.focused($searchFocused)', "Focused native search input"),
     ('.keyboardShortcut("f", modifiers: .command)', "Command-F search"),
-    ('ToolbarItem(placement: .primaryAction)', "Native primary action"),
+    ('ToolbarItemGroup(placement: .primaryAction)', "Detail column native primary actions"),
     ('.popover(isPresented: $showVMPopover)', "Compact VM popover"),
     ('vmResourcePopover', "VM resource and restart popover"),
     ('} content: {', "Native resource second column"),
