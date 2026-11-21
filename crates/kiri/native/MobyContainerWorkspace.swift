@@ -283,7 +283,7 @@ struct CompactContainerRow: View {
             }
         }
         .buttonStyle(.plain)
-        .frame(height: 48)
+        .frame(height: KiriLayoutMetrics.containerRowHeight)
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
     }
