@@ -94,3 +94,40 @@ Host restart; GUI close/reopen without stopping VM; and VM balloon behavior
 using `vmmap -summary`/real physical footprint. Verify signing certificates,
 DMG install and Gatekeeper behavior separately. A personal self-signed
 certificate is **not** Apple Developer ID notarization.
+
+## Modular native UI architecture (2026-11-21)
+
+The existing three-column navigation and Docker feature contract are preserved.
+SwiftUI owns split navigation and toolbars; AppKit owns terminal and log backing
+views. The Linux Guest, private Docker socket, and VM Host are unchanged.
+
+| Module | Responsibility |
+| --- | --- |
+| `MobyApp.swift` | App entry and three-column navigation |
+| `MobyUITheme.swift` | Native palette, vector status icon, shared layout geometry |
+| `MobyUIModels.swift` | Docker DTOs and request bridge |
+| `MobyModel.swift` | UI actions, VM configuration, snapshot orchestration |
+| `MobyTelemetry.swift` | Independently observed CPU/RAM/IO |
+| `MobyDockerEvents.swift` | Streaming Docker event decoder and reconnecting UDS listener |
+| `MobyTerminal.swift` | SwiftTerm, logs, appearance and first-responder handling |
+| `MobyUIComponents.swift` | Inspector cards/charts and telemetry cells |
+| `MobyContainerWorkspace.swift` | Detail tabs and compact resource rows |
+| `MobyRuntime.swift` | Existing Docker HTTP-over-UDS and VM control |
+
+High-frequency container stats update `MobyTelemetry` independently of
+the navigation model. `ContainerLiveMetricsView` and the inspector observe
+only the telemetry they need. The existing 5-second stats cadence remains.
+The Docker `/events` stream uses the private `~/.kiri-moby/run/docker.sock`,
+accepts plain NDJSON and chunked HTTP, reconnects on failure and debounces
+resource invalidation by 300 ms. The 10-second snapshot fallback remains.
+
+The 940 x 600 default window remains. Shared column constraints enforce
+a 165-205 pt sidebar, 280-440 pt middle pane, and minimum 360 pt detail pane
+while preserving the 820 pt minimum window and native toolbar geometry.
+Compose, Docker actions, terminal, logs, inspector and pinned CLI remain.
+
+The native UI parity/audit scripts now inspect every Swift module. Fast GUI
+CI runs SwiftPM tests and builds the complete SwiftTerm-backed ARM64 app.
+The visual preview uses the same package with test-only synthetic data.
+Actual first-responder focus, large-list scrolling and live Docker workloads
+still require physical Apple Silicon/macOS acceptance beyond compilation.
