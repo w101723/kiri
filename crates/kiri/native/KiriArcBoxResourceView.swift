@@ -10,8 +10,8 @@ struct KiriArcBoxResourceEntry: Equatable {
     let title: String
     let subtitle: String
     let symbol: String
-    let tintColor: NSColor? = nil
-    let styledImageTitle: Bool = false
+    var tintColor: NSColor? = nil
+    var styledImageTitle: Bool = false
 }
 
 struct KiriArcBoxResourceList: NSViewControllerRepresentable {
