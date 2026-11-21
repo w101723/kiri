@@ -44,7 +44,7 @@ private struct DockerResponse {
 
 // The only raw socket implementation in the macOS GUI. It bounds response size,
 // handles HTTP/1.1 framing and chunked bodies, and never opens a TCP listener.
-private enum DockerUnixHTTP {
+enum DockerUnixHTTP {
     static func connect(_ path: String, timeout: TimeInterval) throws -> Int32 {
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw fail("Unix socket: \(String(cString: strerror(errno)))") }

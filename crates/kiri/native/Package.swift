@@ -18,8 +18,9 @@ let package = Package(
             name: "KiriMobyUI",
             dependencies: [.product(name: "SwiftTerm", package: "SwiftTerm")],
             path: ".",
-            sources: ["MobyApp.swift", "MobyRuntime.swift"]
-        )
+            sources: ["MobyApp.swift", "MobyRuntime.swift", "MobyUITheme.swift", "MobyUIModels.swift", "MobyModel.swift", "MobyTelemetry.swift", "MobyDockerEvents.swift", "MobyTerminal.swift", "MobyUIComponents.swift", "MobyContainerWorkspace.swift"]
+        ),
+        .testTarget(name: "KiriMobyUITests", dependencies: ["KiriMobyUI"], path: "Tests")
     ],
     swiftLanguageModes: [.v5]
 )

@@ -7,11 +7,25 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-NEW = (ROOT / "crates/kiri/native/MobyApp.swift").read_text(encoding="utf-8")
+GUI_FILES = ["MobyApp.swift","MobyRuntime.swift","MobyUITheme.swift","MobyUIModels.swift","MobyModel.swift","MobyTelemetry.swift","MobyDockerEvents.swift","MobyTerminal.swift","MobyUIComponents.swift","MobyContainerWorkspace.swift"]
+NATIVE = ROOT / "crates/kiri/native"
+NEW = "\n".join((NATIVE / name).read_text(encoding="utf-8") for name in GUI_FILES)
+PACKAGE = (NATIVE / "Package.swift").read_text(encoding="utf-8")
 WORKFLOW = (ROOT / ".github/workflows/moby-milestone.yml").read_text()
 SIGNER = (ROOT / "scripts/moby/sign-personal-macos.sh").read_text()
 INSTALL = (ROOT / "scripts/moby/install-local-macos.sh").read_text()
 errors = []
+for name in GUI_FILES:
+    if f'"{name}"' not in PACKAGE:
+        errors.append(f"SwiftPM executable is missing {name}")
+if "MobyDockerEventStreamDecoder" not in NEW or "scheduleDockerEventRefresh()" not in NEW:
+    errors.append("Missing Docker event-driven refresh")
+if "ContainerLiveMetricsView(telemetry: model.telemetry" not in NEW:
+    errors.append("Hot resource telemetry is not isolated")
+if "KiriLayoutMetrics.contentMin" not in NEW:
+    errors.append("Measured native split constraints missing")
+if not (NATIVE / "Tests/DockerEventStreamDecoderTests.swift").is_file():
+    errors.append("Native event parser tests missing")
 
 def has(haystack, needle, label):
     if needle not in haystack:
@@ -30,7 +44,7 @@ checks = [
     ('NavigationSplitView {', "System managed split navigation"),
     ('.windowToolbarStyle(.unified)', "Unified native macOS toolbar"),
     ('sidebarEngineStatus', "One-line Engine status inset"),
-    ('.frame(height: 44)', "44pt Engine status"),
+    ('.frame(height: KiriLayoutMetrics.sidebarStatusHeight)', "44pt Engine status"),
     ('ContainerWorkspaceDetail(', "Native container workspace is scoped to Containers"),
     ('ModernInspectorView(', "Selected container inspector content"),
     ('ModernInspectorCard {', "Soft grouped inspector sections"),
@@ -40,7 +54,7 @@ checks = [
     ('InspectorEnvironmentRow(entry:', "Per-key secret masking controls"),
     ('CompactContainerRow(item:', "Airy Mail-style container row"),
     ('Section(running ? "运行中" : "已停止")', "Container state grouping"),
-    ('.frame(height: 48)', "48pt native rows"),
+    ('.frame(height: KiriLayoutMetrics.containerRowHeight)', "48pt native rows"),
     ('styledImageName(item.Image ?? "—")', "Two-tone image names"),
     ('Color.accentColor', "Native sidebar accent"),
     ('List(selection: $selectedContainerIDs)', "Native compact container list"),

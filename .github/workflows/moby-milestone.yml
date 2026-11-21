@@ -211,6 +211,8 @@ jobs:
           name: milestone-host-arm64
           path: kiri-moby-host-arm64.tgz
           retention-days: 14
+      - name: Test Docker event parser and native UI modules on macOS
+        run: swift test --package-path crates/kiri/native -c debug
       - name: Build native Apple Silicon Kiri Moby GUI
         run: |
           set -euo pipefail
