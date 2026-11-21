@@ -854,28 +854,29 @@ private struct NativeLogTextView: NSViewRepresentable {
 
 /// Console colors follow the system appearance, including live appearance changes.
 private enum ConsoleAppearance {
+    // A cool, high-contrast terminal surface without forcing system dark mode.
     static func canvas(_ scheme: ColorScheme) -> Color {
         scheme == .dark ? Color(red: 24 / 255, green: 24 / 255, blue: 27 / 255)
-                        : Color(red: 247 / 255, green: 248 / 255, blue: 250 / 255)
+                        : Color(red: 246 / 255, green: 248 / 255, blue: 250 / 255)
     }
     static func toolbar(_ scheme: ColorScheme) -> Color {
         scheme == .dark ? Color(red: 30 / 255, green: 30 / 255, blue: 34 / 255)
-                        : Color(nsColor: .controlBackgroundColor)
+                        : .white
     }
     static func foreground(_ scheme: ColorScheme) -> Color {
         scheme == .dark ? Color(white: 0.88)
-                        : Color(red: 30 / 255, green: 32 / 255, blue: 36 / 255)
+                        : Color(red: 31 / 255, green: 35 / 255, blue: 40 / 255)
     }
     static func canvasNS(_ scheme: ColorScheme) -> NSColor {
         scheme == .dark ? NSColor(calibratedRed: 24 / 255, green: 24 / 255,
                                   blue: 27 / 255, alpha: 1)
-                        : NSColor(calibratedRed: 247 / 255, green: 248 / 255,
+                        : NSColor(calibratedRed: 246 / 255, green: 248 / 255,
                                   blue: 250 / 255, alpha: 1)
     }
     static func foregroundNS(_ scheme: ColorScheme) -> NSColor {
         scheme == .dark ? NSColor(calibratedWhite: 0.88, alpha: 1)
-                        : NSColor(calibratedRed: 30 / 255, green: 32 / 255,
-                                  blue: 36 / 255, alpha: 1)
+                        : NSColor(calibratedRed: 31 / 255, green: 35 / 255,
+                                  blue: 40 / 255, alpha: 1)
     }
 }
 private enum ConsoleCommand: String {
@@ -1000,19 +1001,32 @@ private struct ExecTerminalView: View {
             #if KIRI_UI_PREVIEW
             // CI captures the appearance without launching Docker or a PTY.
             ScrollView(.vertical) {
-                Text(previewTerminalOutput)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(ConsoleAppearance.foreground(colorScheme))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(Array(previewTerminalOutput.components(separatedBy: "\n").enumerated()),
+                            id: \.offset) { _, line in
+                        if line.hasPrefix("/ #") {
+                            (Text("/ #").foregroundColor(Color(red: 0 / 255, green: 128 / 255, blue: 145 / 255))
+                             + Text(String(line.dropFirst(3)))
+                                .foregroundColor(ConsoleAppearance.foreground(colorScheme)))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            Text(line.isEmpty ? " " : line)
+                                .foregroundStyle(ConsoleAppearance.foreground(colorScheme))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+                .font(.system(size: 12, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
             }
             #elseif canImport(SwiftTerm)
             NativeSwiftTermExecView(containerID: containerID,
                                     controls: swiftTermControls)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
                 .frame(minHeight: 150)
             #else
             ContentUnavailableView("终端不可用", systemImage: "terminal",
@@ -1215,15 +1229,22 @@ private struct DetachedConsoleView: View {
 // Shared grouped surface. A macOS control background is intentionally
 // subtle; no Web-style thick borders or dead-white standalone cards.
 private struct ModernInspectorCard<Content: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
     let content: Content
     init(@ViewBuilder content: () -> Content) { self.content = content() }
     var body: some View {
         VStack(alignment: .leading, spacing: 11) { content }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 13)
-            .padding(.vertical, 12)
-            .background(Color.primary.opacity(0.018),
-                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 13)
+            .background(colorScheme == .light ? Color.white
+                                               : Color(nsColor: .controlBackgroundColor),
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+            }
+            .shadow(color: .black.opacity(0.03), radius: 4, x: 0, y: 1)
     }
 }
 
@@ -1245,17 +1266,30 @@ private struct InspectorAreaChart: View {
     // In screenshots only, draw the identical gradient trace using CoreGraphics
     // paths. The production .app uses real Swift Charts below.
     private func trace(in size: CGSize) -> Path {
-        var path = Path()
-        var drawing = false
-        for (index, point) in points.enumerated() {
-            guard let value = (cpu ? point.cpuPercent : point.memoryPercent) else {
-                drawing = false
-                continue
+        // Quadratic midpoint interpolation keeps the non-Metal screenshot
+        // renderer smooth without altering the underlying Docker samples.
+        let samples: [CGPoint] = points.enumerated().compactMap { index, point in
+            guard let value = cpu ? point.cpuPercent : point.memoryPercent else {
+                return nil
             }
             let x = CGFloat(index) / CGFloat(max(1, points.count - 1)) * size.width
             let y = size.height * CGFloat(1 - min(ceiling, max(0, value)) / ceiling)
-            if drawing { path.addLine(to: CGPoint(x: x, y: y)) }
-            else { path.move(to: CGPoint(x: x, y: y)); drawing = true }
+            return CGPoint(x: x, y: y)
+        }
+        var path = Path()
+        guard let first = samples.first else { return path }
+        path.move(to: first)
+        if samples.count > 1 {
+            for index in 1..<samples.count {
+                let previous = samples[index - 1]
+                let current = samples[index]
+                let midpoint = CGPoint(x: (previous.x + current.x) / 2,
+                                       y: (previous.y + current.y) / 2)
+                path.addQuadCurve(to: midpoint, control: previous)
+            }
+            if let last = samples.last {
+                path.addQuadCurve(to: last, control: last)
+            }
         }
         return path
     }
@@ -1273,11 +1307,11 @@ private struct InspectorAreaChart: View {
             ZStack {
                 area(in: geometry.size)
                     .fill(LinearGradient(
-                        colors: [accent.opacity(0.25), accent.opacity(0)],
+                        colors: [accent.opacity(0.18), accent.opacity(0)],
                         startPoint: .top, endPoint: .bottom))
                 trace(in: geometry.size)
                     .stroke(accent, style: StrokeStyle(
-                        lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+                        lineWidth: 1.75, lineCap: .round, lineJoin: .round))
             }
         }
         .frame(height: 34)
@@ -1293,13 +1327,13 @@ private struct InspectorAreaChart: View {
                     yEnd: .value("使用率", percent))
                     .interpolationMethod(.catmullRom)
                     .foregroundStyle(LinearGradient(
-                        colors: [accent.opacity(0.25), accent.opacity(0.0)],
+                        colors: [accent.opacity(0.18), accent.opacity(0.0)],
                         startPoint: .top, endPoint: .bottom))
                 LineMark(
                     x: .value("时间", point.timestamp),
                     y: .value("使用率", percent))
                     .interpolationMethod(.catmullRom)
-                    .lineStyle(StrokeStyle(lineWidth: 1.8, lineCap: .round))
+                    .lineStyle(StrokeStyle(lineWidth: 1.75, lineCap: .round))
                     .foregroundStyle(accent)
             }
         }
@@ -1313,6 +1347,7 @@ private struct InspectorAreaChart: View {
 }
 
 private struct InspectorMetricTile: View {
+    @Environment(\.colorScheme) private var colorScheme
     let title: String
     let value: String
     let points: [ContainerHistoryPoint]
@@ -1330,9 +1365,15 @@ private struct InspectorMetricTile: View {
             InspectorAreaChart(points: points, cpu: cpu, accent: accent)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(6)
-        .background(Color.primary.opacity(0.028),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(9)
+        .background(colorScheme == .light
+                    ? Color(red: 248 / 255, green: 249 / 255, blue: 251 / 255)
+                    : Color(nsColor: .controlBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+        }
     }
 }
 
@@ -1491,6 +1532,69 @@ private struct ModernInspectorView: View {
         .font(.system(size: 10.5))
     }
 
+    // The selected container is the focal point, not another inset gray panel.
+    private func heroSummary(_ item: ContainerItem) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                    Text(item.title)
+                        .font(.system(size: 20, weight: .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    Text(item.State == "running" ? "● 运行中" : "● 已停止")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(item.State == "running" ? Color.green : Color.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background((item.State == "running" ? Color.green : Color.secondary)
+                            .opacity(0.12), in: Capsule())
+                        .fixedSize()
+                }
+                Text(item.Image ?? "—")
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 6)
+            if let published = item.Ports?.first(where: {
+                $0.Type == "tcp" && $0.PublicPort != nil
+            })?.PublicPort {
+                Button("localhost:\(String(published)) ↗") {
+                    model.action("open_local", fields: [
+                        "url": "http://127.0.0.1:\(published)/"
+                    ], title: "open_local")
+                }
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(Color(red: 0 / 255, green: 125 / 255, blue: 165 / 255))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color(red: 0 / 255, green: 160 / 255, blue: 190 / 255)
+                    .opacity(0.10), in: Capsule())
+                .buttonStyle(.plain)
+                .help("在浏览器中打开 localhost:\(String(published))")
+            } else {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(item.Id, forType: .string)
+                } label: {
+                    Label(String(item.Id.prefix(12)), systemImage: "doc.on.doc")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 7)
+                        .background(Color.primary.opacity(0.045), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("复制完整容器 ID")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 2)
+        .padding(.top, 5)
+        .padding(.bottom, 8)
+    }
+
     @ViewBuilder
     private func resourceCard(_ item: ContainerItem) -> some View {
         ModernInspectorCard {
@@ -1612,7 +1716,9 @@ private struct ModernInspectorView: View {
         Group {
             if let item {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        heroSummary(item)
+                        Divider().opacity(0.5)
                         resourceCard(item)
                         networkStorageCard(item)
                         environmentCard()
@@ -1628,9 +1734,10 @@ private struct ModernInspectorView: View {
                             .textSelection(.enabled)
                             .padding(.horizontal, 4)
                     }
-                    .padding(13)
+                    .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .scrollIndicators(.never)
                 .background(Color(nsColor: .textBackgroundColor))
             } else {
                 ContentUnavailableView(
@@ -1769,9 +1876,29 @@ private struct ContainerWorkspaceDetail: View {
             userInfo: ["action": action.rawValue])
     }
 
+    private struct TerminalToolbarAction: View {
+        let title: String
+        let symbol: String
+        let action: () -> Void
+        @State private var hovered = false
+
+        var body: some View {
+            Button(action: action) {
+                Label(title, systemImage: symbol)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.primary.opacity(hovered ? 0.065 : 0),
+                                in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .onHover { hovered = $0 }
+        }
+    }
+
     private func terminalCard(_ containerID: String) -> some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 Circle()
                     .fill(model.containers.first(where: { $0.Id == containerID })?.State
                           == "running" ? Color.green : Color.gray)
@@ -1779,27 +1906,22 @@ private struct ContainerWorkspaceDetail: View {
                 Text("sh · 容器终端")
                     .font(.system(size: 11, weight: .medium))
                 Spacer(minLength: 0)
-                Button {
+                TerminalToolbarAction(title: "清屏", symbol: "paintbrush") {
                     postTerminal(.clear, containerID: containerID)
-                } label: {
-                    Label("清屏", systemImage: "paintbrush")
-                        .font(.system(size: 10.5))
                 }
                 .help("清屏")
-                Button {
+                TerminalToolbarAction(title: "Ctrl+C", symbol: "stop.fill") {
                     postTerminal(.interrupt, containerID: containerID)
-                } label: {
-                    Label("Ctrl+C", systemImage: "stop.fill")
-                        .font(.system(size: 10.5))
                 }
                 .help("发送 Ctrl+C")
             }
-            .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 12)
-            .frame(height: 36)
+            .padding(.horizontal, 14)
+            .frame(height: 38)
             .background(ConsoleAppearance.toolbar(colorScheme))
-            Divider()
+            Rectangle()
+                .fill(Color.primary.opacity(0.08))
+                .frame(height: 0.5)
             ExecTerminalView(containerID: containerID,
                 containerName: model.containers.first(where: { $0.Id == containerID })?.title
                     ?? String(containerID.prefix(12)))
