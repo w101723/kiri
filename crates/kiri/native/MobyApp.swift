@@ -852,7 +852,7 @@ private struct NativeLogTextView: NSViewRepresentable {
 private enum ConsoleAppearance {
     static func canvas(_ scheme: ColorScheme) -> Color {
         scheme == .dark ? Color(red: 24 / 255, green: 24 / 255, blue: 27 / 255)
-                        : Color(nsColor: .textBackgroundColor)
+                        : Color(red: 247 / 255, green: 248 / 255, blue: 250 / 255)
     }
     static func toolbar(_ scheme: ColorScheme) -> Color {
         scheme == .dark ? Color(red: 30 / 255, green: 30 / 255, blue: 34 / 255)
@@ -864,7 +864,9 @@ private enum ConsoleAppearance {
     }
     static func canvasNS(_ scheme: ColorScheme) -> NSColor {
         scheme == .dark ? NSColor(calibratedRed: 24 / 255, green: 24 / 255,
-                                  blue: 27 / 255, alpha: 1) : .textBackgroundColor
+                                  blue: 27 / 255, alpha: 1)
+                        : NSColor(calibratedRed: 247 / 255, green: 248 / 255,
+                                  blue: 250 / 255, alpha: 1)
     }
     static func foregroundNS(_ scheme: ColorScheme) -> NSColor {
         scheme == .dark ? NSColor(calibratedWhite: 0.88, alpha: 1)
@@ -1212,16 +1214,12 @@ private struct ModernInspectorCard<Content: View>: View {
     let content: Content
     init(@ViewBuilder content: () -> Content) { self.content = content() }
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) { content }
+        VStack(alignment: .leading, spacing: 11) { content }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(10)
-            .background(
-                Color(nsColor: .controlBackgroundColor),
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
-            }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 12)
+            .background(Color.primary.opacity(0.018),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -1233,9 +1231,9 @@ private struct InspectorAreaChart: View {
     let accent: Color
 
     private var ceiling: Double {
-        max(100, points.compactMap {
-            cpu ? $0.cpuPercent : $0.memoryPercent
-        }.max() ?? 100)
+        let values = points.compactMap { cpu ? $0.cpuPercent : $0.memoryPercent }
+        let peak = values.max() ?? 0
+        return min(100.0, max(peak * 1.45, cpu ? 10.0 : 15.0))
     }
 
     #if KIRI_UI_PREVIEW
@@ -1278,7 +1276,7 @@ private struct InspectorAreaChart: View {
                         lineWidth: 1.8, lineCap: .round, lineJoin: .round))
             }
         }
-        .frame(height: 32)
+        .frame(height: 34)
         .accessibilityLabel(cpu ? "CPU 使用历史曲线" : "内存占比历史曲线")
     }
     #else
@@ -1304,7 +1302,7 @@ private struct InspectorAreaChart: View {
         .chartXAxis(.hidden)
         .chartYAxis(.hidden)
         .chartYScale(domain: 0...ceiling)
-        .frame(height: 32)
+        .frame(height: 34)
         .accessibilityLabel(cpu ? "CPU 使用历史曲线" : "内存占比历史曲线")
     }
     #endif
@@ -1555,22 +1553,32 @@ private struct ModernInspectorView: View {
                     .foregroundStyle(.secondary)
             }
             ForEach(mounts) { mount in
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 7) {
                     CopyableInspectorTag(text: mount.Destination ?? "—",
                                          copyValue: mount.Destination ?? "")
-                    HStack(spacing: 5) {
+                    HStack(alignment: .center, spacing: 7) {
                         Image(systemName: "arrow.turn.up.right")
                             .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
                         Text(mount.Source ?? "—")
                             .font(.system(size: 10, design: .monospaced))
                             .lineLimit(2)
                             .textSelection(.enabled)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text(mount.RW == true ? "读写" : "只读")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Color.primary.opacity(0.055),
+                                        in: Capsule())
                     }
-                    .foregroundStyle(.secondary)
-                    Text(mount.RW == true ? "读写" : "只读")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
                 }
+                .padding(9)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.primary.opacity(0.035),
+                            in: RoundedRectangle(cornerRadius: 8))
             }
         }
     }
@@ -1616,10 +1624,10 @@ private struct ModernInspectorView: View {
                             .textSelection(.enabled)
                             .padding(.horizontal, 4)
                     }
-                    .padding(9)
+                    .padding(13)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .background(Color(nsColor: .windowBackgroundColor))
+                .background(Color(nsColor: .textBackgroundColor))
             } else {
                 ContentUnavailableView(
                     "选择一个容器",
@@ -1770,20 +1778,22 @@ private struct ContainerWorkspaceDetail: View {
                 Button {
                     postTerminal(.clear, containerID: containerID)
                 } label: {
-                    Image(systemName: "paintbrush")
+                    Label("清屏", systemImage: "paintbrush")
+                        .font(.system(size: 10.5))
                 }
                 .help("清屏")
                 Button {
                     postTerminal(.interrupt, containerID: containerID)
                 } label: {
-                    Image(systemName: "stop.fill")
+                    Label("Ctrl+C", systemImage: "stop.fill")
+                        .font(.system(size: 10.5))
                 }
                 .help("发送 Ctrl+C")
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)
-            .frame(height: 34)
+            .frame(height: 36)
             .background(ConsoleAppearance.toolbar(colorScheme))
             Divider()
             ExecTerminalView(containerID: containerID,
@@ -1794,100 +1804,33 @@ private struct ContainerWorkspaceDetail: View {
         .background(ConsoleAppearance.canvas(colorScheme))
     }
 
-    private var detailHeader: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 10) {
-                Image(systemName: "shippingbox.fill")
-                    .font(.system(size: 17))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 32, height: 32)
-                    .background(Color.accentColor.opacity(0.09),
-                                in: RoundedRectangle(cornerRadius: 9))
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(container.title)
-                            .font(.system(size: 14, weight: .semibold))
-                            .lineLimit(1)
-                        Circle()
-                            .fill(container.State == "running" ? Color.green : Color.gray)
-                            .frame(width: 6, height: 6)
-                    }
-                    Text(container.Image ?? "—")
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 4)
-                Button {
-                    onAction(container.State == "running" ? "stop" : "start", container)
-                } label: {
-                    Image(systemName: container.State == "running" ?
-                          "stop.fill" : "play.fill")
-                }
-                .help(container.State == "running" ? "停止容器" : "启动容器")
-                Button {
-                    onAction("restart", container)
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .disabled(container.State != "running")
-                .help("重启容器")
-                if activeTab != .overview {
-                    Button {
-                        let kind: ConsoleSession.Kind = activeTab == .terminal ? .exec : .logs
-                        openWindow(id: "container-console", value: ConsoleSession(
-                            kind: kind, containerID: container.Id, name: container.title))
-                    } label: {
-                        Image(systemName: "arrow.up.right.square")
-                    }
-                    .help("在原生独立窗口中打开")
-                }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-
-            Picker("容器工作区", selection: $activeTab) {
-                ForEach(ContainerDetailTab.allCases) { tab in
-                    Text(tab.rawValue).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-        }
-        .padding(14)
-    }
-
     var body: some View {
-        VStack(spacing: 0) {
-            detailHeader
-            Divider()
-            ZStack {
-                ModernInspectorView(item: container, onAction: onAction)
-                    .opacity(activeTab == .overview ? 1 : 0)
-                    .allowsHitTesting(activeTab == .overview)
-                    .accessibilityHidden(activeTab != .overview)
+        ZStack {
+            ModernInspectorView(item: container, onAction: onAction)
+                .opacity(activeTab == .overview ? 1 : 0)
+                .allowsHitTesting(activeTab == .overview)
+                .accessibilityHidden(activeTab != .overview)
 
-                ForEach(loadedLogIDs.sorted(), id: \.self) { id in
-                    EmbeddedContainerLogsView(
-                        containerID: id, isActive: activeTab == .logs && container.Id == id)
-                        .opacity(activeTab == .logs && container.Id == id ? 1 : 0)
-                        .allowsHitTesting(activeTab == .logs && container.Id == id)
-                        .accessibilityHidden(activeTab != .logs || container.Id != id)
-                }
-                ForEach(loadedTerminalIDs.sorted(), id: \.self) { id in
-                    terminalCard(id)
-                        .opacity(activeTab == .terminal && container.Id == id ? 1 : 0)
-                        .allowsHitTesting(activeTab == .terminal && container.Id == id)
-                        .accessibilityHidden(activeTab != .terminal || container.Id != id)
-                }
-                if activeTab == .terminal && container.State != "running" {
-                    ContentUnavailableView("容器未运行", systemImage: "terminal",
-                        description: Text("先启动容器，再打开交互式终端。"))
-                }
+            ForEach(loadedLogIDs.sorted(), id: \.self) { id in
+                EmbeddedContainerLogsView(
+                    containerID: id, isActive: activeTab == .logs && container.Id == id)
+                    .opacity(activeTab == .logs && container.Id == id ? 1 : 0)
+                    .allowsHitTesting(activeTab == .logs && container.Id == id)
+                    .accessibilityHidden(activeTab != .logs || container.Id != id)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ForEach(loadedTerminalIDs.sorted(), id: \.self) { id in
+                terminalCard(id)
+                    .opacity(activeTab == .terminal && container.Id == id ? 1 : 0)
+                    .allowsHitTesting(activeTab == .terminal && container.Id == id)
+                    .accessibilityHidden(activeTab != .terminal || container.Id != id)
+            }
+            if activeTab == .terminal && container.State != "running" {
+                ContentUnavailableView("容器未运行", systemImage: "terminal",
+                    description: Text("先启动容器，再打开交互式终端。"))
+            }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .textBackgroundColor))
         .onAppear { ensureCurrentSession() }
         .onChange(of: activeTab) { _, _ in ensureCurrentSession() }
         .onChange(of: container.Id) { _, _ in ensureCurrentSession() }
