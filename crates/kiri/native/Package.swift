@@ -18,7 +18,7 @@ let package = Package(
             name: "KiriMobyUI",
             dependencies: [.product(name: "SwiftTerm", package: "SwiftTerm")],
             path: ".",
-            exclude: ["KiriMobyHost.swift", "hvf"],
+            exclude: ["KiriMobyHost.swift", "hvf", "Tests"],
             sources: ["KiriArcBoxContainerInfoTab.swift", "KiriArcBoxResourceView.swift", "ArcBoxContainerModel.swift", "ArcBoxAppColors.swift", "ArcBoxAppMetrics.swift", "ArcBoxLiquidGlass.swift", "ArcBoxDetailTabPicker.swift", "ArcBoxResourceListRowView.swift", "ArcBoxContainerListCells.swift", "ArcBoxInfoRow.swift", "ArcBoxInfoTableView.swift", "ArcBoxIconButton.swift", "ArcBoxStatusBadge.swift", "ArcBoxToolbarSeparator.swift", "KiriArcBoxContainersList.swift", "MobyApp.swift", "MobyRuntime.swift", "MobyUITheme.swift", "MobyUIModels.swift", "MobyModel.swift", "MobyTelemetry.swift", "MobyDockerEvents.swift", "MobyTerminal.swift", "MobyUIComponents.swift", "MobyContainerWorkspace.swift"]
         ),
         .testTarget(name: "KiriMobyUITests", dependencies: ["KiriMobyUI"], path: "Tests")
