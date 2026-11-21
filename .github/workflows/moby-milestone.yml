@@ -221,6 +221,13 @@ jobs:
           swift_dir="$(swift build --package-path crates/kiri/native -c release \
             --triple arm64-apple-macosx14.0 --show-bin-path)"
           target_dir="target/aarch64-apple-darwin/release"
+          # SwiftPM's --show-bin-path is outside Cargo's target tree. Always
+          # create the release staging directory before copying its output.
+          test -f "$swift_dir/kiri-moby-ui" || {
+            echo "Missing compiled SwiftUI executable in $swift_dir" >&2
+            exit 1
+          }
+          mkdir -p "$target_dir"
           native="$target_dir/kiri-moby-ui"
           cp "$swift_dir/kiri-moby-ui" "$native"
           test "$(lipo "$native" -archs)" = "arm64"
