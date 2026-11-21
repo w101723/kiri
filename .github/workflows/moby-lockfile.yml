@@ -1,0 +1,39 @@
+name: Regenerate minimal Moby Cargo.lock
+
+on:
+  push:
+    branches: [apple-silicon-native-parity]
+    paths:
+      - ".github/workflows/moby-lockfile.yml"
+      - "Cargo.toml"
+      - "crates/kiri/Cargo.toml"
+      - "crates/kiri-vmm/Cargo.toml"
+      - "crates/kiri-moby-bridge/Cargo.toml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: moby-lockfile-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Resolve only the Moby workspace packages
+        run: cargo generate-lockfile
+      - name: Commit minimal dependency lockfile when changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- Cargo.lock; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock
+          git commit -m "build(macos): regenerate Cargo.lock for native Moby-only workspace"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
