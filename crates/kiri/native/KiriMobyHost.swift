@@ -674,9 +674,43 @@ private final class KiriMobyHost: NSObject, VZVirtualMachineDelegate, VZVirtioSo
         guard let boundary = data.range(of: Data("\r\n\r\n".utf8)) else { return nil }
         let head = String(decoding: data[..<boundary.lowerBound], as: UTF8.self)
         guard head.hasPrefix("HTTP/1.1 200") || head.hasPrefix("HTTP/1.0 200") else { return nil }
-        // Docker Engine normally returns content-length; fail closed if chunked.
-        guard !head.lowercased().contains("transfer-encoding: chunked") else { return nil }
-        return (try? JSONSerialization.jsonObject(with: Data(data[boundary.upperBound...]))) as? [[String: Any]]
+        let payload = Data(data[boundary.upperBound...])
+        var decoded = payload
+        // The Go Docker API is allowed to stream a bounded JSON response with
+        // Transfer-Encoding: chunked even when it is not an /events endpoint.
+        // A failed parse preserves the last port map rather than dropping ports.
+        if head.lowercased().contains("transfer-encoding: chunked") {
+            let bytes = [UInt8](payload)
+            var offset = 0
+            var body = Data()
+            var complete = false
+            while offset < bytes.count {
+                guard let newline = bytes[offset...].firstIndex(of: 10) else { return nil }
+                let line = String(decoding: bytes[offset..<newline], as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let first = line.split(separator: ";", maxSplits: 1).first,
+                      let size = Int(first, radix: 16), size >= 0 else { return nil }
+                offset = newline + 1
+                if size == 0 { complete = true; break }
+                guard offset + 2 <= bytes.count,
+                      size <= bytes.count - offset - 2,
+                      body.count + size <= 4_000_000 else { return nil }
+                body.append(contentsOf: bytes[offset..<(offset + size)])
+                offset += size
+                guard bytes[offset] == 13, bytes[offset + 1] == 10 else { return nil }
+                offset += 2
+            }
+            guard complete else { return nil }
+            decoded = body
+        } else if let contentLine = head.components(separatedBy: "\r\n").first(where: {
+            $0.lowercased().hasPrefix("content-length:")
+        }) {
+            guard let length = Int(contentLine.split(separator: ":", maxSplits: 1).last?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""),
+                  length >= 0, length <= payload.count else { return nil }
+            decoded = Data(payload.prefix(length))
+        }
+        return (try? JSONSerialization.jsonObject(with: decoded)) as? [[String: Any]]
     }
     private func startPortsWatcher() {
         let disable = ProcessInfo.processInfo.environment["KIRI_MOBY_DISABLE_PORT_FORWARD"] == "1"
