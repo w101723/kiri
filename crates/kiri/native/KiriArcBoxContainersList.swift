@@ -188,7 +188,8 @@ final class KiriArcBoxContainersController: NSViewController,
         ((item as? ArcBoxKiriNode)?.children ?? roots)[index]
     }
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
-        !(item as? ArcBoxKiriNode)?.children.isEmpty ?? false
+        guard let node = item as? ArcBoxKiriNode else { return false }
+        return !node.children.isEmpty
     }
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
         guard let node = item as? ArcBoxKiriNode else { return false }

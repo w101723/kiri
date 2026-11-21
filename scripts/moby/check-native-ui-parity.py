@@ -53,7 +53,7 @@ checks = [
     ('CopyableInspectorTag(', "Copyable native port and mount tags"),
     ('InspectorEnvironmentRow(entry:', "Per-key secret masking controls"),
     ('ContainerTableCellView', "ArcBox original AppKit container cell"),
-    ('case .section:', "ArcBox native OutlineView sections"),
+    ('case .section(let title):', "ArcBox native OutlineView sections"),
     ('static let rowHeight: CGFloat = 44', "ArcBox 44pt native rows"),
     ('imageLabel.stringValue = container.image', "ArcBox two-line image labels"),
     ('Color.accentColor', "Native sidebar accent"),
