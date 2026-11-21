@@ -1,7 +1,7 @@
 // Kiri Moby — native SwiftUI/AppKit frontend, macOS 14+.
 // No WKWebView, JavaScript runtime, web server or embedded browser.
-// Docker/VM operations are delegated to the existing Rust Moby adapter
-// through an exact-path, local short-lived JSON command bridge.
+// Docker/VM operations use the in-process Swift HTTP-over-UDS client.
+// Only the independent VM Host is a separate Swift process; Guest stays Rust.
 import AppKit
 import Darwin
 import Foundation
@@ -430,7 +430,7 @@ private final class MobyModel: ObservableObject {
         }
         #endif
         refresh()
-        // Idempotent: if the VM is already online, Rust start_vm() is a no-op.
+        // Idempotent: a running private Docker VM is reused, never started twice.
         perform(["start"], title: "Start VM", showResult: false)
     }
 
@@ -897,7 +897,7 @@ private struct ContainerLogWindow: View {
     }
 }
 
-// Dedicated macOS PTY session. The child runs the signed Kiri CLI which
+// Dedicated macOS PTY session. The child runs the bundled Docker CLI which
 // delegates to docker exec -it over Kiri's private Docker socket.
 @MainActor
 private final class ExecTerminalSession: ObservableObject {
@@ -1048,7 +1048,7 @@ private struct NativeSwiftTermExecView: NSViewRepresentable {
         controls.terminal = view
         let cli = MobyPaths.docker.path
         guard FileManager.default.isExecutableFile(atPath: cli) else {
-            view.feed(byteArray: Array("Kiri CLI 不存在：\(cli)\r\n".utf8)[...])
+            view.feed(byteArray: Array("内置 Docker CLI 不存在：\(cli)\r\n".utf8)[...])
             return view
         }
         let env = MobyRuntime.terminalEnvironment()

@@ -1,120 +1,88 @@
-# Kiri Moby Native SwiftUI/AppKit Frontend
+# Kiri Moby — SwiftUI / Swift Host / Rust Guest
 
-## Apple Silicon-only architecture
+## Supported system
 
-The macOS Finder application now launches the arm64 executable
-Contents/MacOS/kiri-moby-ui, written in SwiftUI/AppKit. The retired WKWebView-based Rust GUI and its daemon are absent from this product.
+Kiri Moby is an **Apple Silicon-only macOS 14+** Docker desktop built with
+SwiftUI, AppKit and [SwiftTerm 1.20.0](https://github.com/migueldeicaza/SwiftTerm).
+It does not ship the previous custom Kiri daemon, WebKit UI, custom image engine
+or Windows/Linux host application.
 
-Persistent processes should be:
-- SwiftUI GUI application (no WebKit WebContent/GPU/Networking helpers)
-- kiri-moby-host (Docker API, VM lifecycle, file sharing)
-- Apple Virtualization.framework XPC VM service (Linux VM memory)
+## Production processes
 
-The app also bundles an in-process Swift Docker client which connects to the private Unix
-socket directly. The Swift VM Host remains a separate process that outlives
-the GUI. Linux Guest's minimal Rust vsock proxy remains unchanged.
+| Component | Language | Process | Responsibility |
+| --- | --- | --- | --- |
+| `kiri-moby-ui` | Swift | Finder macOS GUI | Containers, images, volumes, networks, Compose inventory, Buildx, logs, terminal, VM controls |
+| `kiri-moby-host` | Swift | Independent long-lived Helper | Apple Virtualization.framework VM lifecycle, Docker API / Unix-vsock relay, published localhost TCP ports, VirtioFS and memory balloon |
+| `kiri-moby-guest` | Rust | Linux ARM64 Guest | Standard Docker socket vsock proxy, shutdown port, published TCP forwarding, memory telemetry, authorized shares and clock synchronization |
+| `dockerd` | Upstream | Linux ARM64 Guest | Container state, image layers, volumes, networks and BuildKit |
 
-## Native GUI features
+The app **does not launch a Rust CLI**. `MobyApp.swift` calls
+`MobyRuntime.swift` directly for standard Docker HTTP/1.1 requests through
+`~/.kiri-moby/run/docker.sock`. The socket belongs only to Kiri Moby;
+`/var/run/docker.sock`, system Docker contexts and OrbStack are not changed.
+The Swift runtime supports bounded requests, HTTP content length and chunked
+framing, and normalizes Docker CPU, working-set memory, network and block I/O.
+It fetches statistics for at most 64 running containers (six concurrent requests).
+UI refreshing remains periodic, with followable bounded log snapshots.
 
-- Overview: real Docker Engine version, containers/images/volumes counts,
-  configured maximum Guest RAM and live balloon target.
-- Containers: search, list, start/stop/restart/pause/unpause, logs, exec,
-  inspect, published localhost ports and remove. The table also displays live
-  Docker CPU utilization (multi-core percentages can exceed 100%), active
-  working-set RAM and per-container memory limits with progress indication,
-  cumulative network receive/transmit and disk read/write totals; hover for PIDs.
-  Stopped containers show no live utilization rather than misleading zeroes.
-  Telemetry is fetched via `/containers/{id}/stats?stream=false` every five
-  seconds only on Containers and Compose, separately from the Docker list refresh.
-  At most 64 containers and six stats requests at a time are sampled, each with
-  a 5-second socket timeout. Stats errors do not block container actions.
-- Images: search, pull, run, inspect, remove.
-- Volumes and networks: list, create, inspect, remove.
-- Compose: automatically discover projects from `com.docker.compose.project` labels,
-  expand nested service/container rows and access the same container actions.
-  No Compose YAML path or `up/down` command form is shown.
-- Buildx: choose context folder, set tag and linux/arm64 or linux/amd64.
-- Settings: persist host-aware CPU and maximum VM memory ceilings (1 CPU minimum,
-  memory in 256 MiB increments), optionally restart VM to apply changes, plus
-  explicit authorized Mac project directories.
-- Logs: floating native window with refresh/follow toggle, bounded 200/1,000/5,000
-  line tail, copy, clear. Logs are polled every two seconds, not streamed.
-- Exec: floating PTY-backed `docker exec -it` shell with repeatable input,
-  copy, clear and Ctrl-C. Line-oriented display is **not** a full VT100 emulator.
-- Native macOS NavigationSplitView / system sidebar material, standard titlebar
-  toolbar, searchable navigation, VM-resource popover and menu bar icon.
-  Containers are shown in a native sortable multi-select SwiftUI Table
-  (NSTableView on macOS), with context-menu batch actions and compact buttons.
-- Mac HIG UI refinements: explicit non-localized `localhost:8080` links (no
-  locale thousands separators), a system-titlebar application brand and VM
-  status pill, primary-color sidebar labels including Chinese “存储卷”, and
-  right-aligned Table actions after creation time. Rows keep only CPU% and
-  active RAM plus a thin usage indicator; network/block I/O, PIDs and RAM
-  limit are available from the per-row info popover.
-- The charcoal console uses a single 34pt compact tab/action strip
-  (`#1F1F23`) and a consistent `#141414` canvas in the AppKit log view and
-  SwiftTerm terminal. Log follow and tail-length actions stay in that shared
-  strip; detached windows use the actual macOS toolbar instead.
-- A draggable vertical split embeds Exec and Logs into a dark console drawer.
-  Sessions can be detached into real macOS WindowGroup windows which opt into
-  native AppKit window tabbing. Detaching creates a new terminal process; it is
-  **not** a seamless PTY migration.
-- Logs use an AppKit NSTextView via NSViewRepresentable, with native find bar,
-  disabled smart substitutions and incremental text updates. The bounded log
-  fetching is still poll-based; no true stream has been implemented.
-- Exec is configured to use **SwiftTerm 1.20.0** in the production SwiftPM
-  executable, wrapping `LocalProcessTerminalView` in `NSViewRepresentable`.
-  SwiftTerm owns the PTY, ANSI/xterm rendering, keyboard handling and PTY
-  resize; it launches the already-signed bundled Kiri CLI, connecting through
-  Kiri's existing private Docker socket. The bare-swiftc CI visual fixture
-  intentionally falls back to the old line-oriented SwiftUI Text terminal.
-  The SwiftTerm-linked arm64 binary has its **own required CI build gate**;
-  only that gate proves the production native terminal compiles correctly.
+The interactive terminal uses SwiftTerm's `LocalProcessTerminalView` and
+executes the **bundled Docker CLI** with
+`DOCKER_HOST=unix://~/.kiri-moby/run/docker.sock` and
+`DOCKER_CONTEXT` removed. Compose and Buildx also invoke this pinned CLI
+against Kiri Moby's private socket, not the user's default engine.
 
-The Docker engine remains upstream Moby, and user state remains in
-~/.kiri-moby/vm/data.img. The Host process and Apple VZ backend remain
-unchanged. The native UI sends no network requests to an external service.
+## Independent Host and disk safety
 
-## Package, signing, verification
+The Swift Host runs in a separate process. Quitting or crashing the GUI does
+not intentionally stop the VM; reopening the GUI reconnects via the private socket.
+It holds an exclusive `moby-vm.lock` during VM ownership to prevent simultaneous
+writable mounts. VM shutdown uses the Guest's graceful SHUTDOWN vsock protocol,
+waits for disk release, and then cleans up sockets.
 
-Full ARM64 build compiles the native SwiftUI frontend and the Swift VZ Host, then
-bundles both into the same signed App. Info.plist CFBundleExecutable is
-kiri-moby-ui. The original fixed personal P12, certificate fingerprint
-and private root CA flow sign both executables and the independent Host,
-then sign the outer Kiri Moby.app. The local installer validates both
-executables' arm64 architecture and signature, not just the original CLI.
+The Linux disk ABI remains fixed:
+- `~/.kiri-moby/vm/data.img`: writable persistent ext4 Docker image, volumes and metadata (`/dev/vda`)
+- `~/.kiri-moby/vm/system.img`: read-only Guest rootfs seed (`/dev/vdb`)
+- `~/.kiri-moby/guest/`: signed kernel, initramfs, seed archives and revision checksums
 
-CI builds the SwiftUI binary and rejects direct WebKit/JavaScriptCore
-linkage. The real P12 signing test uses its own clean macOS Runner, separate
-from the synthetic private CA signing test. Full CI builds the entire DMG.
+Guest updates verify bundled `SHA256SUMS`, stage replacement boot assets under
+the same disk lock and leave the writable Docker disk intact. macOS shares are
+explicit opt-in normalized project directories beneath `/Users` or `/Volumes`,
+validated by both Host and Rust Guest. Rosetta integration is optional. The
+traditional VZ memory balloon must not be confused with verified host RSS reclamation.
 
-The `moby-native-visual-preview.yml` workflow separately compiles the same
-AppKit/SwiftUI UI source in a **test-only** macOS preview build and takes a real
-window screenshot in a hosted macOS session. Its container status, logs and
-terminal output are explicitly synthetic fixtures compiled only with
-`KIRI_UI_PREVIEW`; production Apple Silicon binaries do not include them.
-This permits layout and window overlap debugging without installing the app
-or starting the Docker VM. It is not a substitute for live Docker acceptance.
+## Release and CI
 
-The old WebView implementation remains in the source tree during parity
-validation as a rollback, but it is not launched by Finder in the new app.
-Do not remove it before all existing Docker actions are verified.
+The source is under `crates/kiri/native/`:
+- `MobyApp.swift` — application and views
+- `MobyRuntime.swift` — in-process native Docker client and VM controller
+- `KiriMobyHost.swift` — standalone Swift Virtualization.framework Host
+- `Package.swift` — pinned SwiftTerm dependency for the UI
 
-## Required manual Apple Silicon acceptance
+The Linux Guest Rust source is solely under `crates/kiri-moby-bridge/`, with
+`Cargo.lock` containing only Guest build dependencies. Guest kernel scripts,
+rootfs generation, signing and packaging are in `guest/kernel/` and
+`scripts/moby/`.
 
-1. Launch the native app. It must not spawn Kiri-owned WebContent,
-   WebKit GPU or WebKit Networking processes.
-2. Confirm background kiri-moby-host and Apple VZ VM service continue
-   working and the existing Docker data disk remains intact.
-3. Test start/stop/restart VM, list, pull/run/stop/remove containers,
-   inspect/logs/exec, and open published localhost port.
-4. Test volumes, networks, Compose, arm64/amd64 Buildx and directory shares.
-5. Quit/reopen GUI while background VM stays online.
-6. Install using the existing one-time authorized personal installer and
-   verify certificate fingerprint remains identical between releases.
+- `.github/workflows/moby-native-ui-check.yml`: cross-compiles arm64 Swift UI,
+  SwiftTerm and Swift Host; exercises a synthetic Docker HTTP-over-Unix-socket
+  integration test
+- `.github/workflows/moby-bridge.yml`: builds and tests the Linux Rust Guest
+  and compiles/signs the independent Swift Host
+- `.github/workflows/moby-native-visual-preview.yml`: real AppKit window
+  screenshot using **test-only synthetic data**, never AI-generated visuals
+- `.github/workflows/moby-personal-signing-test.yml`: verifies the existing
+  private-P12 signer on a clean macOS runner
+- `.github/workflows/moby-milestone.yml`: full same-commit Guest+Host+SwiftUI
+  application and DMG packaging, triggered manually on this feature branch
 
-A reduction in WebKit helper process count does not necessarily reduce
-the 700+ MB VM XPC service footprint. That is separate VM memory management.
+## Physical Apple Silicon acceptance required
 
-The private personal certificate alone still does not replace Apple
-Developer ID notarization for fresh downloaded DMG drag-and-drop installs.
+CI cross-compilation on Intel macOS runners cannot substitute for hardware
+acceptance. On a real Apple Silicon Mac verify: Guest boot; Docker pull,
+container lifecycle, networks, volumes, Compose, Buildx and amd64 Rosetta;
+SwiftTerm interactive PTY; large streaming Docker build and logs; published
+localhost port forwarding; authorized directory shares; disk persistence across
+Host restart; GUI close/reopen without stopping VM; and VM balloon behavior
+using `vmmap -summary`/real physical footprint. Verify signing certificates,
+DMG install and Gatekeeper behavior separately. A personal self-signed
+certificate is **not** Apple Developer ID notarization.
