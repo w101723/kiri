@@ -13,6 +13,18 @@ import SwiftTerm
 // SwiftTerm also declares a Color type; UI code uses SwiftUI.Color exclusively.
 private typealias Color = SwiftUI.Color
 
+private enum KiriMenuBarIcon {
+    static let image: NSImage = {
+        guard let resource = Bundle.main.resourceURL?.appendingPathComponent("kiri-menubar-template@2x.png"),
+              let icon = NSImage(contentsOf: resource) else {
+            return NSImage(systemSymbolName: "shippingbox", accessibilityDescription: "Kiri Moby") ?? NSImage()
+        }
+        icon.isTemplate = true
+        icon.size = NSSize(width: 18, height: 18)
+        return icon
+    }()
+}
+
 private enum Page: String, CaseIterable, Hashable, Identifiable {
     case overview = "总览"
     case containers = "Containers"
@@ -3525,7 +3537,7 @@ private struct KiriMobyNativeApp: App {
         }
         .defaultSize(width: 860, height: 550)
 
-        MenuBarExtra("Kiri Moby", systemImage:"shippingbox") {
+        MenuBarExtra {
             Text(model.online ? "Moby VM Running" : "Moby VM Stopped")
             Button("刷新") { model.refresh() }
             Button(model.online ? "停止 VM" : "启动 VM") {
@@ -3538,6 +3550,8 @@ private struct KiriMobyNativeApp: App {
                 NSApplication.shared.windows.first?.makeKeyAndOrderFront(nil)
             }
             Button("退出 Kiri Moby") { NSApplication.shared.terminate(nil) }
+        } label: {
+            Image(nsImage: KiriMenuBarIcon.image)
         }
     }
 }
