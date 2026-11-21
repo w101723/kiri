@@ -109,8 +109,7 @@ has not yet been measured to establish the cause of an 800 MiB idle VM.
    Existing persistent Docker images, named volumes, networks and
    container metadata remain on the same `vm/data.img`.
 
-This boot redesign is separate from runtime dynamic Balloon control and the
-isolated libkrun2 free-page-replacement experiment. It does **not** yet prove
+This boot redesign is separate from runtime dynamic Balloon control. It does **not** yet prove
 macOS process RSS is under 800 MiB, much less 100–200 MiB. Mac real-device
 measurements and safe migration acceptance remain required before merging PR #2.
 

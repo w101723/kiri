@@ -149,7 +149,6 @@ sign --entitlements crates/kiri/kiri.entitlements "$res/bin/kiri-moby-host"
 for bin in "$res/bin/docker" "$res/bin/cli-plugins/docker-compose" "$res/bin/cli-plugins/docker-buildx"; do
   sign "$bin"
 done
-sign --entitlements crates/kiri/kiri.entitlements "$app/Contents/MacOS/kiri"
 if [[ -f "$app/Contents/MacOS/kiri-moby-ui" ]]; then
   sign "$app/Contents/MacOS/kiri-moby-ui"
 fi

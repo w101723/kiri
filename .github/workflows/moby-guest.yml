@@ -30,8 +30,16 @@ jobs:
         run: cargo build --release --target aarch64-unknown-linux-musl -p kiri-moby-bridge --bin kiri-moby-guest
       - name: Export standard Docker Engine guest rootfs and sparse data disk
         run: ./scripts/moby/build-guest.sh
-      - name: Build Kiri VM ARM64 kernel
-        run: cargo xtask kernel
+      - name: Build Linux ARM64 kernel for Kiri Moby
+        run: |
+          set -euo pipefail
+          mkdir -p guest/out target/kernel-build
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD/guest/kernel:/src:ro" \
+            -v "$PWD/guest/out:/out" \
+            -v "$PWD/target/kernel-build:/build" \
+            ubuntu:24.04 sh /src/build.sh
+          test -s guest/out/Image
       - name: Bundle bootable guest assets and record fingerprints
         run: |
           cp guest/out/Image target/moby-guest/Image

@@ -143,8 +143,7 @@ entry="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$candidate/Cont
 revision="$candidate/Contents/Resources/SOURCE_REVISION"
 [[ -f "$revision" ]] || { echo "Missing source revision" >&2; exit 2; }
 grep -Eq '^[0-9a-fA-F]{40}$' "$revision" || { echo "Invalid source revision" >&2; exit 2; }
-for program in "$candidate/Contents/MacOS/kiri" \
-  "$candidate/Contents/MacOS/kiri-moby-ui" \
+for program in "$candidate/Contents/MacOS/kiri-moby-ui" \
   "$candidate/Contents/Resources/bin/kiri-moby-host" \
   "$candidate/Contents/Resources/bin/docker" \
   "$candidate/Contents/Resources/bin/cli-plugins/docker-compose" \

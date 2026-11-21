@@ -1,10 +1,76 @@
 // Kiri Moby — native SwiftUI/AppKit frontend, macOS 14+.
-// No WKWebView, JavaScript runtime, web server or embedded browser.
-// Docker/VM operations are delegated to the existing Rust Moby adapter
-// through an exact-path, local short-lived JSON command bridge.
+// AppKit/SwiftUI/SwiftTerm compose the entire UI; no embedded browser.
+// Docker/VM operations use the in-process Swift HTTP-over-UDS client.
+// Only the independent VM Host is a separate Swift process; Guest stays Rust.
 import AppKit
 import Foundation
 import SwiftUI
+import Charts
+#if canImport(SwiftTerm)
+import SwiftTerm
+#endif
+// SwiftTerm also declares a Color type; UI code uses SwiftUI.Color exclusively.
+private typealias Color = SwiftUI.Color
+
+/// Three-face negative-space hexagonal cube, 12.4pt tall on an 18pt
+/// transparent canvas. NSImage.isTemplate lets macOS tint it automatically.
+private enum KiriMenuBarIcon {
+    static let image: NSImage = {
+        let size = NSSize(width: 18, height: 18)
+        let image = NSImage(size: size, flipped: false) { _ in
+            let center = NSPoint(x: 9, y: 9)
+            let radius: CGFloat = 6.2
+
+            func vertex(_ degrees: CGFloat) -> NSPoint {
+                let radians = degrees * .pi / 180
+                return NSPoint(x: center.x + radius * cos(radians),
+                               y: center.y + radius * sin(radians))
+            }
+
+            let top = vertex(90)
+            let topRight = vertex(30)
+            let bottomRight = vertex(-30)
+            let bottom = vertex(-90)
+            let bottomLeft = vertex(-150)
+            let topLeft = vertex(150)
+
+            func face(_ vertices: [NSPoint], alpha: CGFloat) {
+                let path = NSBezierPath()
+                path.move(to: vertices[0])
+                for vertex in vertices.dropFirst() { path.line(to: vertex) }
+                path.close()
+                NSColor.black.withAlphaComponent(alpha).setFill()
+                path.fill()
+            }
+
+            // Source alpha represents the three light/dark faces. As a template
+            // the artwork remains system black/white without a colored backing.
+            face([top, topRight, bottomRight, center], alpha: 0.95)
+            face([center, bottomRight, bottom, bottomLeft], alpha: 0.62)
+            face([top, center, bottomLeft, topLeft], alpha: 0.38)
+
+            // Cut transparent channels through the actual alpha mask.
+            if let context = NSGraphicsContext.current {
+                let original = context.compositingOperation
+                context.compositingOperation = .destinationOut
+                let gaps = NSBezierPath()
+                gaps.lineWidth = 1.2
+                gaps.lineJoinStyle = .round
+                gaps.lineCapStyle = .round
+                for corner in [top, bottomLeft, bottomRight] {
+                    gaps.move(to: center)
+                    gaps.line(to: corner)
+                }
+                NSColor.black.setStroke()
+                gaps.stroke()
+                context.compositingOperation = original
+            }
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }()
+}
 
 private enum Page: String, CaseIterable, Hashable, Identifiable {
     case overview = "总览"
@@ -17,9 +83,21 @@ private enum Page: String, CaseIterable, Hashable, Identifiable {
     case settings = "Settings"
 
     var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .overview: "虚拟机"
+        case .containers: "容器"
+        case .images: "镜像"
+        case .volumes: "存储卷"
+        case .networks: "网络"
+        case .compose: "Compose"
+        case .builds: "构建"
+        case .settings: "设置"
+        }
+    }
     var symbol: String {
         switch self {
-        case .overview: "square.grid.2x2"
+        case .overview: "cpu"
         case .containers: "shippingbox"
         case .images: "square.stack.3d.up"
         case .volumes: "externaldrive"
@@ -50,13 +128,13 @@ private struct ContainerItem: Decodable, Identifiable {
     var id: String { Id }
     var title: String { Names?.first?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? String(Id.prefix(12)) }
     var composeProject: String? { Labels?["com.docker.compose.project"] }
-    var localPort: Int? { Ports?.first(where: {$0.Type == "tcp" && $0.PublicPort != nil})?.PublicPort }
 }
 
 private struct ImageItem: Decodable, Identifiable {
     let Id: String
     let RepoTags: [String]?
     let Size: Int64?
+    let Created: Int64?
     var id: String { Id }
     var title: String { RepoTags?.first(where: {$0 != "<none>:<none>"}) ?? String(Id.prefix(18)) }
 }
@@ -81,16 +159,69 @@ private struct DockerInfo: Decodable {
     let MemTotal: Int64?
     let Architecture: String?
     let Driver: String?
-    let OperatingSystem: String?
 }
 
 private struct DockerVersion: Decodable {
     let Version: String?
 }
 
+private struct VmResourceSettings: Decodable {
+    let cpus: Int
+    let memory_mib: Int
+    let max_cpus: Int
+    let max_memory_mib: Int
+}
+
 private struct BalloonInfo: Decodable {
+    let vm_memory_ceiling_mib: Int?
     let balloon_target_mib: Int?
     let guest_available_kib: Int?
+    let guest_total_kib: Int?
+}
+
+/// Aggregated from Docker /containers/{id}/stats, read-only and bounded.
+private struct ContainerResourceUsage: Decodable {
+    let cpu_percent: Double?
+    let memory_bytes: Int64?
+    let memory_limit_bytes: Int64?
+    let memory_percent: Double?
+    let net_rx_bytes: Int64?
+    let net_tx_bytes: Int64?
+    let block_read_bytes: Int64?
+    let block_write_bytes: Int64?
+    let pids: Int?
+}
+
+private struct ContainerStatsReply: Decodable {
+    let ok: Bool
+    let stats: [String: ContainerResourceUsage]?
+    let truncated: Bool?
+    let error: String?
+}
+
+/// Typed, read-only Docker inspect payload for the selected container.
+private struct ContainerInspectDetails: Decodable {
+    struct Configuration: Decodable {
+        let Env: [String]?
+        let Image: String?
+        let WorkingDir: String?
+        let User: String?
+    }
+    struct Mount: Decodable, Identifiable {
+        let `Type`: String?
+        let Source: String?
+        let Destination: String?
+        let RW: Bool?
+        var id: String { (Destination ?? "") + "\u{1F}" + (Source ?? "") }
+    }
+    let Config: Configuration?
+    let Mounts: [Mount]?
+}
+private struct ContainerHistoryPoint: Identifiable {
+    let timestamp: Date
+    let cpuPercent: Double?
+    let memoryPercent: Double?
+    var id: Date { timestamp }
 }
 
 private struct Snapshot: Decodable {
@@ -105,12 +236,69 @@ private struct Snapshot: Decodable {
     let version: DockerVersion?
     let memory: BalloonInfo?
     let shares: [String]?
+    let vm_config: VmResourceSettings?
 }
 
 private struct Reply: Decodable {
     let ok: Bool
     let message: String?
     let error: String?
+}
+
+
+/// Matches the four original Kiri container status tabs exactly.
+private enum ContainerFilter: String, CaseIterable, Identifiable {
+    case all = "All", running = "Running", stopped = "Stopped", failed = "Failed"
+    var id: String { rawValue }
+    func includes(_ item: ContainerItem) -> Bool {
+        let state = item.State ?? ""
+        let failed = state == "dead" || state == "removing"
+            || ((item.Status ?? "").range(of: #"^exited \(([1-9][0-9]*)\)"#,
+                  options: [.regularExpression, .caseInsensitive]) != nil)
+        switch self {
+        case .all: return true
+        case .running: return state == "running"
+        case .failed: return failed
+        case .stopped: return state != "running" && !failed
+        }
+    }
+}
+
+private enum KiriPalette {
+    static let blue = Color(red: 13/255, green: 110/255, blue: 253/255)
+    static let mint = Color(red: 63/255, green: 182/255, blue: 139/255)
+    static let red = Color(red: 248/255, green: 113/255, blue: 113/255)
+    static func bg(_ light: Bool) -> Color {
+        light ? Color(red: 249/255, green: 251/255, blue: 253/255)
+              : Color(red: 15/255, green: 20/255, blue: 25/255)
+    }
+    static func panel(_ light: Bool) -> Color {
+        light ? .white : Color(red: 23/255, green: 29/255, blue: 36/255)
+    }
+    static func raised(_ light: Bool) -> Color {
+        light ? Color(red: 232/255, green: 238/255, blue: 245/255)
+              : Color(red: 30/255, green: 37/255, blue: 45/255)
+    }
+    static func border(_ light: Bool) -> Color {
+        light ? Color(red: 207/255, green: 217/255, blue: 227/255)
+              : Color(red: 42/255, green: 49/255, blue: 58/255)
+    }
+    static func muted(_ light: Bool) -> Color {
+        light ? Color(red: 83/255, green: 98/255, blue: 115/255)
+              : Color(red: 152/255, green: 161/255, blue: 172/255)
+    }
+    static func faint(_ light: Bool) -> Color {
+        light ? Color(red: 102/255, green: 117/255, blue: 136/255)
+              : Color(red: 102/255, green: 112/255, blue: 124/255)
+    }
+    static func title(_ light: Bool) -> Color {
+        light ? Color(red: 23/255, green: 33/255, blue: 46/255)
+              : Color(red: 242/255, green: 240/255, blue: 235/255)
+    }
+    static func link(_ light: Bool) -> Color {
+        light ? Color(red: 38/255, green: 114/255, blue: 207/255)
+              : Color(red: 110/255, green: 168/255, blue: 254/255)
+    }
 }
 
 private struct TextResult: Identifiable {
@@ -128,28 +316,9 @@ private enum NativeError: Error, LocalizedError {
     }
 }
 
-/// No shell command, PATH lookup, network listener, environment Docker context
-/// or dynamically selected executable: the signer-verified app's own Rust binary.
+/// Native in-process Docker/VM client. No short-lived Rust subcommand per refresh.
 private func bridge(_ arguments: [String]) throws -> Data {
-    let url = Bundle.main.bundleURL
-        .appendingPathComponent("Contents/MacOS/kiri", isDirectory: false)
-    guard FileManager.default.isExecutableFile(atPath: url.path) else {
-        throw NativeError.malformed("Kiri CLI is missing inside the installed app.")
-    }
-    let process = Process()
-    process.executableURL = url
-    process.arguments = ["moby-native"] + arguments
-    process.standardInput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    try process.run()
-    let bytes = pipe.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
-    guard process.terminationStatus == 0 else {
-        throw NativeError.malformed("Kiri native backend failed (exit \(process.terminationStatus)).")
-    }
-    return bytes
+    try MobyRuntime.request(arguments)
 }
 
 private func request<T: Decodable>(_ args: [String], as: T.Type) throws -> T {
@@ -161,18 +330,65 @@ private func request<T: Decodable>(_ args: [String], as: T.Type) throws -> T {
     }
 }
 
+// CI visual reference only. This code is excluded from release builds.
+// No live Docker access or synthetic data are ever used in a normal App.
+#if KIRI_UI_PREVIEW
+private let uiPreviewJSON = """
+{
+  "online": true,
+  "containers": [
+    {"Id":"a000000000000000","Names":["/nginx"],"Image":"nginx:1.27",
+     "State":"running","Status":"Up 20 minutes","Created":1768900440,
+     "Ports":[{"IP":"0.0.0.0","PrivatePort":80,"PublicPort":8080,"Type":"tcp"}]},
+    {"Id":"b000000000000000","Names":["/redis"],"Image":"redis:7-alpine",
+     "State":"running","Status":"Up 18 minutes","Created":1768900560,
+     "Ports":[{"IP":"0.0.0.0","PrivatePort":6379,"PublicPort":6379,"Type":"tcp"}]},
+    {"Id":"c000000000000000","Names":["/mysql"],"Image":"mysql:8.4",
+     "State":"running","Status":"Up 16 minutes","Created":1768900680,
+     "Ports":[{"IP":"0.0.0.0","PrivatePort":3306,"PublicPort":3306,"Type":"tcp"}]},
+    {"Id":"d000000000000000","Names":["/web"],"Image":"nginx:alpine",
+     "State":"exited","Status":"Exited (0)","Created":1768899300,"Ports":[]}
+  ],
+  "images": [], "volumes": [], "networks": [],
+  "info":{"NCPU":2,"MemTotal":8589934592,"Architecture":"aarch64","Driver":"overlay2"},
+  "version":{"Version":"29.0.0"},
+  "memory":{"vm_memory_ceiling_mib":8192,"balloon_target_mib":4096,
+            "guest_total_kib":8388608,"guest_available_kib":4194304},
+  "vm_config":{"cpus":2,"memory_mib":8192,"max_cpus":10,"max_memory_mib":16384},
+  "shares":[]
+}
+"""
+#endif
+
 @MainActor
 private final class MobyModel: ObservableObject {
     @Published var page: Page = .containers
     @Published var search = ""
     @Published var snapshot: Snapshot?
-    @Published var busy = false
+    @Published private(set) var containerStats: [String: ContainerResourceUsage] = [:]
+    @Published private(set) var statsHistory: [String: [ContainerHistoryPoint]] = [:]
+    @Published private(set) var statsUpdatedAt: Date?
+    @Published private(set) var statsError: String?
+    @Published private(set) var statsTruncated = false
+    private var fetchingStats = false
+    // Keep unrelated Docker operations responsive; only deduplicate identical requests.
+    @Published private(set) var activeOperations = Set<String>()
+    private var vmTransitionInProgress = false
     @Published var error: String?
     @Published var result: TextResult?
+    @Published var operationMessage: String?
+    @Published var toastMessage: String?
+    @Published var toastIsError = false
     @Published var composeFile = ""
     @Published var buildFolder = ""
     @Published var buildTag = ""
     @Published var buildPlatform = "linux/arm64"
+    @Published var resourceCPUs = 4
+    @Published var resourceMemoryMiB = 4096
+    @Published var isLight = true
+    @Published var sidebarCollapsed = false
+    @Published var containerFilter: ContainerFilter = .all
+    @Published var collapsedProjects = Set<String>()
     private var refreshing = false
     private var bootRequested = false
 
@@ -182,16 +398,84 @@ private final class MobyModel: ObservableObject {
     var volumes: [VolumeItem] { snapshot?.volumes ?? [] }
     var networks: [NetworkItem] { snapshot?.networks ?? [] }
     var shares: [String] { snapshot?.shares ?? [] }
+    var resourceEditsPending: Bool {
+        guard let saved = snapshot?.vm_config else { return false }
+        return resourceCPUs != saved.cpus || resourceMemoryMiB != saved.memory_mib
+    }
+    var resourceRestartRequired: Bool {
+        guard online, let saved = snapshot?.vm_config else { return false }
+        // Compare boot-time VM settings, NOT the balloon's live target.
+        guard let actualCPUs = snapshot?.info?.NCPU,
+              let actualMemory = snapshot?.memory?.vm_memory_ceiling_mib else { return false }
+        return actualCPUs != saved.cpus || actualMemory != saved.memory_mib
+    }
+    func saveResources(apply: Bool) {
+        guard let limit = snapshot?.vm_config else {
+            notify("无法读取虚拟机资源限制", error: true)
+            return
+        }
+        guard (1...max(1, limit.max_cpus)).contains(resourceCPUs),
+              (1024...max(1024, limit.max_memory_mib)).contains(resourceMemoryMiB),
+              resourceMemoryMiB % 256 == 0 else {
+            notify("CPU 或内存超出允许范围；内存必须按 256 MiB 调整", error: true)
+            return
+        }
+        perform(["configure", String(resourceCPUs), String(resourceMemoryMiB),
+                 apply ? "apply" : "save"],
+                title: apply ? "Apply VM resources" : "Save VM resources",
+                showResult: false)
+    }
 
     func begin() {
         guard !bootRequested else { return }
         bootRequested = true
+        #if KIRI_UI_PREVIEW
+        if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+            snapshot = try? JSONDecoder().decode(
+                Snapshot.self, from: Data(uiPreviewJSON.utf8))
+            // Screenshot-only sample telemetry. Never bundled in production.
+            containerStats = [
+                "a000000000000000": ContainerResourceUsage(
+                    cpu_percent: 2.4, memory_bytes: 58 * 1024 * 1024,
+                    memory_limit_bytes: 512 * 1024 * 1024, memory_percent: 11.3,
+                    net_rx_bytes: 15 * 1024 * 1024, net_tx_bytes: 360 * 1024,
+                    block_read_bytes: 8 * 1024 * 1024,
+                    block_write_bytes: 640 * 1024, pids: 4),
+                "b000000000000000": ContainerResourceUsage(
+                    cpu_percent: 0.7, memory_bytes: 24 * 1024 * 1024,
+                    memory_limit_bytes: 256 * 1024 * 1024, memory_percent: 9.4,
+                    net_rx_bytes: 2 * 1024 * 1024, net_tx_bytes: 960 * 1024,
+                    block_read_bytes: 3 * 1024 * 1024,
+                    block_write_bytes: 512 * 1024, pids: 6),
+                "c000000000000000": ContainerResourceUsage(
+                    cpu_percent: 8.9, memory_bytes: 428 * 1024 * 1024,
+                    memory_limit_bytes: 1024 * 1024 * 1024, memory_percent: 41.8,
+                    net_rx_bytes: 18 * 1024 * 1024, net_tx_bytes: 7 * 1024 * 1024,
+                    block_read_bytes: 120 * 1024 * 1024,
+                    block_write_bytes: 31 * 1024 * 1024, pids: 28)
+            ]
+            statsUpdatedAt = .now
+            statsHistory["a000000000000000"] = (0..<60).map { index in
+                ContainerHistoryPoint(
+                    timestamp: Date().addingTimeInterval(Double(index - 59) * 5),
+                    cpuPercent: 1.1 + Double((index * 7) % 15) / 3,
+                    memoryPercent: 9.0 + Double((index * 3) % 10) / 4)
+            }
+            isLight = true
+            return
+        }
+        #endif
         refresh()
-        // Idempotent: if the VM is already online, Rust start_vm() is a no-op.
+        // Idempotent: a running private Docker VM is reused, never started twice.
         perform(["start"], title: "Start VM", showResult: false)
     }
 
     func refresh() {
+        #if KIRI_UI_PREVIEW
+        if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+            return
+        }
+        #endif
         guard !refreshing else { return }
         refreshing = true
         Task {
@@ -200,31 +484,141 @@ private final class MobyModel: ObservableObject {
             }.value
             refreshing = false
             switch answer {
-            case .success(let value): snapshot = value
+            case .success(let value):
+                // Preserve unsaved edits while polling other Docker state.
+                if let config = value.vm_config {
+                    let previous = snapshot?.vm_config
+                    let hasUnsavedEdits = previous.map {
+                        resourceCPUs != $0.cpus || resourceMemoryMiB != $0.memory_mib
+                    } ?? false
+                    if !hasUnsavedEdits {
+                        resourceCPUs = config.cpus
+                        resourceMemoryMiB = config.memory_mib
+                    }
+                }
+                snapshot = value
+                if value.online != true {
+                    containerStats = [:]
+                    statsUpdatedAt = nil
+                    statsError = nil
+                    statsTruncated = false
+                }
             case .failure(let failure): error = failure.localizedDescription
             }
         }
     }
 
+    /// Refresh CPU/RAM/IO independently from snapshot so Docker container
+    /// management and status badges remain responsive during stats sampling.
+    func refreshContainerStats() {
+        #if KIRI_UI_PREVIEW
+        if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+            return
+        }
+        #endif
+        guard !fetchingStats, online,
+              page == .containers || page == .compose else { return }
+        fetchingStats = true
+        Task {
+            let answer = await Task.detached(priority: .utility) {
+                Result { try request(["stats"], as: ContainerStatsReply.self) }
+            }.value
+            fetchingStats = false
+            guard online else {
+                containerStats = [:]
+                statsHistory = [:]
+                statsUpdatedAt = nil
+                return
+            }
+            switch answer {
+            case .success(let reply):
+                if reply.ok {
+                    // Replace the entire set each round, including evicting stopped
+                    // and deleted containers. Never display a stale live CPU rate.
+                    containerStats = reply.stats ?? [:]
+                    let now = Date()
+                    statsHistory = statsHistory.filter { containerStats[$0.key] != nil }
+                    for (id, stats) in containerStats {
+                        guard stats.cpu_percent != nil || stats.memory_percent != nil else { continue }
+                        var points = statsHistory[id] ?? []
+                        points.append(ContainerHistoryPoint(
+                            timestamp: now, cpuPercent: stats.cpu_percent,
+                            memoryPercent: stats.memory_percent))
+                        if points.count > 60 { points.removeFirst(points.count - 60) }
+                        statsHistory[id] = points
+                    }
+                    statsUpdatedAt = .now
+                    statsTruncated = reply.truncated ?? false
+                    statsError = nil
+                } else {
+                    statsError = reply.error ?? "容器资源读取失败"
+                    containerStats = [:]
+                    statsUpdatedAt = nil
+                }
+            case .failure(let failure):
+                statsError = failure.localizedDescription
+                containerStats = [:]
+                statsUpdatedAt = nil
+            }
+        }
+    }
+
+    // Legacy Moby UI showed long text in an in-window modal, and normal
+    // Docker operation notifications as non-blocking temporary toasts.
+    func notify(_ message: String, error: Bool = false) {
+        toastMessage = message
+        toastIsError = error
+        Task {
+            try? await Task.sleep(for: .seconds(6.5))
+            if toastMessage == message { toastMessage = nil }
+        }
+    }
+
     func perform(_ args: [String], title: String, showResult: Bool = true) {
-        guard !busy else { return }
-        busy = true
+        #if KIRI_UI_PREVIEW
+        if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+            notify("CI 布局预览，不会执行实际 Docker 操作")
+            return
+        }
+        #endif
+        let operationKey = args.joined(separator: "\u{1F}")
+        let vmTransition = args.first == "start" || args.first == "stop"
+            || args.first == "restart" || (args.first == "configure" && args.last == "apply")
+        guard !activeOperations.contains(operationKey) else {
+            notify("\(title): 操作正在执行，请稍候")
+            return
+        }
+        guard !vmTransition || !vmTransitionInProgress else {
+            notify("VM 正在切换状态，请等待完成")
+            return
+        }
+        activeOperations.insert(operationKey)
+        operationMessage = title
+        if vmTransition { vmTransitionInProgress = true }
         Task {
             let answer = await Task.detached(priority: .userInitiated) {
                 Result { try request(args, as: Reply.self) }
             }.value
-            busy = false
+            activeOperations.remove(operationKey)
+            if activeOperations.isEmpty { operationMessage = nil }
+            if vmTransition { vmTransitionInProgress = false }
             switch answer {
             case .success(let reply):
                 if reply.ok {
-                    if showResult {
+                    let detailLabels: Set<String> = [
+                        "inspect", "logs", "exec", "compose_logs", "compose_ps",
+                        "compose_up", "compose_down", "build"
+                    ]
+                    if showResult && detailLabels.contains(title) {
                         result = TextResult(title: title, body: reply.message ?? "完成")
+                    } else {
+                        notify("\(title): \(reply.message ?? "完成")")
                     }
                 } else {
-                    error = reply.error ?? "\(title) failed"
+                    notify("\(title): \(reply.error ?? "失败")", error: true)
                 }
             case .failure(let failure):
-                error = failure.localizedDescription
+                notify("\(title): \(failure.localizedDescription)", error: true)
             }
             refresh()
         }
@@ -264,14 +658,6 @@ private final class MobyModel: ObservableObject {
         return value.isEmpty ? nil : value
     }
 
-    func chooseFile() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.yaml, .init(filenameExtension: "yml")!]
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        if panel.runModal() == .OK, let url = panel.url { composeFile = url.path }
-    }
-
     func chooseBuildFolder() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -301,73 +687,1623 @@ private func sizeLabel(_ value: Int64?) -> String {
     return String(format: index == 0 ? "%.0f %@" : "%.1f %@", scaled, sizes[index])
 }
 
-private struct RootView: View {
-    @EnvironmentObject private var model: MobyModel
-    var body: some View {
-        NavigationSplitView {
-            List(Page.allCases, selection: $model.page) { page in
-                Label(page.rawValue, systemImage: page.symbol).tag(page)
-                    .padding(.vertical, 5)
+/// Render registry / namespace in secondary gray, identity in primary ink,
+/// and the image tag in secondary gray without splitting the row into columns.
+private func styledImageName(_ raw: String) -> Text {
+    let slash = raw.lastIndex(of: "/")
+    let colon = raw.lastIndex(of: ":")
+    let tagIndex: String.Index? = {
+        guard let colon, slash == nil || colon > slash! else { return nil }
+        return colon
+    }()
+    let repository = tagIndex.map { String(raw[..<$0]) } ?? raw
+    let tag = tagIndex.map { String(raw[$0...]) } ?? ""
+    if let separator = repository.lastIndex(of: "/") {
+        let prefix = String(repository[...separator])
+        let name = String(repository[repository.index(after: separator)...])
+        return Text(prefix).foregroundColor(.secondary)
+            + Text(name).foregroundColor(.primary)
+            + Text(tag).foregroundColor(.secondary)
+    }
+    return Text(repository).foregroundColor(.primary)
+        + Text(tag).foregroundColor(.secondary)
+}
+
+// A separate native log window, matching the reference's floating black console.
+// This uses bounded polling over Kiri's private backend; it does not claim a
+// Docker streaming connection when the transport is actually snapshot-based.
+@MainActor
+private final class ContainerLogSession: ObservableObject {
+    @Published var content = ""
+    @Published var following = true
+    @Published var tailLines = 1000
+    @Published var error: String?
+    private var previousSnapshot = ""
+    private var refreshing = false
+
+    func clear() {
+        // Retain the previous snapshot so old lines do not reappear on poll.
+        content = ""
+    }
+
+    func refresh(containerID: String) async {
+        #if KIRI_UI_PREVIEW
+        if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+            if !content.isEmpty { return }
+            content = """
+            2026-01-20 10:14:32 [notice] nginx/1.27.2
+            2026-01-20 10:14:32 [notice] built with OpenSSL 3.3
+            2026-01-20 10:14:32 [notice] using the "epoll" event method
+            2026-01-20 10:14:32 [notice] start worker processes
+            2026-01-20 10:14:32 [notice] start worker process 29
+            2026-01-20 10:14:32 [notice] start worker process 30
+            2026-01-20 10:14:32 [notice] start worker process 31
+            2026-01-20 10:16:08 172.17.0.1 - - "GET / HTTP/1.1" 200
+            2026-01-20 10:16:08 172.17.0.1 - - "GET /favicon.ico" 404
+            """
+            return
+        }
+        #endif
+        guard !refreshing, following else { return }
+        refreshing = true
+        defer { refreshing = false }
+        let input = ["action": "logs", "id": containerID,
+                     "tail": String(tailLines)]
+        guard let json = try? JSONSerialization.data(withJSONObject: input),
+              let encoded = String(data: json, encoding: .utf8) else {
+            error = "无法编码日志请求"
+            return
+        }
+        let answer = await Task.detached(priority: .utility) {
+            Result { try request(["action", encoded], as: Reply.self) }
+        }.value
+        switch answer {
+        case .success(let reply):
+            guard reply.ok else {
+                error = reply.error ?? "读取日志失败"
+                return
             }
-            .navigationSplitViewColumnWidth(min: 190, ideal: 215, max: 250)
-            .listStyle(.sidebar)
-        } detail: {
-            VStack(spacing: 0) {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(model.page.rawValue).font(.title2.bold())
-                        Text(model.online ? "Docker Engine 已连接" : "Moby VM 未连接")
-                            .font(.caption).foregroundStyle(.secondary)
+            error = nil
+            let next = reply.message ?? ""
+            if next == previousSnapshot { return }
+            if next.hasPrefix(previousSnapshot) {
+                content += String(next.dropFirst(previousSnapshot.count))
+            } else {
+                content = next
+            }
+            previousSnapshot = next
+            if content.count > 240_000 {
+                content.removeFirst(content.count - 240_000)
+            }
+        case .failure(let failure):
+            error = failure.localizedDescription
+        }
+    }
+}
+
+/// NSTextView keeps the native find bar, selection and text system and can
+/// apply deltas without rebuilding a SwiftUI Text layout on each log update.
+private struct NativeLogTextView: NSViewRepresentable {
+    @Environment(\.colorScheme) private var colorScheme
+    let content: String
+    let following: Bool
+
+    final class Coordinator {
+        var rendered = ""
+    }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroller = NSScrollView()
+        scroller.hasVerticalScroller = true
+        scroller.hasHorizontalScroller = true
+        scroller.autohidesScrollers = true
+        scroller.drawsBackground = true
+        scroller.backgroundColor = ConsoleAppearance.canvasNS(colorScheme)
+        let view = NSTextView(frame: .zero)
+        view.isEditable = false
+        view.isSelectable = true
+        view.isRichText = false
+        view.usesFindBar = true
+        view.isAutomaticQuoteSubstitutionEnabled = false
+        view.isAutomaticDashSubstitutionEnabled = false
+        view.isAutomaticTextReplacementEnabled = false
+        view.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        view.textColor = ConsoleAppearance.foregroundNS(colorScheme)
+        view.backgroundColor = scroller.backgroundColor
+        view.textContainerInset = NSSize(width: 12, height: 10)
+        view.isHorizontallyResizable = true
+        view.isVerticallyResizable = true
+        view.autoresizingMask = [.width]
+        view.textContainer?.widthTracksTextView = false
+        view.textContainer?.containerSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude)
+        scroller.documentView = view
+        return scroller
+    }
+    func updateNSView(_ scroller: NSScrollView, context: Context) {
+        guard let view = scroller.documentView as? NSTextView else { return }
+        let foreground = ConsoleAppearance.foregroundNS(colorScheme)
+        let background = ConsoleAppearance.canvasNS(colorScheme)
+        scroller.backgroundColor = background
+        view.backgroundColor = background
+        view.textColor = foreground
+        guard let storage = view.textStorage else { return }
+        storage.addAttribute(.foregroundColor, value: foreground,
+                             range: NSRange(location: 0, length: storage.length))
+        let previous = context.coordinator.rendered
+        guard previous != content else { return }
+        if content.hasPrefix(previous) {
+            let suffix = String(content.dropFirst(previous.count))
+            storage.append(NSAttributedString(string: suffix, attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                .foregroundColor: foreground
+            ]))
+        } else {
+            storage.setAttributedString(NSAttributedString(string: content, attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                .foregroundColor: foreground
+            ]))
+        }
+        context.coordinator.rendered = content
+        if following {
+            view.scrollRangeToVisible(NSRange(location: storage.length, length: 0))
+        }
+    }
+}
+
+/// Console colors follow the system appearance, including live appearance changes.
+private enum ConsoleAppearance {
+    // A cool, high-contrast terminal surface without forcing system dark mode.
+    static func canvas(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(red: 24 / 255, green: 24 / 255, blue: 27 / 255)
+                        : Color(red: 246 / 255, green: 248 / 255, blue: 250 / 255)
+    }
+    static func toolbar(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(red: 30 / 255, green: 30 / 255, blue: 34 / 255)
+                        : .white
+    }
+    static func foreground(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(white: 0.88)
+                        : Color(red: 31 / 255, green: 35 / 255, blue: 40 / 255)
+    }
+    static func canvasNS(_ scheme: ColorScheme) -> NSColor {
+        scheme == .dark ? NSColor(calibratedRed: 24 / 255, green: 24 / 255,
+                                  blue: 27 / 255, alpha: 1)
+                        : NSColor(calibratedRed: 246 / 255, green: 248 / 255,
+                                  blue: 250 / 255, alpha: 1)
+    }
+    static func foregroundNS(_ scheme: ColorScheme) -> NSColor {
+        scheme == .dark ? NSColor(calibratedWhite: 0.88, alpha: 1)
+                        : NSColor(calibratedRed: 31 / 255, green: 35 / 255,
+                                  blue: 40 / 255, alpha: 1)
+    }
+}
+private enum ConsoleCommand: String {
+    case copy, clear, interrupt, toggleFollow
+    case last200, last1000, last5000
+}
+private let consoleCommandNotification = Notification.Name("dev.kiri.moby.console.action")
+
+private struct ContainerLogWindow: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @StateObject private var session = ContainerLogSession()
+    let containerID: String
+    let containerName: String
+
+    var body: some View {
+        NativeLogTextView(content: session.content, following: session.following)
+            .frame(minHeight: 150)
+            .background(ConsoleAppearance.canvas(colorScheme))
+            .task(id: session.tailLines) {
+                while !Task.isCancelled {
+                    if session.following {
+                        await session.refresh(containerID: containerID)
                     }
-                    Spacer()
-                    if let balloon = model.snapshot?.memory?.balloon_target_mib {
-                        Label("\(balloon) MiB", systemImage: "memorychip")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    TextField("搜索", text: $model.search)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 180)
-                        .disabled([Page.settings, .compose, .builds].contains(model.page))
-                    if model.busy { ProgressView().controlSize(.small) }
-                    Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                        .help("刷新")
-                    Button {
-                        if model.online && !model.confirm("停止 VM？", detail: "正在运行的容器也会停止。") { return }
-                        model.perform([model.online ? "stop" : "start"],
-                                      title: model.online ? "Stop VM" : "Start VM", showResult: false)
-                    } label: {
-                        Image(systemName: model.online ? "stop.fill" : "play.fill")
-                    }
-                    .help(model.online ? "停止 VM" : "启动 VM")
+                    do { try await Task.sleep(for: .seconds(2)) }
+                    catch { break }
                 }
-                .padding(.horizontal, 22)
-                .padding(.vertical, 14)
-                Divider()
-                Group {
-                    if !model.online && ![Page.settings, .overview].contains(model.page) {
-                        ContentUnavailableView("Moby VM 未连接",
-                            systemImage: "shippingbox",
-                            description: Text("启动标准 Docker Engine 后显示容器、镜像和数据卷"))
-                            .overlay(alignment: .bottom) {
-                                Button("启动 VM") {
-                                    model.perform(["start"], title: "Start VM", showResult: false)
-                                }.buttonStyle(.borderedProminent).padding(.bottom, 70)
-                            }
-                    } else {
-                        content
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: consoleCommandNotification)) { notification in
+                guard notification.object as? String == "logs:" + containerID,
+                      let action = notification.userInfo?["action"] as? String,
+                      let command = ConsoleCommand(rawValue: action) else { return }
+                switch command {
+                case .copy:
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(session.content, forType: .string)
+                case .clear: session.clear()
+                case .toggleFollow: session.following.toggle()
+                case .last200: session.tailLines = 200
+                case .last1000: session.tailLines = 1000
+                case .last5000: session.tailLines = 5000
+                case .interrupt: break
+                }
+            }
+    }
+}
+
+// Screenshot-only content. This block does not exist in the production build.
+#if KIRI_UI_PREVIEW
+private let previewTerminalOutput = """
+/ # cat /etc/os-release
+PRETTY_NAME="Alpine Linux v3.19"
+NAME="Alpine Linux"
+VERSION_ID="3.19.1"
+ID=alpine
+HOME_URL="https://alpinelinux.org/"
+
+/ # ls -l /var/log
+total 8
+-rw-r--r-- 1 root root 615 Jan 20 10:14 access.log
+-rw-r--r-- 1 root root 615 Jan 20 10:14 error.log
+
+/ #
+"""
+#endif
+
+#if canImport(SwiftTerm)
+@MainActor
+private final class SwiftTermTerminalControls: ObservableObject {
+    weak var terminal: LocalProcessTerminalView?
+    func interrupt() { terminal?.process.send(data: [0x03][...]) }
+    func copy() { terminal?.copy(self) }
+    func clear() { terminal?.feed(byteArray: Array("\u{001B}[2J\u{001B}[H".utf8)[...]) }
+}
+
+// SwiftTerm's LocalProcessTerminalView owns the PTY, UTF-8/ANSI parser,
+// keyboard handling and resize/SIGWINCH. The child is the bundled official
+// Docker CLI, pinned to Kiri's private socket instead of the user's context.
+private struct NativeSwiftTermExecView: NSViewRepresentable {
+    @Environment(\.colorScheme) private var colorScheme
+    let containerID: String
+    @ObservedObject var controls: SwiftTermTerminalControls
+
+    func makeNSView(context: Context) -> LocalProcessTerminalView {
+        let view = LocalProcessTerminalView(frame: .zero)
+        view.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        view.nativeBackgroundColor = ConsoleAppearance.canvasNS(colorScheme)
+        view.nativeForegroundColor = ConsoleAppearance.foregroundNS(colorScheme)
+        controls.terminal = view
+        let cli = MobyPaths.docker.path
+        guard FileManager.default.isExecutableFile(atPath: cli) else {
+            view.feed(byteArray: Array("内置 Docker CLI 不存在：\(cli)\r\n".utf8)[...])
+            return view
+        }
+        let env = MobyRuntime.terminalEnvironment()
+        let environment = env.map { "\($0.key)=\($0.value)" }.sorted()
+        view.startProcess(executable: cli,
+                          args: ["exec", "-it", containerID, "/bin/sh"],
+                          environment: environment)
+        return view
+    }
+    func updateNSView(_ view: LocalProcessTerminalView, context: Context) {
+        view.nativeBackgroundColor = ConsoleAppearance.canvasNS(colorScheme)
+        view.nativeForegroundColor = ConsoleAppearance.foregroundNS(colorScheme)
+    }
+    static func dismantleNSView(_ view: LocalProcessTerminalView, coordinator: ()) {
+        view.terminate()
+    }
+}
+#endif
+
+private struct ExecTerminalView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    #if canImport(SwiftTerm)
+    @StateObject private var swiftTermControls = SwiftTermTerminalControls()
+    #endif
+    let containerID: String
+    let containerName: String
+
+    var body: some View {
+        Group {
+            #if KIRI_UI_PREVIEW
+            // CI captures the appearance without launching Docker or a PTY.
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(Array(previewTerminalOutput.components(separatedBy: "\n").enumerated()),
+                            id: \.offset) { _, line in
+                        if line.hasPrefix("/ #") {
+                            (Text("/ #").foregroundColor(Color(red: 0 / 255, green: 128 / 255, blue: 145 / 255))
+                             + Text(String(line.dropFirst(3)))
+                                .foregroundColor(ConsoleAppearance.foreground(colorScheme)))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            Text(line.isEmpty ? " " : line)
+                                .foregroundStyle(ConsoleAppearance.foreground(colorScheme))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .font(.system(size: 12, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+            #elseif canImport(SwiftTerm)
+            NativeSwiftTermExecView(containerID: containerID,
+                                    controls: swiftTermControls)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .frame(minHeight: 150)
+            #else
+            ContentUnavailableView("终端不可用", systemImage: "terminal",
+                                   description: Text("此构建未包含 SwiftTerm；请使用正式 Kiri Moby 应用。"))
+            #endif
+        }
+        .frame(minHeight: 155)
+        .background(ConsoleAppearance.canvas(colorScheme))
+        .onReceive(NotificationCenter.default.publisher(
+            for: consoleCommandNotification)) { notification in
+            guard notification.object as? String == "exec:" + containerID,
+                  let action = notification.userInfo?["action"] as? String,
+                  let command = ConsoleCommand(rawValue: action) else { return }
+            switch command {
+            case .copy:
+                #if KIRI_UI_PREVIEW
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(previewTerminalOutput, forType: .string)
+                #elseif canImport(SwiftTerm)
+                swiftTermControls.copy()
+                #endif
+            case .clear:
+                #if canImport(SwiftTerm) && !KIRI_UI_PREVIEW
+                swiftTermControls.clear()
+                #endif
+            case .interrupt:
+                #if canImport(SwiftTerm) && !KIRI_UI_PREVIEW
+                swiftTermControls.interrupt()
+                #endif
+            case .toggleFollow, .last200, .last1000, .last5000:
+                break
             }
         }
-        .navigationSplitViewStyle(.balanced)
-        .frame(minWidth: 800, minHeight: 540)
+    }
+}
+
+/// The table must stay one-line-dense: network and block I/O live in a
+/// dedicated native popover instead of tiny 9pt numbers in every cell.
+private struct CompactContainerMetrics: View {
+    let stats: ContainerResourceUsage
+    let isLight: Bool
+    @State private var showingDetails = false
+
+    private var cpuText: String {
+        stats.cpu_percent.map { String(format: "%.1f%%", $0) } ?? "—"
+    }
+    private var memoryText: String {
+        sizeLabel(stats.memory_bytes) + " / " + sizeLabel(stats.memory_limit_bytes)
+    }
+    private var fraction: CGFloat {
+        CGFloat(min(1, max(0, (stats.memory_percent ?? 0) / 100)))
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 7) {
+                Text("CPU")
+                    .foregroundStyle(KiriPalette.muted(isLight))
+                Text(cpuText)
+                    .fontWeight(.medium)
+                    .monospacedDigit()
+                Spacer(minLength: 4)
+                Text("内存")
+                    .foregroundStyle(KiriPalette.muted(isLight))
+                Text(sizeLabel(stats.memory_bytes))
+                    .fontWeight(.medium)
+                    .monospacedDigit()
+                Button { showingDetails.toggle() } label: {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16, height: 18)
+                }
+                .buttonStyle(.plain)
+                .help("查看网络、磁盘 I/O、进程数及内存限制")
+                .popover(isPresented: $showingDetails, arrowEdge: .trailing) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("容器资源详情").font(.headline)
+                        Divider()
+                        LabeledContent("CPU 使用率", value: cpuText)
+                        LabeledContent("内存工作集", value: memoryText)
+                        LabeledContent("内存占比", value:
+                            stats.memory_percent.map { String(format: "%.1f%%", $0) } ?? "—")
+                        Divider()
+                        LabeledContent("网络接收（累计）", value: sizeLabel(stats.net_rx_bytes))
+                        LabeledContent("网络发送（累计）", value: sizeLabel(stats.net_tx_bytes))
+                        LabeledContent("磁盘读取（累计）", value: sizeLabel(stats.block_read_bytes))
+                        LabeledContent("磁盘写入（累计）", value: sizeLabel(stats.block_write_bytes))
+                        LabeledContent("进程数", value: stats.pids.map(String.init) ?? "—")
+                    }
+                    .padding(16)
+                    .frame(width: 300)
+                }
+            }
+            .font(.system(size: 11, design: .rounded))
+            .lineLimit(1)
+            GeometryReader { proxy in
+                Capsule()
+                    .fill(KiriPalette.raised(isLight))
+                    .overlay(alignment: .leading) {
+                        Capsule()
+                            .fill(fraction > 0.85 ? Color.orange : KiriPalette.blue)
+                            .frame(width: proxy.size.width * fraction)
+                    }
+            }
+            .frame(height: 3)
+        }
+        .foregroundStyle(KiriPalette.title(isLight))
+        .padding(.vertical, 2)
+        .help("CPU \(cpuText)，内存 \(memoryText)；点击 ⓘ 查看 I/O")
+    }
+}
+
+private struct ConsoleSession: Codable, Hashable, Identifiable {
+    enum Kind: String, Codable { case exec, logs }
+    let kind: Kind
+    let containerID: String
+    let name: String
+    var id: String { kind.rawValue + ":" + containerID }
+    var label: String {
+        (kind == .exec ? "Exec" : "日志") + ": " + name
+    }
+}
+
+/// Native macOS tabbing applies only to real secondary windows, not an
+/// artificial set of traffic lights inside the workspace.
+private final class NativeTabbedWindowAnchor: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.tabbingMode = .preferred
+        window?.tabbingIdentifier = "dev.kiri.moby.container-console"
+    }
+}
+private struct WindowTabbingConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NativeTabbedWindowAnchor {
+        NativeTabbedWindowAnchor(frame: .zero)
+    }
+    func updateNSView(_ view: NativeTabbedWindowAnchor, context: Context) {
+        view.window?.tabbingMode = .preferred
+    }
+}
+
+private struct DetachedConsoleView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let session: ConsoleSession
+    @State private var logFollowing = true
+
+    private func command(_ kind: ConsoleCommand) {
+        NotificationCenter.default.post(name: consoleCommandNotification,
+            object: session.id, userInfo: ["action": kind.rawValue])
+    }
+
+    var body: some View {
+        Group {
+            if session.kind == .exec {
+                ExecTerminalView(containerID: session.containerID, containerName: session.name)
+            } else {
+                ContainerLogWindow(containerID: session.containerID, containerName: session.name)
+            }
+        }
+        .frame(minWidth: 450, minHeight: 220)
+        .background(ConsoleAppearance.canvas(colorScheme))
+        .background(WindowTabbingConfigurator())
+        .navigationTitle(session.label)
+        .toolbar {
+            ToolbarItemGroup(placement: .automatic) {
+                if session.kind == .logs {
+                    Button {
+                        logFollowing.toggle()
+                        command(.toggleFollow)
+                    } label: {
+                        Label(logFollowing ? "暂停跟随" : "实时跟随",
+                              systemImage: logFollowing ? "pause.fill" : "play.fill")
+                    }
+                    Menu {
+                        Button("最近 200 行") { command(.last200) }
+                        Button("最近 1,000 行") { command(.last1000) }
+                        Button("最近 5,000 行") { command(.last5000) }
+                    } label: {
+                        Label("日志范围", systemImage: "line.3.horizontal.decrease")
+                    }
+                }
+                Button { command(.copy) } label: {
+                    Label("复制", systemImage: "doc.on.doc")
+                }
+                Button { command(.clear) } label: {
+                    Label("清屏", systemImage: "paintbrush")
+                }
+                if session.kind == .exec {
+                    Button { command(.interrupt) } label: {
+                        Label("中断", systemImage: "stop.fill")
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Simple SwiftUI history trace; the backend samples every five seconds,
+/// so there is no fake history until actual Docker stats arrive.
+// Shared grouped surface. A macOS control background is intentionally
+// subtle; no Web-style thick borders or dead-white standalone cards.
+private struct ModernInspectorCard<Content: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let content: Content
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) { content }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 13)
+            .background(colorScheme == .light ? Color.white
+                                               : Color(nsColor: .controlBackgroundColor),
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+            }
+            .shadow(color: .black.opacity(0.03), radius: 4, x: 0, y: 1)
+    }
+}
+
+// Swift Charts: a quiet, gridless line with native gradient area.
+// Points are the real 5-second Docker stats history (max 60 values).
+private struct InspectorAreaChart: View {
+    let points: [ContainerHistoryPoint]
+    let cpu: Bool
+    let accent: Color
+
+    private var ceiling: Double {
+        let values = points.compactMap { cpu ? $0.cpuPercent : $0.memoryPercent }
+        let peak = values.max() ?? 0
+        return min(100.0, max(peak * 1.45, cpu ? 10.0 : 15.0))
+    }
+
+    #if KIRI_UI_PREVIEW
+    // GitHub's hosted Intel CI macOS runner has no compatible Metal device.
+    // In screenshots only, draw the identical gradient trace using CoreGraphics
+    // paths. The production .app uses real Swift Charts below.
+    private func trace(in size: CGSize) -> Path {
+        // Quadratic midpoint interpolation keeps the non-Metal screenshot
+        // renderer smooth without altering the underlying Docker samples.
+        let samples: [CGPoint] = points.enumerated().compactMap { index, point in
+            guard let value = cpu ? point.cpuPercent : point.memoryPercent else {
+                return nil
+            }
+            let x = CGFloat(index) / CGFloat(max(1, points.count - 1)) * size.width
+            let y = size.height * CGFloat(1 - min(ceiling, max(0, value)) / ceiling)
+            return CGPoint(x: x, y: y)
+        }
+        var path = Path()
+        guard let first = samples.first else { return path }
+        path.move(to: first)
+        if samples.count > 1 {
+            for index in 1..<samples.count {
+                let previous = samples[index - 1]
+                let current = samples[index]
+                let midpoint = CGPoint(x: (previous.x + current.x) / 2,
+                                       y: (previous.y + current.y) / 2)
+                path.addQuadCurve(to: midpoint, control: previous)
+            }
+            if let last = samples.last {
+                path.addQuadCurve(to: last, control: last)
+            }
+        }
+        return path
+    }
+
+    private func area(in size: CGSize) -> Path {
+        var path = trace(in: size)
+        path.addLine(to: CGPoint(x: size.width, y: size.height))
+        path.addLine(to: CGPoint(x: 0, y: size.height))
+        path.closeSubpath()
+        return path
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                area(in: geometry.size)
+                    .fill(LinearGradient(
+                        colors: [accent.opacity(0.18), accent.opacity(0)],
+                        startPoint: .top, endPoint: .bottom))
+                trace(in: geometry.size)
+                    .stroke(accent, style: StrokeStyle(
+                        lineWidth: 1.75, lineCap: .round, lineJoin: .round))
+            }
+        }
+        .frame(height: 34)
+        .accessibilityLabel(cpu ? "CPU 使用历史曲线" : "内存占比历史曲线")
+    }
+    #else
+    var body: some View {
+        Chart(points) { point in
+            if let percent = cpu ? point.cpuPercent : point.memoryPercent {
+                AreaMark(
+                    x: .value("时间", point.timestamp),
+                    yStart: .value("基线", 0),
+                    yEnd: .value("使用率", percent))
+                    .interpolationMethod(.catmullRom)
+                    .foregroundStyle(LinearGradient(
+                        colors: [accent.opacity(0.18), accent.opacity(0.0)],
+                        startPoint: .top, endPoint: .bottom))
+                LineMark(
+                    x: .value("时间", point.timestamp),
+                    y: .value("使用率", percent))
+                    .interpolationMethod(.catmullRom)
+                    .lineStyle(StrokeStyle(lineWidth: 1.75, lineCap: .round))
+                    .foregroundStyle(accent)
+            }
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .chartYScale(domain: 0...ceiling)
+        .frame(height: 34)
+        .accessibilityLabel(cpu ? "CPU 使用历史曲线" : "内存占比历史曲线")
+    }
+    #endif
+}
+
+private struct InspectorMetricTile: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let title: String
+    let value: String
+    let points: [ContainerHistoryPoint]
+    let cpu: Bool
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.system(size: 10.5)).foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+            InspectorAreaChart(points: points, cpu: cpu, accent: accent)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(9)
+        .background(colorScheme == .light
+                    ? Color(red: 248 / 255, green: 249 / 255, blue: 251 / 255)
+                    : Color(nsColor: .controlBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+        }
+    }
+}
+
+// Click the tag to copy its fully qualified path / port. The glyph appears
+// on hover, so read-only metadata does not look like a row of admin buttons.
+private struct CopyableInspectorTag: View {
+    let text: String
+    let copyValue: String
+    @State private var hovered = false
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(copyValue, forType: .string)
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(text)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 1)
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 10))
+                    .opacity(hovered ? 0.7 : 0)
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background(Color.primary.opacity(hovered ? 0.085 : 0.045),
+                        in: RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .help("点击复制：" + copyValue)
+        .onHover { hovered = $0 }
+    }
+}
+
+private struct InspectorEnvironmentRow: View {
+    let entry: String
+    @State private var revealed = false
+
+    private var key: String {
+        guard let separator = entry.firstIndex(of: "=") else { return entry }
+        return String(entry[..<separator])
+    }
+    private var value: String {
+        guard let separator = entry.firstIndex(of: "=") else { return "" }
+        return String(entry[entry.index(after: separator)...])
+    }
+    private var sensitive: Bool {
+        let name = key.uppercased()
+        return ["PASSWORD", "PASSWD", "SECRET", "TOKEN", "KEY",
+                "AUTH", "CREDENTIAL", "PRIVATE"].contains { name.contains($0) }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 7) {
+            Text(key)
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 104, alignment: .leading)
+                .lineLimit(2)
+            Text(sensitive && !revealed ? "••••••••" : value)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.primary)
+                .lineLimit(3)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if sensitive {
+                Button {
+                    revealed.toggle()
+                } label: {
+                    Image(systemName: revealed ? "eye.slash" : "eye")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help(revealed ? "隐藏此变量" : "仅显示此变量")
+                .accessibilityLabel(revealed ? "隐藏 \(key)" : "显示 \(key)")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ModernInspectorView: View {
+    @EnvironmentObject private var model: MobyModel
+    let item: ContainerItem?
+    let onAction: (String, ContainerItem) -> Void
+    @State private var inspection: ContainerInspectDetails?
+    @State private var inspectionError: String?
+    @State private var loading = false
+
+    private func load(_ id: String) async {
+        inspection = nil
+        inspectionError = nil
+        loading = true
+        defer { loading = false }
+        #if KIRI_UI_PREVIEW
+        if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+            let preview = """
+            {"Config":{"Env":["NGINX_VERSION=1.27.2","APP_ENV=production",
+            "API_TOKEN=redacted-preview"],"WorkingDir":"/etc/nginx","User":""},
+            "Mounts":[{"Type":"bind","Source":"/Users/demo/site",
+            "Destination":"/srv/project","RW":false}]}
+            """
+            inspection = try? JSONDecoder().decode(
+                ContainerInspectDetails.self, from: Data(preview.utf8))
+            return
+        }
+        #endif
+        guard let encodedData = try? JSONSerialization.data(withJSONObject: [
+            "action": "inspect", "kind": "containers", "id": id
+        ]), let encoded = String(data: encodedData, encoding: .utf8) else {
+            inspectionError = "无法构建容器查询请求"
+            return
+        }
+        let result = await Task.detached(priority: .utility) {
+            Result { try request(["action", encoded], as: Reply.self) }
+        }.value
+        guard !Task.isCancelled else { return }
+        switch result {
+        case .failure(let error):
+            inspectionError = error.localizedDescription
+        case .success(let reply):
+            guard reply.ok, let data = reply.message?.data(using: .utf8) else {
+                inspectionError = reply.error ?? "Docker Inspect 返回了空结果"
+                return
+            }
+            do {
+                inspection = try JSONDecoder().decode(
+                    ContainerInspectDetails.self, from: data)
+            } catch {
+                inspectionError = "容器详情解析失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func cardHeader(_ text: String, symbol: String) -> some View {
+        Label(text, systemImage: symbol)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.primary)
+    }
+
+    private func metadata(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            Text(value)
+                .monospacedDigit()
+                .fontWeight(.medium)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .font(.system(size: 10.5))
+    }
+
+    // The selected container is the focal point, not another inset gray panel.
+    private func heroSummary(_ item: ContainerItem) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                    Text(item.title)
+                        .font(.system(size: 20, weight: .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    Text(item.State == "running" ? "● 运行中" : "● 已停止")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(item.State == "running" ? Color.green : Color.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background((item.State == "running" ? Color.green : Color.secondary)
+                            .opacity(0.12), in: Capsule())
+                        .fixedSize()
+                }
+                Text(item.Image ?? "—")
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 6)
+            if let published = item.Ports?.first(where: {
+                $0.Type == "tcp" && $0.PublicPort != nil
+            })?.PublicPort {
+                Button("localhost:\(String(published)) ↗") {
+                    model.action("open_local", fields: [
+                        "url": "http://127.0.0.1:\(published)/"
+                    ], title: "open_local")
+                }
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(Color(red: 0 / 255, green: 125 / 255, blue: 165 / 255))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color(red: 0 / 255, green: 160 / 255, blue: 190 / 255)
+                    .opacity(0.10), in: Capsule())
+                .buttonStyle(.plain)
+                .help("在浏览器中打开 localhost:\(String(published))")
+            } else {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(item.Id, forType: .string)
+                } label: {
+                    Label(String(item.Id.prefix(12)), systemImage: "doc.on.doc")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 7)
+                        .background(Color.primary.opacity(0.045), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("复制完整容器 ID")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 2)
+        .padding(.top, 5)
+        .padding(.bottom, 8)
+    }
+
+    @ViewBuilder
+    private func resourceCard(_ item: ContainerItem) -> some View {
+        ModernInspectorCard {
+            cardHeader("实时资源", symbol: "waveform.path.ecg")
+            if let stats = model.containerStats[item.Id] {
+                let points = model.statsHistory[item.Id] ?? []
+                HStack(spacing: 8) {
+                    InspectorMetricTile(
+                        title: "CPU",
+                        value: stats.cpu_percent.map {
+                            String(format: "%.1f%%", $0)
+                        } ?? "—",
+                        points: points, cpu: true, accent: .blue)
+                    InspectorMetricTile(
+                        title: "内存",
+                        value: sizeLabel(stats.memory_bytes),
+                        points: points, cpu: false, accent: .green)
+                }
+                metadata("内存上限", sizeLabel(stats.memory_limit_bytes))
+                Divider().opacity(0.4)
+                metadata("网络收发（累计）",
+                         "\(sizeLabel(stats.net_rx_bytes)) / \(sizeLabel(stats.net_tx_bytes))")
+                metadata("磁盘读写（累计）",
+                         "\(sizeLabel(stats.block_read_bytes)) / \(sizeLabel(stats.block_write_bytes))")
+                metadata("进程数", stats.pids.map(String.init) ?? "—")
+            } else {
+                Label(item.State == "running" ? "正在采集资源数据…" : "容器未运行",
+                      systemImage: "chart.xyaxis.line")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func networkStorageCard(_ item: ContainerItem) -> some View {
+        ModernInspectorCard {
+            cardHeader("网络与存储", symbol: "network")
+            Text("端口映射")
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+            let ports = (item.Ports ?? []).filter { $0.PublicPort != nil }
+            if ports.isEmpty {
+                Text("没有已发布端口")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(ports.enumerated()), id: \.offset) { _, port in
+                    let host = "localhost:" + String(port.PublicPort ?? 0)
+                    let target = String(port.PrivatePort ?? 0) + "/" + (port.Type ?? "tcp")
+                    CopyableInspectorTag(text: host + " → " + target,
+                                         copyValue: host)
+                }
+            }
+            Divider().opacity(0.4)
+            Text("挂载卷")
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+            let mounts = inspection?.Mounts ?? []
+            if loading {
+                ProgressView().controlSize(.small)
+            } else if mounts.isEmpty {
+                Text("没有挂载卷")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(mounts) { mount in
+                VStack(alignment: .leading, spacing: 7) {
+                    CopyableInspectorTag(text: mount.Destination ?? "—",
+                                         copyValue: mount.Destination ?? "")
+                    HStack(alignment: .center, spacing: 7) {
+                        Image(systemName: "arrow.turn.up.right")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                        Text(mount.Source ?? "—")
+                            .font(.system(size: 10, design: .monospaced))
+                            .lineLimit(2)
+                            .textSelection(.enabled)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text(mount.RW == true ? "读写" : "只读")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Color.primary.opacity(0.055),
+                                        in: Capsule())
+                    }
+                }
+                .padding(9)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.primary.opacity(0.035),
+                            in: RoundedRectangle(cornerRadius: 8))
+            }
+        }
+    }
+
+    private func environmentCard() -> some View {
+        ModernInspectorCard {
+            cardHeader("环境变量", symbol: "curlybraces")
+            let env = inspection?.Config?.Env ?? []
+            if loading {
+                ProgressView().controlSize(.small)
+            } else if env.isEmpty {
+                Text("没有环境变量")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(env.enumerated()), id: \.offset) { _, entry in
+                    InspectorEnvironmentRow(entry: entry)
+                    if entry != env.last {
+                        Divider().opacity(0.25)
+                    }
+                }
+            }
+        }
+    }
+
+    var body: some View {
+        Group {
+            if let item {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        heroSummary(item)
+                        Divider().opacity(0.5)
+                        resourceCard(item)
+                        networkStorageCard(item)
+                        environmentCard()
+                        if let inspectionError {
+                            Label(inspectionError, systemImage: "exclamationmark.triangle")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.orange)
+                        }
+                        Text(item.Id)
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 4)
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .scrollIndicators(.never)
+                .background(Color(nsColor: .textBackgroundColor))
+            } else {
+                ContentUnavailableView(
+                    "选择一个容器",
+                    systemImage: "sidebar.right",
+                    description: Text("选中容器，即可查看资源、挂载、端口和环境变量。"))
+            }
+        }
+        .task(id: item?.Id) {
+            if let id = item?.Id {
+                await load(id)
+            } else {
+                inspection = nil
+                inspectionError = nil
+            }
+        }
+    }
+
+}
+
+// The outer NavigationSplitView intentionally stays two columns. Only the
+// Containers page hosts this draggable, full-height native workspace.
+private enum ContainerDetailTab: String, CaseIterable, Identifiable {
+    case overview = "概览"
+    case logs = "日志"
+    case terminal = "终端"
+    var id: String { rawValue }
+}
+
+/// Searchable, bounded Docker log snapshots in a padded charcoal card.
+private struct EmbeddedContainerLogsView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let containerID: String
+    let isActive: Bool
+    @StateObject private var session = ContainerLogSession()
+    @State private var query = ""
+
+    private var visibleLog: String {
+        let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !search.isEmpty else { return session.content }
+        return session.content.components(separatedBy: "\n")
+            .filter { $0.localizedCaseInsensitiveContains(search) }
+            .joined(separator: "\n")
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("过滤日志", text: $query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11))
+                    .accessibilityLabel("过滤容器日志")
+                Menu {
+                    Button("最近 200 行") { session.tailLines = 200 }
+                    Button("最近 1,000 行") { session.tailLines = 1000 }
+                    Button("最近 5,000 行") { session.tailLines = 5000 }
+                } label: {
+                    Image(systemName: "line.3.horizontal.decrease")
+                }
+                .help("日志行数")
+                Button {
+                    session.following.toggle()
+                    if session.following {
+                        Task { await session.refresh(containerID: containerID) }
+                    }
+                } label: {
+                    Image(systemName: session.following ? "pause.fill" : "play.fill")
+                }
+                .help(session.following ? "暂停实时跟随" : "继续实时跟随")
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(visibleLog, forType: .string)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .help("复制可见日志")
+                Button { session.clear() } label: {
+                    Image(systemName: "paintbrush")
+                }
+                .help("清空日志显示")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+            .background(ConsoleAppearance.toolbar(colorScheme))
+            Divider()
+            if let error = session.error {
+                Text(error).font(.system(size: 10)).foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12).padding(.vertical, 4)
+            }
+            NativeLogTextView(content: visibleLog,
+                              following: session.following && query.isEmpty)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(ConsoleAppearance.canvas(colorScheme))
+        .task(id: "\(session.tailLines)-\(isActive)") {
+            while !Task.isCancelled {
+                if isActive && session.following {
+                    await session.refresh(containerID: containerID)
+                }
+                do { try await Task.sleep(for: .seconds(2)) }
+                catch { break }
+            }
+        }
+    }
+}
+
+/// Per-container terminal views are cached with stable ForEach IDs. Changing
+/// Overview/Logs/Terminal only changes visibility; SwiftTerm's NSView and PTY
+/// are not dismantled by tab switches or by selecting another container.
+private struct ContainerWorkspaceDetail: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var model: MobyModel
+    @Environment(\.openWindow) private var openWindow
+    let container: ContainerItem
+    @Binding var activeTab: ContainerDetailTab
+    @Binding var loadedLogIDs: Set<String>
+    @Binding var loadedTerminalIDs: Set<String>
+    let onAction: (String, ContainerItem) -> Void
+
+    private func ensureCurrentSession() {
+        switch activeTab {
+        case .overview: break
+        case .logs: loadedLogIDs.insert(container.Id)
+        case .terminal:
+            if container.State == "running" { loadedTerminalIDs.insert(container.Id) }
+        }
+    }
+
+    private func postTerminal(_ action: ConsoleCommand, containerID: String) {
+        NotificationCenter.default.post(
+            name: consoleCommandNotification, object: "exec:" + containerID,
+            userInfo: ["action": action.rawValue])
+    }
+
+    private struct TerminalToolbarAction: View {
+        let title: String
+        let symbol: String
+        let action: () -> Void
+        @State private var hovered = false
+
+        var body: some View {
+            Button(action: action) {
+                Label(title, systemImage: symbol)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.primary.opacity(hovered ? 0.065 : 0),
+                                in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .onHover { hovered = $0 }
+        }
+    }
+
+    private func terminalCard(_ containerID: String) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(model.containers.first(where: { $0.Id == containerID })?.State
+                          == "running" ? Color.green : Color.gray)
+                    .frame(width: 7, height: 7)
+                Text("sh · 容器终端")
+                    .font(.system(size: 11, weight: .medium))
+                Spacer(minLength: 0)
+                TerminalToolbarAction(title: "清屏", symbol: "paintbrush") {
+                    postTerminal(.clear, containerID: containerID)
+                }
+                .help("清屏")
+                TerminalToolbarAction(title: "Ctrl+C", symbol: "stop.fill") {
+                    postTerminal(.interrupt, containerID: containerID)
+                }
+                .help("发送 Ctrl+C")
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14)
+            .frame(height: 38)
+            .background(ConsoleAppearance.toolbar(colorScheme))
+            Rectangle()
+                .fill(Color.primary.opacity(0.08))
+                .frame(height: 0.5)
+            ExecTerminalView(containerID: containerID,
+                containerName: model.containers.first(where: { $0.Id == containerID })?.title
+                    ?? String(containerID.prefix(12)))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(ConsoleAppearance.canvas(colorScheme))
+    }
+
+    var body: some View {
+        ZStack {
+            ModernInspectorView(item: container, onAction: onAction)
+                .opacity(activeTab == .overview ? 1 : 0)
+                .allowsHitTesting(activeTab == .overview)
+                .accessibilityHidden(activeTab != .overview)
+
+            ForEach(loadedLogIDs.sorted(), id: \.self) { id in
+                EmbeddedContainerLogsView(
+                    containerID: id, isActive: activeTab == .logs && container.Id == id)
+                    .opacity(activeTab == .logs && container.Id == id ? 1 : 0)
+                    .allowsHitTesting(activeTab == .logs && container.Id == id)
+                    .accessibilityHidden(activeTab != .logs || container.Id != id)
+            }
+            ForEach(loadedTerminalIDs.sorted(), id: \.self) { id in
+                terminalCard(id)
+                    .opacity(activeTab == .terminal && container.Id == id ? 1 : 0)
+                    .allowsHitTesting(activeTab == .terminal && container.Id == id)
+                    .accessibilityHidden(activeTab != .terminal || container.Id != id)
+            }
+            if activeTab == .terminal && container.State != "running" {
+                ContentUnavailableView("容器未运行", systemImage: "terminal",
+                    description: Text("先启动容器，再打开交互式终端。"))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .textBackgroundColor))
+        .onAppear { ensureCurrentSession() }
+        .onChange(of: activeTab) { _, _ in ensureCurrentSession() }
+        .onChange(of: container.Id) { _, _ in ensureCurrentSession() }
+    }
+}
+
+/// Airy, semantically colored native resource row. Stopped containers are
+/// visually subdued; all actions remain accessible on hover/context menu.
+private struct CompactContainerRow: View {
+    let item: ContainerItem
+    let onAction: (String) -> Void
+    @State private var hovered = false
+
+    private var running: Bool { item.State == "running" }
+
+    private var brand: (symbol: String, color: Color) {
+        let name = (item.title + " " + (item.Image ?? "")).lowercased()
+        if ["mysql", "postgres", "mariadb", "mongo"].contains(where: name.contains) {
+            return ("cylinder.split.1x2", .indigo)
+        }
+        if ["redis", "memcached"].contains(where: name.contains) {
+            return ("bolt.horizontal.circle.fill", .orange)
+        }
+        if ["nginx", "caddy", "traefik", "apache"].contains(where: name.contains) {
+            return ("globe", .green)
+        }
+        return ("shippingbox.fill", .blue)
+    }
+
+    private var portHint: String? {
+        item.Ports?.first(where: { $0.Type == "tcp" && $0.PublicPort != nil })
+            .flatMap { $0.PublicPort.map(String.init) }
+    }
+
+    var body: some View {
+        HStack(spacing: 11) {
+            Image(systemName: brand.symbol)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(running ? brand.color : Color.secondary)
+                .frame(width: 30, height: 30)
+                .background(
+                    (running ? brand.color : Color.secondary).opacity(0.075),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.title)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(running ? Color.primary : Color.secondary)
+                    .lineLimit(1)
+                styledImageName(item.Image ?? "—")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .opacity(running ? 1 : 0.62)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 2)
+            if hovered {
+                Button {
+                    onAction(running ? "stop" : "start")
+                } label: {
+                    Image(systemName: running ? "stop.fill" : "play.fill")
+                }
+                .help(running ? "停止" : "启动")
+                Button { onAction("exec") } label: {
+                    Image(systemName: "terminal")
+                }
+                .disabled(!running)
+                .help("打开终端")
+            } else {
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(running ? Color.green : Color.secondary.opacity(0.45))
+                        .frame(width: 6, height: 6)
+                    if let portHint {
+                        Text(":\(portHint)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(height: 48)
+        .contentShape(Rectangle())
+        .onHover { hovered = $0 }
+    }
+}
+
+private struct RootView: View {
+    @EnvironmentObject private var model: MobyModel
+    @State private var selectedContainerIDs = Set<String>()
+    @State private var selectedInspectorID: String?
+    @State private var hoveredActionRowID: String?
+    @State private var isSearching = false
+    @FocusState private var searchFocused: Bool
+    @State private var activeDetailTab: ContainerDetailTab = .overview
+    @State private var loadedLogIDs = Set<String>()
+    @State private var loadedTerminalIDs = Set<String>()
+    @State private var showVMPopover = false
+    @Environment(\.openWindow) private var openWindow
+    // Three true navigation columns share a single native macOS titlebar.
+    var body: some View {
+        NavigationSplitView {
+            List(selection: Binding<Page?>(
+                get: { model.page },
+                set: { if let page = $0 { model.page = page } }
+            )) {
+                Section("Docker") {
+                    ForEach([Page.containers, .volumes, .images, .builds,
+                             .networks, .compose], id: \.self) { page in
+                        nativeSidebarItem(page)
+                    }
+                }
+                Section("系统") {
+                    nativeSidebarItem(.overview)
+                    nativeSidebarItem(.settings)
+                }
+            }
+            .listStyle(.sidebar)
+            .tint(Color.accentColor)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                sidebarEngineStatus
+                    .contentShape(Rectangle())
+                    .onTapGesture { showVMPopover.toggle() }
+                    .popover(isPresented: $showVMPopover) { vmResourcePopover }
+            }
+            .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 215)
+        } content: {
+            VStack(spacing: 0) {
+                if isSearching {
+                    HStack(spacing: 9) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("搜索容器、镜像、数据卷…", text: $model.search)
+                            .textFieldStyle(.plain)
+                            .focused($searchFocused)
+                            .onExitCommand {
+                                model.search = ""
+                                isSearching = false
+                            }
+                        if !model.search.isEmpty {
+                            Button {
+                                model.search = ""
+                                searchFocused = true
+                            } label: { Image(systemName: "xmark.circle.fill") }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                                .help("清空搜索")
+                        }
+                        Button("取消") {
+                            model.search = ""
+                            isSearching = false
+                        }
+                        .font(.system(size: 11))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 39)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    Divider().opacity(0.45)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                if model.page == .containers {
+                    containerList
+                } else {
+                    resourceNavigator
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(nsColor: .textBackgroundColor))
+            .navigationTitle(model.page.displayName)
+            .navigationSubtitle(currentPageSubtitle)
+            .navigationSplitViewColumnWidth(min: 280, ideal: 330, max: 440)
+            .toolbar {
+                ToolbarItemGroup(placement: .automatic) {
+                    if model.page == .containers {
+                        Menu {
+                            ForEach(ContainerFilter.allCases) { filter in
+                                Button(filter.rawValue) { model.containerFilter = filter }
+                            }
+                        } label: {
+                            Label("状态筛选", systemImage: "line.3.horizontal.decrease.circle")
+                        }
+                        .help("筛选容器状态")
+                    }
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isSearching.toggle()
+                            if !isSearching { model.search = "" }
+                        }
+                        if isSearching { searchFocused = true }
+                    } label: { Image(systemName: "magnifyingglass") }
+                        .keyboardShortcut("f", modifiers: .command)
+                        .help(isSearching ? "收起搜索" : "搜索（⌘F）")
+                }
+            }
+        } detail: {
+            Group {
+                if model.page == .containers {
+                    if let selected = selectedContainer {
+                        ContainerWorkspaceDetail(
+                            container: selected,
+                            activeTab: $activeDetailTab,
+                            loadedLogIDs: $loadedLogIDs,
+                            loadedTerminalIDs: $loadedTerminalIDs,
+                            onAction: { action, item in
+                                if action == "restart" &&
+                                    !model.confirm("重启 \(item.title)？",
+                                        detail: "运行中的服务会短暂中断。") { return }
+                                containerOp(action, item)
+                            }
+                        )
+                        .environmentObject(model)
+                    } else {
+                        Text("未选择项目")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                } else if !model.online && model.page != .settings {
+                    ContentUnavailableView {
+                        Label("Moby VM 未连接",
+                              systemImage: "desktopcomputer.trianglebadge.exclamationmark")
+                    } description: {
+                        Text(model.snapshot?.error ??
+                             "启动标准 Docker Engine 后即可管理容器。")
+                    } actions: {
+                        Button("启动虚拟机") {
+                            model.perform(["start"], title: "Start VM", showResult: false)
+                        }
+                    }
+                } else {
+                    content
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 420)
+            .background(Color(nsColor: .textBackgroundColor))
+            .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    if [.containers, .images, .volumes, .networks].contains(model.page) {
+                        Button(action: createResource) {
+                            Image(systemName: "plus")
+                        }
+                        .help("创建" + model.page.displayName)
+                    }
+                }
+                ToolbarItem(placement: .principal) {
+                    if model.page == .containers && selectedContainer != nil {
+                        Picker("容器工作区", selection: $activeDetailTab) {
+                            ForEach(ContainerDetailTab.allCases) { tab in
+                                Text(tab.rawValue).tag(tab)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 210)
+                    }
+                }
+                ToolbarItemGroup(placement: .primaryAction) {
+                    if model.page == .containers, let item = selectedContainer {
+                        Button {
+                            containerOp(item.State == "running" ? "stop" : "start", item)
+                        } label: {
+                            Image(systemName: item.State == "running" ? "stop.fill" : "play.fill")
+                        }
+                        .help(item.State == "running" ? "停止容器" : "启动容器")
+                        Button {
+                            if model.confirm("重启 \(item.title)？",
+                                detail: "运行中的服务会短暂中断。") {
+                                containerOp("restart", item)
+                            }
+                        } label: { Image(systemName: "arrow.clockwise") }
+                            .disabled(item.State != "running")
+                            .help("重启容器")
+                        if activeDetailTab != .overview {
+                            Button {
+                                let kind: ConsoleSession.Kind =
+                                    activeDetailTab == .terminal ? .exec : .logs
+                                openWindow(id: "container-console", value: ConsoleSession(
+                                    kind: kind, containerID: item.Id, name: item.title))
+                            } label: {
+                                Image(systemName: "arrow.up.right.square")
+                            }
+                            .help("在原生多标签窗口中弹出")
+                        }
+                    } else if model.page != .containers {
+                        Button { model.refresh() } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .help("刷新资源")
+                    }
+                }
+            }
+        }
+        .font(.system(size: 12))
+        .frame(minWidth: 820, minHeight: 520)
         .task {
             model.begin()
+            #if KIRI_UI_PREVIEW
+            if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" {
+                let previewID = "a000000000000000"
+                selectedContainerIDs = [previewID]
+                selectedInspectorID = previewID
+                activeDetailTab = .overview
+                // Screenshot assertions must capture an active, focused Mac
+                // window; unfocused macOS sidebars are intentionally dimmed.
+                NSApp.activate(ignoringOtherApps: true)
+                NSApp.windows.first(where: { $0.isVisible })?.makeKeyAndOrderFront(nil)
+            }
+            if ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW"] == "1" &&
+               ProcessInfo.processInfo.environment["KIRI_MOBY_UI_PREVIEW_NO_FLOATING"] != "1" {
+                try? await Task.sleep(for: .seconds(1))
+                openConsole(.logs, containerID: "a000000000000000", name: "nginx")
+                openConsole(.exec, containerID: "a000000000000000", name: "nginx")
+            }
+            #endif
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(10))
                 if Task.isCancelled { break }
                 model.refresh()
+            }
+        }
+        .task(id: model.page) {
+            guard model.page == .containers || model.page == .compose else { return }
+            while !Task.isCancelled {
+                model.refreshContainerStats()
+                do { try await Task.sleep(for: .seconds(5)) }
+                catch { break }
+            }
+        }
+        .onChange(of: model.page) { _, _ in
+            model.search = ""
+            isSearching = false
+        }
+        .onChange(of: selectedContainerIDs) { old, new in
+            if let added = new.subtracting(old).first {
+                selectedInspectorID = added
+            } else if new.isEmpty {
+                selectedInspectorID = nil
+            } else if let current = selectedInspectorID, !new.contains(current) {
+                selectedInspectorID = new.first
+            }
+        }
+        .onChange(of: model.containers.map(\.Id)) { _, ids in
+            if let current = selectedInspectorID, !ids.contains(current) {
+                selectedContainerIDs.remove(current)
+                selectedInspectorID = nil
             }
         }
         .alert("Kiri Moby", isPresented: Binding(
@@ -378,27 +2314,385 @@ private struct RootView: View {
         } message: {
             Text(model.error ?? "")
         }
-        .sheet(item: $model.result) { result in
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Text(result.title).font(.title3.bold())
-                    Spacer()
-                    Button("关闭") { model.result = nil }
-                }
-                ScrollView {
-                    Text(result.body).font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+        .overlay {
+            if let result = model.result {
+                ZStack {
+                    Color.black.opacity(0.52).ignoresSafeArea()
+                        .onTapGesture { model.result = nil }
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(spacing: 12) {
+                            Text(result.title).font(.system(size: 14, weight: .semibold))
+                            Spacer()
+                            Text("\(result.body.utf8.count) bytes")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(KiriPalette.muted(model.isLight))
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(result.body, forType: .string)
+                                model.notify("已复制到剪贴板")
+                            } label: {
+                                Label("复制", systemImage: "doc.on.doc")
+                            }
+                            .keyboardShortcut("c", modifiers: [.command, .shift])
+                            Button("关闭") { model.result = nil }
+                                .keyboardShortcut(.escape, modifiers: [])
+                        }
+                        Divider()
+                        ScrollView([.vertical, .horizontal]) {
+                            Text(result.body)
+                                .font(.system(size: 12, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding(20)
+                    .frame(minWidth: 420, idealWidth: 650, maxWidth: 650, minHeight: 280, idealHeight: 420, maxHeight: 420)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 24)
+                    .background(KiriPalette.panel(model.isLight))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12)
+                        .stroke(KiriPalette.border(model.isLight)))
+                    .shadow(radius: 18)
                 }
             }
-            .padding(20)
-            .frame(minWidth: 600, minHeight: 390)
         }
+        .overlay(alignment: .bottomTrailing) {
+            if let operation = model.operationMessage {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("\(operation) 正在执行…")
+                        .font(.system(size: 11))
+                }
+                .padding(10)
+                .background(KiriPalette.panel(model.isLight))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .padding(.trailing, 16)
+                .padding(.bottom, 70)
+            }
+            if let message = model.toastMessage {
+                Text(message)
+                    .font(.system(size: 12))
+                    .lineLimit(3)
+                    .frame(maxWidth: 380, alignment: .leading)
+                    .padding(12)
+                    .background(model.toastIsError ?
+                        KiriPalette.red.opacity(0.16) : KiriPalette.panel(model.isLight))
+                    .clipShape(RoundedRectangle(cornerRadius: 9))
+                    .overlay(RoundedRectangle(cornerRadius: 9)
+                        .stroke(model.toastIsError ? KiriPalette.red :
+                            KiriPalette.border(model.isLight)))
+                    .shadow(radius: 10)
+                    .padding(16)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func nativeSidebarItem(_ page: Page) -> some View {
+        let selected = model.page == page
+        let row = Label {
+            Text(page.displayName)
+        } icon: {
+            Image(systemName: page.symbol)
+                .foregroundStyle(selected ? Color.white : Color.accentColor)
+        }
+        if let count = navCount(page) {
+            row.badge(count).tag(page)
+        } else {
+            row.tag(page)
+        }
+    }
+
+    private var vmResourcePopover: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(model.online ? "Linux VM 运行中" : "Linux VM 已停止",
+                  systemImage: "desktopcomputer")
+                .font(.headline)
+            Divider()
+            Text("Kiri 私有 Docker · 默认 Context 不变")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            LabeledContent("运行中容器", value:
+                "\(model.containers.filter { $0.State == "running" }.count) / \(model.containers.count)")
+            Divider()
+            LabeledContent("CPU", value: "\(model.snapshot?.info?.NCPU ?? 0) 核")
+            LabeledContent("内存使用", value: liveMemoryLabel)
+            LabeledContent("Balloon 目标", value:
+                "\(model.snapshot?.memory?.balloon_target_mib ?? 0) MiB")
+            LabeledContent("磁盘可用", value: diskFreeLabel)
+            HStack {
+                Button("资源设置") {
+                    showVMPopover = false
+                    model.page = .settings
+                }
+                Spacer()
+                Button(model.online ? "重启 VM" : "启动 VM") {
+                    if model.online {
+                        guard model.confirm("重启 Moby VM？",
+                            detail: "运行中的容器会被中断。") else { return }
+                    }
+                    model.perform([model.online ? "restart" : "start"],
+                        title: "VM", showResult: false)
+                    showVMPopover = false
+                }
+            }
+        }
+        .padding(18)
+        .frame(width: 285)
+    }
+
+    private func openConsole(_ kind: ConsoleSession.Kind,
+                             containerID: String, name: String) {
+        // Quick actions in any page select the container and open its workspace.
+        model.page = .containers
+        selectedContainerIDs = [containerID]
+        selectedInspectorID = containerID
+        activeDetailTab = kind == .exec ? .terminal : .logs
+        if kind == .exec { loadedTerminalIDs.insert(containerID) }
+        else { loadedLogIDs.insert(containerID) }
+    }
+
+    private var diskFreeLabel: String {
+        guard let attrs = try? FileManager.default.attributesOfFileSystem(
+            forPath: NSHomeDirectory()),
+              let free = attrs[.systemFreeSize] as? NSNumber else { return "—" }
+        return sizeLabel(free.int64Value)
+    }
+
+    private var liveMemoryLabel: String {
+        guard model.online,
+              let info = model.snapshot?.memory,
+              let limit = info.vm_memory_ceiling_mib else { return "—" }
+        let total = info.guest_total_kib ?? 0
+        let available = info.guest_available_kib ?? 0
+        let usedMiB = max(0, total - available) / 1024
+        return String(format: "%.1f GB / %.1f GB",
+                      Double(usedMiB) / 1024, Double(limit) / 1024)
+    }
+
+    private func navCount(_ page: Page) -> Int? {
+        switch page {
+        case .containers: model.containers.count
+        case .images: model.images.count
+        case .volumes: model.volumes.count
+        case .networks: model.networks.count
+        case .compose: Set(model.containers.compactMap(\.composeProject)).count
+        default: nil
+        }
+    }
+
+    private var vmCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 7) {
+                Circle().fill(model.online ? KiriPalette.mint : KiriPalette.faint(model.isLight))
+                    .frame(width: 8, height: 8)
+                if !model.sidebarCollapsed {
+                    Text("Linux VM").fontWeight(.semibold)
+                    Spacer(minLength: 1)
+                    Text(model.online ? "Running" : "Off")
+                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                }
+            }
+            if !model.sidebarCollapsed {
+                if model.online {
+                    Text("Docker \(model.snapshot?.version?.Version ?? "—") · arm64")
+                        .font(.system(size: 11))
+                        .foregroundStyle(KiriPalette.faint(model.isLight)).lineLimit(1)
+                }
+                HStack {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Running")
+                        Text("CPUs")
+                        Text("Balloon")
+                    }.foregroundStyle(KiriPalette.muted(model.isLight))
+                    Spacer(minLength: 3)
+                    VStack(alignment: .trailing, spacing: 7) {
+                        Text(model.online ? "\(model.containers.filter {$0.State == "running"}.count)" : "—")
+                        Text(model.online ? "\(model.snapshot?.info?.NCPU ?? 4)" : "—")
+                        Text(model.online ?
+                             "\(model.snapshot?.memory?.balloon_target_mib ?? 0) MiB" : "—")
+                    }.font(.system(size: 11, weight: .medium, design: .monospaced))
+                }
+                GeometryReader { proxy in
+                    let target = Double(model.snapshot?.memory?.balloon_target_mib ?? 0)
+                    let total = Double(model.snapshot?.info?.MemTotal ?? 0)
+                    let percent = total > 0 ? min(1, target * 1_048_576 / total) : 0
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(KiriPalette.raised(model.isLight))
+                        Capsule().fill(KiriPalette.blue)
+                            .frame(width: proxy.size.width * percent)
+                    }
+                }
+                .frame(height: 4)
+                Button(model.online ? "Stop" : "Start") {
+                    if model.online &&
+                        !model.confirm("停止 Moby VM？", detail: "运行中的容器会被停止。") { return }
+                    model.perform([model.online ? "stop" : "start"],
+                                  title: "VM", showResult: false)
+                }
+                .font(.system(size: 12, weight: .semibold))
+                .frame(maxWidth: .infinity, minHeight: 30)
+                .background(KiriPalette.blue)
+                .foregroundStyle(.white)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(model.sidebarCollapsed ? 7 : 12)
+        .background(KiriPalette.panel(model.isLight))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12)
+            .stroke(KiriPalette.border(model.isLight)))
+    }
+
+    // The Engine status lives in the native sidebar rather than beneath the
+    // detail pane: dark Exec/Logs can touch the bottom of the main window.
+    private var sidebarEngineStatus: some View {
+        VStack(spacing: 0) {
+            Divider().opacity(0.45)
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(model.online ? Color.green : Color.secondary)
+                    .frame(width: 8, height: 8)
+                Text(model.online ? "Engine 运行中" : "Engine 已停止")
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                Spacer(minLength: 3)
+                Text(model.snapshot?.version?.Version.map { "v" + $0 } ?? "—")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 44)
+        }
+    }
+
+    private var selectedContainer: ContainerItem? {
+        model.containers.first(where: { $0.Id == selectedInspectorID })
+    }
+
+    private var currentPageSubtitle: String {
+        switch model.page {
+        case .containers:
+            let running = model.containers.filter { $0.State == "running" }.count
+            return "\(running) / \(model.containers.count) 运行中"
+        case .images:
+            let bytes = model.images.reduce(Int64(0)) { $0 + max(0, $1.Size ?? 0) }
+            return "\(model.images.count) 个镜像 · \(sizeLabel(bytes)) 总计"
+        case .volumes: return "\(model.volumes.count) 个数据卷"
+        case .networks: return "\(model.networks.count) 个网络"
+        case .compose: return "\(composeProjects.count) 个项目"
+        case .builds: return "Dockerfile / BuildKit"
+        case .overview: return model.online ? "标准 Docker Engine 运行中" : "引擎未启动"
+        case .settings: return "虚拟机设置与目录授权"
+        }
+    }
+
+    private func createResource() {
+        switch model.page {
+        case .containers:
+            if let image = model.ask("输入要创建的容器镜像", placeholder: "nginx:alpine") {
+                model.perform(["run", image], title: "新建容器", showResult: false)
+            }
+        case .images:
+            if let name = model.ask("镜像名称", placeholder: "alpine:3.22") {
+                model.perform(["pull", name], title: "Pull image", showResult: false)
+            }
+        case .volumes:
+            if let name = model.ask("新 Volume 名称") {
+                model.action("create_volume", fields: ["name": name], title: "Create volume")
+            }
+        case .networks:
+            if let name = model.ask("网络名称") {
+                model.action("create_network", fields: ["name": name], title: "Create network")
+            }
+        default: break
+        }
+    }
+
+    // The middle column gives resources an actual navigable identity; the
+    // right column retains full management controls for every existing page.
+    private var resourceNavigator: some View {
+        List {
+            switch model.page {
+            case .images:
+                ForEach(model.images.filter { match([$0.title, $0.Id]) }) { item in
+                    Button {
+                        model.action("inspect", fields: ["kind": "images", "id": item.Id],
+                                     title: "inspect")
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "square.stack.3d.up.fill")
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 25)
+                            VStack(alignment: .leading, spacing: 4) {
+                                styledImageName(item.title)
+                                    .font(.system(size: 12.5))
+                                    .lineLimit(1)
+                                Text(sizeLabel(item.Size))
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(minHeight: 45, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                }
+            case .volumes:
+                ForEach(model.volumes.filter { match([$0.Name, $0.Driver ?? ""]) }) { item in
+                    Button {
+                        model.action("inspect", fields: ["kind": "volumes", "id": item.Name],
+                                     title: "inspect")
+                    } label: {
+                        Label(item.Name, systemImage: "externaldrive.fill")
+                            .font(.system(size: 12))
+                            .frame(minHeight: 45, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                }
+            case .networks:
+                ForEach(model.networks.filter { match([$0.Name, $0.Id]) }) { item in
+                    Button {
+                        model.action("inspect", fields: ["kind": "networks", "id": item.Id],
+                                     title: "inspect")
+                    } label: {
+                        Label(item.Name, systemImage: "network")
+                            .font(.system(size: 12))
+                            .frame(minHeight: 45, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                }
+            case .compose:
+                ForEach(composeProjects.filter { match([$0]) }, id: \.self) { project in
+                    Label(project, systemImage: "square.3.layers.3d")
+                        .font(.system(size: 12))
+                        .frame(minHeight: 45, alignment: .leading)
+                }
+            case .builds:
+                Label("Dockerfile / BuildKit", systemImage: "hammer.fill")
+                Label(model.buildPlatform, systemImage: "cpu")
+            case .overview:
+                Label("Docker Engine", systemImage: "shippingbox.fill")
+                Label("VM 资源与内存", systemImage: "memorychip")
+                Label("镜像和卷", systemImage: "square.stack.3d.up")
+            case .settings:
+                Label("虚拟机", systemImage: "cpu")
+                Label("CPU 与内存", systemImage: "memorychip")
+                Label("Mac 目录共享", systemImage: "folder")
+            case .containers:
+                EmptyView()
+            }
+        }
+        .listStyle(.inset)
+        .scrollContentBackground(.hidden)
     }
 
     @ViewBuilder private var content: some View {
         switch model.page {
         case .overview: overview
-        case .containers: containers
+        case .containers: containerList
         case .images: images
         case .volumes: volumes
         case .networks: networks
@@ -421,6 +2715,10 @@ private struct RootView: View {
                     metric("运行中", model.containers.filter {$0.State == "running"}.count.description, "checkmark.circle")
                     metric("镜像", model.images.count.description, "square.stack.3d.up")
                     metric("数据卷", model.volumes.count.description, "externaldrive")
+                }
+                HStack(alignment: .top) {
+                    vmCard.frame(width: 240)
+                    Spacer()
                 }
                 GroupBox("标准 Docker Engine") {
                     VStack(alignment: .leading, spacing: 12) {
@@ -451,283 +2749,794 @@ private struct RootView: View {
         }
     }
 
-    private var containers: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("\(model.containers.count) 个容器").foregroundStyle(.secondary)
-                Spacer()
-                Button("运行镜像") {
-                    if let name = model.ask("运行镜像", placeholder: "alpine:3.22") {
-                        model.perform(["run", name], title: "Run container")
-                    }
-                }.buttonStyle(.borderedProminent)
-            }.padding(16)
-            List {
-                ForEach(model.containers.filter {
-                    match([$0.title, $0.Image ?? "", $0.Id, $0.composeProject ?? ""])
-                }) { container in
-                    HStack(spacing: 12) {
-                        Image(systemName: "shippingbox.fill")
-                            .foregroundStyle(container.State == "running" ? .green : .secondary)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(container.title).fontWeight(.semibold)
-                            Text(container.Image ?? "").font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 15)
-                        Text(container.Status ?? container.State ?? "—")
-                            .foregroundStyle(container.State == "running" ? .green : .secondary)
-                            .font(.caption)
-                        if let port = container.localPort {
-                            Button(":\(port)") {
-                                model.action("open_local",
-                                    fields: ["url":"http://127.0.0.1:\(port)/"], title: "Open port")
-                            }.buttonStyle(.link).font(.caption)
-                        }
-                        Menu {
-                            Button("详情") { model.action("inspect",
-                                fields: ["kind":"containers", "id":container.Id], title: "Inspect") }
-                            Button("日志") { model.action("logs",
-                                fields: ["id":container.Id], title: "Logs") }
-                            Button("执行命令") {
-                                if let command = model.ask("执行 Shell 命令", placeholder: "pwd") {
-                                    model.action("exec",
-                                        fields: ["id":container.Id, "command":command], title: "Exec")
-                                }
-                            }
-                            Divider()
-                            ForEach(["start","stop","restart","pause","unpause"], id: \.self) { operation in
-                                Button(operation.capitalized) {
-                                    model.perform(["container",operation,container.Id],
-                                                  title: operation.capitalized)
-                                }
-                            }
-                            Divider()
-                            Button("删除容器", role: .destructive) {
-                                if model.confirm("删除 \(container.title)？",
-                                    detail: "将强制删除此容器；命名数据卷不会自动删除。") {
-                                    model.perform(["container","remove",container.Id],title:"Remove")
-                                }
-                            }
-                        } label: { Image(systemName: "ellipsis.circle") }
-                            .menuStyle(.borderlessButton)
-                            .frame(width: 30)
-                    }.padding(.vertical, 7)
-                }
-            }.listStyle(.inset)
+    private enum ContainerVisualRow: Identifiable {
+        case project(String, Int, Int), container(ContainerItem, Bool)
+        var id: String {
+            switch self {
+            case .project(let project, _, _): "project:" + project
+            case .container(let c, _): "container:" + c.Id
+            }
         }
+    }
+
+    private var filteredContainers: [ContainerItem] {
+        model.containers.filter { item in
+            model.containerFilter.includes(item)
+                && match([item.title, item.Image ?? "", item.Id, item.composeProject ?? ""])
+        }
+    }
+
+    // Compose project headers are ordered by the first container in the Docker
+    // snapshot, preserving the same container ordering.
+    private var visualRows: [ContainerVisualRow] {
+        let items = filteredContainers
+        var visited = Set<String>()
+        var result: [ContainerVisualRow] = []
+        for container in items {
+            if let project = container.composeProject, !project.isEmpty {
+                if !visited.insert(project).inserted { continue }
+                let members = items.filter { $0.composeProject == project }
+                let running = members.filter { $0.State == "running" }.count
+                result.append(.project(project, running, members.count))
+                if !model.collapsedProjects.contains(project) {
+                    result.append(contentsOf: members.map {
+                        ContainerVisualRow.container($0, true)
+                    })
+                }
+            } else {
+                result.append(.container(container, false))
+            }
+        }
+        return result
+    }
+
+    private func dateLabel(_ seconds: Int64?) -> String {
+        guard let seconds, seconds > 0 else { return "—" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(seconds)))
+    }
+
+    private func tableTitle(_ title: String, width: CGFloat) -> some View {
+        Text(title).font(.system(size: 11, weight: .medium))
+            .tracking(0.4)
+            .foregroundStyle(KiriPalette.faint(model.isLight))
+            .frame(width: width, alignment: .leading)
+            .padding(.horizontal, 12).frame(height: 39)
+    }
+
+    private func tableValue<V: View>(_ value: V, width: CGFloat) -> some View {
+        value.frame(width: width, alignment: .leading)
+            .padding(.horizontal, 12)
+    }
+
+    private var tableDivider: some View {
+        Rectangle().fill(KiriPalette.border(model.isLight)).frame(height: 1)
+    }
+
+    private func smallAction(_ name: String, destructive: Bool = false,
+                             action: @escaping () -> Void) -> some View {
+        Button(name, action: action)
+            .font(.system(size: 11))
+            .foregroundStyle(destructive ?
+                KiriPalette.red : KiriPalette.title(model.isLight))
+            .padding(.horizontal, 6).frame(height: 25)
+            .background(KiriPalette.raised(model.isLight))
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5)
+                .stroke(KiriPalette.border(model.isLight)))
+            .buttonStyle(.plain)
+    }
+
+    private func iconAction(_ tooltip: String, icon: String,
+                            destructive: Bool = false,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(destructive ? Color.red : KiriPalette.title(model.isLight))
+                .frame(width: 24, height: 25)
+        }
+        .buttonStyle(.borderless)
+        .help(tooltip)
+        .accessibilityLabel(tooltip)
+    }
+
+    private func containerButtons(_ container: ContainerItem) -> some View {
+        HStack(spacing: 3) {
+            if container.State == "running" {
+                iconAction("停止", icon: "stop.circle") { containerOp("stop", container) }
+            } else {
+                iconAction("启动", icon: "play.circle") { containerOp("start", container) }
+            }
+            iconAction("Exec", icon: "terminal") {
+                openConsole(.exec, containerID: container.Id, name: container.title)
+            }
+            .disabled(container.State != "running")
+            iconAction("日志", icon: "doc.text") {
+                openConsole(.logs, containerID: container.Id, name: container.title)
+            }
+            Menu {
+                Button("查看详情") {
+                    model.action("inspect", fields: ["kind":"containers","id":container.Id],
+                                 title: "inspect")
+                }
+                Button("重启") { containerOp("restart", container) }
+                    .disabled(container.State != "running")
+                if container.State == "running" {
+                    Button("暂停") { containerOp("pause", container) }
+                } else if container.State == "paused" {
+                    Button("恢复") { containerOp("unpause", container) }
+                }
+                Divider()
+                Button("删除容器", role: .destructive) {
+                    if model.confirm("删除容器 \(container.title)？",
+                                     detail: "不会自动删除命名数据卷。") {
+                        containerOp("remove", container)
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 14))
+                    .frame(width: 24, height: 25)
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 24)
+            .help("更多操作")
+        }
+        .opacity(hoveredActionRowID == container.Id ? 1 : 0.65)
+        .onHover { inside in
+            if inside { hoveredActionRowID = container.Id }
+            else if hoveredActionRowID == container.Id { hoveredActionRowID = nil }
+        }
+    }
+
+    private func containerOp(_ action: String, _ container: ContainerItem) {
+        model.perform(["container", action, container.Id], title: action, showResult: false)
+    }
+
+    private func portLinks(_ ports: [PublishedPort]?) -> some View {
+        HStack(spacing: 3) {
+            let exposed = (ports ?? []).filter { $0.PublicPort != nil }
+            if exposed.isEmpty {
+                Text("—").foregroundStyle(KiriPalette.muted(model.isLight))
+            }
+            ForEach(Array(exposed.enumerated()), id: \.offset) { offset, port in
+                if offset > 0 {
+                    Text(",").foregroundStyle(KiriPalette.faint(model.isLight))
+                }
+                let label = "\(port.IP ?? "0.0.0.0"):\(port.PublicPort ?? 0)→\(port.PrivatePort ?? 0)/\(port.Type ?? "tcp")"
+                if port.Type == "tcp", let published = port.PublicPort {
+                    Button("localhost:\(String(published)) ↗") {
+                        model.action("open_local", fields: [
+                            "url": "http://127.0.0.1:\(published)/"
+                        ], title: "open_local")
+                    }
+                    .foregroundStyle(KiriPalette.link(model.isLight))
+                    .buttonStyle(.plain)
+                    .help(label)
+                } else {
+                    Text(label)
+                }
+            }
+        }
+        .font(.system(size: 11))
+        .lineLimit(1)
+    }
+
+    // Compact dashboard cell shared by the Containers table and the nested
+    // Compose service rows. Network and disk counters are cumulative I/O;
+    // CPU % and working-set memory are current sampling windows.
+    @ViewBuilder
+    private func containerResourceCell(_ item: ContainerItem) -> some View {
+        if item.State != "running" {
+            Text("—")
+                .font(.system(size: 11))
+                .foregroundStyle(KiriPalette.faint(model.isLight))
+        } else if let stats = model.containerStats[item.Id] {
+            CompactContainerMetrics(stats: stats, isLight: model.isLight)
+        } else {
+            Text(model.statsUpdatedAt != nil ? "暂无统计" :
+                 (model.statsError != nil ? "读取失败" : "采集中…"))
+                .font(.system(size: 11))
+                .foregroundStyle(KiriPalette.muted(model.isLight))
+                .help(model.statsError ?? "等待 Docker Engine 提供容器统计数据")
+        }
+    }
+
+    private var containerList: some View {
+        List(selection: $selectedContainerIDs) {
+            ForEach([true, false], id: \.self) { running in
+                let items = filteredContainers
+                    .filter { ($0.State == "running") == running }
+                    .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+                if !items.isEmpty {
+                    Section(running ? "运行中" : "已停止") {
+                        ForEach(items) { item in
+                            CompactContainerRow(item: item, onAction: { action in
+                                if action == "exec" {
+                                    openConsole(.exec, containerID: item.Id, name: item.title)
+                                } else {
+                                    containerOp(action, item)
+                                }
+                            })
+                            .tag(item.Id)
+                            .onTapGesture(count: 2) {
+                                if item.State == "running" {
+                                    openConsole(.exec, containerID: item.Id, name: item.title)
+                                }
+                            }
+                            .listRowInsets(EdgeInsets(top: 0, leading: 9, bottom: 0, trailing: 9))
+                            .listRowSeparator(.hidden)
+                            .contextMenu {
+                                Button("概览") {
+                                    selectedContainerIDs = [item.Id]
+                                    selectedInspectorID = item.Id
+                                    activeDetailTab = .overview
+                                }
+                                Button("终端") {
+                                    openConsole(.exec, containerID: item.Id, name: item.title)
+                                }
+                                .disabled(item.State != "running")
+                                Button("日志") {
+                                    openConsole(.logs, containerID: item.Id, name: item.title)
+                                }
+                                Divider()
+                                Button(item.State == "running" ? "停止" : "启动") {
+                                    containerOp(item.State == "running" ? "stop" : "start", item)
+                                }
+                                Button("重启") { containerOp("restart", item) }
+                                    .disabled(item.State != "running")
+                                Button(item.State == "paused" ? "恢复" : "暂停") {
+                                    containerOp(item.State == "paused" ? "unpause" : "pause", item)
+                                }
+                                Divider()
+                                Button("删除容器", role: .destructive) {
+                                    if model.confirm("删除 \(item.title)？",
+                                        detail: "将移除容器，但不会自动删除命名数据卷。") {
+                                        containerOp("remove", item)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if model.containers.isEmpty {
+                Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("开始使用 Docker", systemImage: "shippingbox")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("运行你的第一个容器")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Text("docker run -it -p 80:80 nginx:alpine")
+                            .font(.system(size: 10, design: .monospaced))
+                            .textSelection(.enabled)
+                            .lineLimit(2)
+                        Button("拉取 nginx:alpine") {
+                            model.perform(["pull", "nginx:alpine"],
+                                          title: "Pull image", showResult: false)
+                        }
+                        .font(.system(size: 11))
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.primary.opacity(0.04),
+                                in: RoundedRectangle(cornerRadius: 10))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                }
+            }
+        }
+        .listStyle(.inset)
+        .scrollContentBackground(.hidden)
+        .background(Color(nsColor: .textBackgroundColor))
     }
 
     private var images: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("\(model.images.count) 个镜像").foregroundStyle(.secondary)
+                Text("镜像").font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Button("拉取镜像") {
-                    if let name = model.ask("拉取 Docker 镜像", placeholder: "alpine:3.22") {
-                        model.perform(["pull",name], title: "Pull image")
+                    if let name = model.ask("镜像名称", placeholder: "alpine:3.22") {
+                        model.perform(["pull", name], title: "Pull image", showResult: false)
                     }
                 }.buttonStyle(.borderedProminent)
-            }.padding(16)
-            List(model.images.filter { match([$0.title, $0.Id]) }) { image in
-                HStack {
-                    Image(systemName: "square.stack.3d.up.fill").foregroundStyle(.secondary)
-                    VStack(alignment:.leading) {
-                        Text(image.title).fontWeight(.medium)
-                        Text(String(image.Id.prefix(22))).font(.caption).foregroundStyle(.secondary)
+            }.padding(.horizontal, 20).frame(height: 47)
+            ScrollView([.horizontal, .vertical]) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 0) {
+                        tableTitle("镜像", width: 370)
+                        tableTitle("大小", width: 130)
+                        tableTitle("创建时间", width: 160)
+                        tableTitle("操作", width: 265)
                     }
-                    Spacer()
-                    Text(sizeLabel(image.Size)).font(.caption).foregroundStyle(.secondary)
-                    Menu {
-                        Button("运行") { model.perform(["run",image.title], title:"Run container") }
-                        Button("详情") {
-                            model.action("inspect",
-                                fields:["kind":"images","id":image.Id],title:"Inspect image")
-                        }
-                        Divider()
-                        Button("删除", role:.destructive) {
-                            if model.confirm("删除镜像？",detail:image.title) {
-                                model.perform(["rmi",image.Id],title:"Remove image")
-                            }
-                        }
-                    } label: { Image(systemName:"ellipsis.circle") }
-                        .menuStyle(.borderlessButton).frame(width:30)
-                }.padding(.vertical,7)
-            }.listStyle(.inset)
+                    tableDivider
+                    ForEach(model.images.filter { match([$0.title, $0.Id]) }) { item in
+                        HStack(spacing: 0) {
+                            tableValue(
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(item.RepoTags?.joined(separator: ", ") ?? "<none>")
+                                        .foregroundStyle(KiriPalette.link(model.isLight))
+                                        .fontWeight(.semibold).lineLimit(2)
+                                    Text(String(item.Id.dropFirst(min(item.Id.count, 7)).prefix(12)))
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                                }, width: 370)
+                            tableValue(Text(sizeLabel(item.Size)), width: 130)
+                            tableValue(Text(dateLabel(item.Created)), width: 160)
+                            tableValue(
+                                HStack(spacing: 5) {
+                                    smallAction("运行") {
+                                        model.perform(["run", item.title], title: "Run container",
+                                                      showResult: false)
+                                    }
+                                    smallAction("详情") {
+                                        model.action("inspect",
+                                            fields:["kind":"images","id":item.Id],title:"inspect")
+                                    }
+                                    smallAction("删除", destructive: true) {
+                                        if model.confirm("确定删除镜像 \(item.title)？",
+                                                         detail: "已有容器使用时 Docker 会拒绝删除。") {
+                                            model.perform(["rmi", item.title], title: "Remove image",
+                                                          showResult: false)
+                                        }
+                                    }
+                                }, width: 265)
+                        }.frame(minHeight: 56)
+                        tableDivider
+                    }
+                    if model.images.isEmpty {
+                        Text("暂无数据").foregroundStyle(KiriPalette.muted(model.isLight))
+                            .frame(maxWidth: .infinity, minHeight: 130)
+                    }
+                }.frame(minWidth: 973)
+            }
         }
     }
 
     private var volumes: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("\(model.volumes.count) 个数据卷").foregroundStyle(.secondary)
+                Text("数据卷").font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Button("创建 Volume") {
                     if let name = model.ask("新 Volume 名称") {
-                        model.action("create_volume",fields:["name":name],title:"Create volume")
+                        model.action("create_volume", fields:["name":name],
+                                     title:"Create volume")
                     }
                 }.buttonStyle(.borderedProminent)
-            }.padding(16)
-            List(model.volumes.filter { match([$0.Name,$0.Mountpoint ?? ""]) }) { item in
-                HStack {
-                    Image(systemName:"externaldrive").foregroundStyle(.secondary)
-                    VStack(alignment:.leading) {
-                        Text(item.Name).fontWeight(.medium)
-                        Text(item.Mountpoint ?? "local")
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }.padding(.horizontal, 20).frame(height: 47)
+            ScrollView([.horizontal, .vertical]) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 0) {
+                        tableTitle("名称", width: 250)
+                        tableTitle("驱动", width: 110)
+                        tableTitle("路径", width: 420)
+                        tableTitle("操作", width: 170)
                     }
-                    Spacer()
-                    Text(item.Driver ?? "local").font(.caption).foregroundStyle(.secondary)
-                    Menu {
-                        Button("详情") {
-                            model.action("inspect",
-                                fields:["kind":"volumes","id":item.Name],title:"Inspect volume")
-                        }
-                        Button("删除",role:.destructive) {
-                            if model.confirm("删除 Volume \(item.Name)？",
-                                detail:"此操作可能永久删除数据。") {
-                                model.perform(["rmvol",item.Name],title:"Remove volume")
-                            }
-                        }
-                    } label: { Image(systemName:"ellipsis.circle") }
-                        .menuStyle(.borderlessButton).frame(width:30)
-                }.padding(.vertical,7)
-            }.listStyle(.inset)
+                    tableDivider
+                    ForEach(model.volumes.filter {
+                        match([$0.Name, $0.Driver ?? ""])
+                    }) { item in
+                        HStack(spacing: 0) {
+                            tableValue(
+                                Text(item.Name).foregroundStyle(KiriPalette.link(model.isLight))
+                                    .fontWeight(.semibold), width:250)
+                            tableValue(Text(item.Driver ?? "local"), width:110)
+                            tableValue(
+                                Text(item.Mountpoint ?? "—")
+                                    .font(.system(size: 11, design:.monospaced))
+                                    .lineLimit(2), width:420)
+                            tableValue(
+                                HStack(spacing: 5) {
+                                    smallAction("详情") {
+                                        model.action("inspect",
+                                            fields:["kind":"volumes","id":item.Name],title:"inspect")
+                                    }
+                                    smallAction("删除", destructive:true) {
+                                        if model.confirm("删除 Volume \(item.Name)？",
+                                                         detail:"可能永久丢失数据。") {
+                                            model.perform(["rmvol",item.Name],title:"Remove volume",
+                                                          showResult:false)
+                                        }
+                                    }
+                                },width:170)
+                        }.frame(minHeight: 53)
+                        tableDivider
+                    }
+                    if model.volumes.isEmpty {
+                        Text("暂无数据").foregroundStyle(KiriPalette.muted(model.isLight))
+                            .frame(maxWidth: .infinity, minHeight: 130)
+                    }
+                }.frame(minWidth: 998)
+            }
         }
     }
 
     private var networks: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("\(model.networks.count) 个网络").foregroundStyle(.secondary)
+                Text("网络").font(.system(size: 13, weight: .semibold))
                 Spacer()
                 Button("创建网络") {
-                    if let name = model.ask("新网络名称") {
-                        model.action("create_network",fields:["name":name],title:"Create network")
+                    if let name = model.ask("网络名称") {
+                        model.action("create_network",fields:["name":name],
+                                     title:"Create network")
                     }
                 }.buttonStyle(.borderedProminent)
-            }.padding(16)
-            List(model.networks.filter { match([$0.Name,$0.Id]) }) { item in
-                HStack {
-                    Image(systemName:"network").foregroundStyle(.secondary)
-                    Text(item.Name).fontWeight(.medium)
-                    Spacer()
-                    Text(item.Driver ?? "bridge").font(.caption).foregroundStyle(.secondary)
-                    Menu {
-                        Button("详情") {
-                            model.action("inspect",
-                                fields:["kind":"networks","id":item.Id],title:"Inspect network")
-                        }
-                        Button("删除",role:.destructive) {
-                            if model.confirm("删除网络 \(item.Name)？",
-                                detail:"正在使用的网络无法删除。") {
-                                model.perform(["rmnet",item.Id],title:"Remove network")
-                            }
-                        }
-                    } label: { Image(systemName:"ellipsis.circle") }
-                        .menuStyle(.borderlessButton).frame(width:30)
-                }.padding(.vertical,7)
-            }.listStyle(.inset)
+            }.padding(.horizontal, 20).frame(height: 47)
+            ScrollView([.horizontal, .vertical]) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 0) {
+                        tableTitle("网络", width: 335)
+                        tableTitle("驱动", width: 170)
+                        tableTitle("范围", width: 170)
+                        tableTitle("操作", width: 195)
+                    }
+                    tableDivider
+                    ForEach(model.networks.filter { match([$0.Name, $0.Id]) }) { item in
+                        HStack(spacing: 0) {
+                            tableValue(
+                                VStack(alignment: .leading, spacing:4) {
+                                    Text(item.Name).foregroundStyle(KiriPalette.link(model.isLight))
+                                        .fontWeight(.semibold)
+                                    Text(String(item.Id.prefix(12)))
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                                },width:335)
+                            tableValue(Text(item.Driver ?? "—"),width:170)
+                            tableValue(Text(item.Scope ?? "—"),width:170)
+                            tableValue(
+                                HStack(spacing: 5) {
+                                    smallAction("详情") {
+                                        model.action("inspect",
+                                            fields:["kind":"networks","id":item.Id],title:"inspect")
+                                    }
+                                    if !["bridge","host","none"].contains(item.Name) {
+                                        smallAction("删除", destructive:true) {
+                                            if model.confirm("确定删除网络 \(item.Name)？",
+                                                             detail:"正在使用的网络无法删除。") {
+                                                model.perform(["rmnet",item.Id],
+                                                              title:"Remove network",showResult:false)
+                                            }
+                                        }
+                                    }
+                                },width:195)
+                        }.frame(minHeight:53)
+                        tableDivider
+                    }
+                    if model.networks.isEmpty {
+                        Text("暂无数据").foregroundStyle(KiriPalette.muted(model.isLight))
+                            .frame(maxWidth: .infinity, minHeight: 130)
+                    }
+                }.frame(minWidth: 918)
+            }
         }
     }
 
-    private var compose: some View {
-        Form {
-            Section("Docker Compose") {
-                HStack {
-                    TextField("Compose .yaml/.yml 文件", text:$model.composeFile)
-                        .textFieldStyle(.roundedBorder)
-                    Button("选择…") { model.chooseFile() }
-                }
-                HStack {
-                    Button("Up -d") { composeAction("compose_up") }
-                        .buttonStyle(.borderedProminent)
-                    Button("Down") {
-                        if model.confirm("停止 Compose 项目？",detail:"将停止并删除项目容器。") {
-                            composeAction("compose_down")
-                        }
-                    }
-                    Button("PS") { composeAction("compose_ps") }
-                    Button("Logs") { composeAction("compose_logs") }
-                }
-                Text("通过已安装的 Docker Compose 插件执行；不会修改默认 Docker Context。")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }.formStyle(.grouped)
+    private func panelCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 14, content: content)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+            .background(KiriPalette.panel(model.isLight))
+            .clipShape(RoundedRectangle(cornerRadius: 11))
+            .overlay(RoundedRectangle(cornerRadius: 11)
+                .stroke(KiriPalette.border(model.isLight)))
     }
 
-    private func composeAction(_ operation: String) {
-        model.action(operation,fields:["path":model.composeFile],title:operation)
+    private func fieldLabel(_ label: String) -> some View {
+        Text(label).font(.system(size: 12))
+            .foregroundStyle(KiriPalette.muted(model.isLight))
+    }
+
+    private func styledField(_ hint: String, text: Binding<String>) -> some View {
+        TextField(hint, text: text)
+            .textFieldStyle(.plain)
+            .padding(.horizontal, 10)
+            .frame(height: 33)
+            .background(KiriPalette.raised(model.isLight))
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7)
+                .stroke(KiriPalette.border(model.isLight)))
+    }
+
+    // Compose is an inventory of Docker projects, not a Compose command runner.
+    // Docker's canonical compose.project/service labels are the source of truth;
+    // no Compose YAML path is needed to discover existing deployments.
+    private var composeProjects: [String] {
+        Array(Set(model.containers.compactMap { $0.composeProject }
+            .filter { !$0.isEmpty })).sorted()
+    }
+
+    private var compose: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Text("Compose 项目")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("\(composeProjects.count) 个项目")
+                    .foregroundStyle(KiriPalette.muted(model.isLight))
+                    .font(.system(size: 11))
+                Spacer()
+                Text("按 Docker Compose 项目分组 · 展开查看容器")
+                    .foregroundStyle(KiriPalette.muted(model.isLight))
+                    .font(.system(size: 11))
+                Button("刷新") { model.refresh() }
+            }
+            .padding(.horizontal, 20)
+            .frame(height: 52)
+            ScrollView(.horizontal) {
+                ScrollView(.vertical) {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                    if composeProjects.isEmpty {
+                        VStack(spacing: 9) {
+                            Image(systemName: "square.3.layers.3d")
+                                .font(.system(size: 28))
+                            Text("暂无 Compose 项目")
+                                .font(.system(size: 14, weight: .medium))
+                            Text("使用 Docker Compose 创建的容器会自动按项目归类显示。")
+                                .font(.system(size: 12))
+                        }
+                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                        .frame(maxWidth: .infinity, minHeight: 220)
+                    }
+                    ForEach(composeProjects, id: \.self) { project in
+                        let members = model.containers.filter { $0.composeProject == project }
+                        let running = members.filter { $0.State == "running" }.count
+                        let expanded = !model.collapsedProjects.contains(project)
+                        VStack(spacing: 0) {
+                            Button {
+                                if expanded {
+                                    model.collapsedProjects.insert(project)
+                                } else {
+                                    model.collapsedProjects.remove(project)
+                                }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .frame(width: 14)
+                                    Image(systemName: "square.3.layers.3d")
+                                        .font(.system(size: 17))
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(project)
+                                            .font(.system(size: 14, weight: .semibold))
+                                        Text("\(members.count) 个容器 · \(running) 个运行中")
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(KiriPalette.muted(model.isLight))
+                                    }
+                                    Spacer()
+                                    Text(running == members.count ? "运行中" :
+                                         running == 0 ? "已停止" : "部分运行")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(running > 0 ? KiriPalette.mint :
+                                            KiriPalette.muted(model.isLight))
+                                }
+                                .padding(.horizontal, 16)
+                                .frame(height: 64)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            if expanded {
+                                tableDivider
+                                HStack(spacing: 0) {
+                                    tableTitle("服务 / 容器", width: 260)
+                                    tableTitle("状态", width: 135)
+                                    tableTitle("CPU / 内存", width: 230)
+                                    tableTitle("端口", width: 165)
+                                    tableTitle("操作", width: 280)
+                                }
+                                tableDivider
+                                ForEach(members) { container in
+                                    HStack(spacing: 0) {
+                                        tableValue(
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text(container.Labels?["com.docker.compose.service"]
+                                                     ?? container.title)
+                                                    .fontWeight(.semibold)
+                                                    .foregroundStyle(KiriPalette.link(model.isLight))
+                                                Text(container.title + " · " + (container.Image ?? ""))
+                                                    .font(.system(size: 10))
+                                                    .foregroundStyle(KiriPalette.muted(model.isLight))
+                                                    .lineLimit(1)
+                                            }, width: 260)
+                                        tableValue(
+                                            Text(container.Status ?? container.State ?? "—"),
+                                            width: 135)
+                                        tableValue(containerResourceCell(container), width: 230)
+                                        tableValue(portLinks(container.Ports), width: 165)
+                                        tableValue(containerButtons(container), width: 280)
+                                    }
+                                    .frame(minHeight: 63)
+                                    tableDivider
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(KiriPalette.panel(model.isLight))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10)
+                            .stroke(KiriPalette.border(model.isLight)))
+                    }
+                }
+                    .padding(20)
+                    .frame(minWidth: 1180, alignment: .leading)
+                }
+            }
+        }
+        .background(KiriPalette.bg(model.isLight))
     }
 
     private var builds: some View {
-        Form {
-            Section("Docker Buildx") {
-                HStack {
-                    TextField("构建目录",text:$model.buildFolder)
-                        .textFieldStyle(.roundedBorder)
-                    Button("选择…") { model.chooseBuildFolder() }
+        ScrollView {
+            panelCard {
+                Text("Dockerfile / BuildKit").font(.system(size:14,weight:.semibold))
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment:.leading,spacing:7) {
+                        fieldLabel("构建目录")
+                        styledField("/Users/you/project",text:$model.buildFolder)
+                        Button("选择构建目录…") { model.chooseBuildFolder() }
+                            .font(.system(size:11))
+                    }
+                    VStack(alignment:.leading,spacing:7) {
+                        fieldLabel("镜像 Tag")
+                        styledField("my-app:latest",text:$model.buildTag)
+                    }
                 }
-                TextField("镜像标签",text:$model.buildTag,prompt:Text("my-app:latest"))
-                Picker("目标架构",selection:$model.buildPlatform) {
+                fieldLabel("目标架构")
+                Picker("",selection:$model.buildPlatform) {
                     Text("linux/arm64").tag("linux/arm64")
                     Text("linux/amd64").tag("linux/amd64")
                 }
+                .labelsHidden().frame(width:165)
                 Button("构建镜像") {
                     model.action("build",fields:[
                         "path":model.buildFolder,
                         "name":model.buildTag,
                         "platform":model.buildPlatform
-                    ],title:"Buildx")
+                    ],title:"build")
                 }.buttonStyle(.borderedProminent)
-                Text("使用标准 Docker Buildx --load。")
-                    .font(.caption).foregroundStyle(.secondary)
             }
-        }.formStyle(.grouped)
+            .padding(20)
+        }
     }
 
     private var settings: some View {
-        Form {
-            Section("Kiri Moby VM") {
-                HStack {
-                    Button("启动 VM") { model.perform(["start"],title:"Start VM",showResult:false) }
-                    Button("停止 VM") {
-                        if model.confirm("停止 VM？",detail:"将停止正在运行的容器。") {
-                            model.perform(["stop"],title:"Stop VM")
-                        }
-                    }
-                    Button("重启 VM") {
-                        if model.confirm("重启 VM？",detail:"正在运行的容器会暂时中断。") {
-                            model.perform(["restart"],title:"Restart VM")
-                        }
+        ScrollView {
+            VStack(spacing: 14) {
+                panelCard {
+                    Text("Kiri Moby VM").font(.system(size:14,weight:.semibold))
+                    Text("使用独立标准 Docker Engine、ext4 数据盘和私有 Docker Socket。不会覆盖 OrbStack。")
+                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                    HStack(spacing:8) {
+                        Button("启动 VM") {
+                            model.perform(["start"], title:"Start VM",showResult:false)
+                        }.buttonStyle(.borderedProminent)
+                        Button("停止 VM") {
+                            if model.confirm("停止 VM 和正在运行的容器？",
+                                             detail:"Docker 容器会被停止。") {
+                                model.perform(["stop"],title:"Stop VM",showResult:false)
+                            }
+                        }.foregroundStyle(KiriPalette.red)
                     }
                 }
-                LabeledContent("VM 状态",value:model.online ? "Running" : "Stopped")
-                LabeledContent("Balloon 目标",
-                    value:model.snapshot?.memory?.balloon_target_mib.map { "\($0) MiB" } ?? "—")
-            }
-            Section("Mac 目录共享") {
-                ForEach(model.shares,id:\.self) { share in
+                panelCard {
                     HStack {
-                        Text(share).textSelection(.enabled)
+                        Text("虚拟机资源上限")
+                            .font(.system(size: 14, weight: .semibold))
                         Spacer()
-                        Button("移除",role:.destructive) {
-                            model.action("remove_share",fields:["path":share],title:"Remove share")
+                        if model.resourceEditsPending {
+                            Text("未保存")
+                                .foregroundStyle(KiriPalette.red)
+                        } else if model.resourceRestartRequired {
+                            Text("等待重启生效")
+                                .foregroundStyle(.orange)
+                        } else {
+                            Text("已保存")
+                                .foregroundStyle(KiriPalette.muted(model.isLight))
+                        }
+                    }
+                    if let config = model.snapshot?.vm_config {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Stepper(value: $model.resourceCPUs,
+                                    in: 1...max(config.max_cpus, 1)) {
+                                HStack {
+                                    Text("CPU")
+                                    Spacer()
+                                    Text("\(model.resourceCPUs) 核")
+                                        .fontWeight(.semibold)
+                                        .monospacedDigit()
+                                }
+                            }
+                            HStack {
+                                Text("最大内存")
+                                Spacer()
+                                Text(String(format: "%.2f GiB", Double(model.resourceMemoryMiB) / 1024))
+                                    .fontWeight(.semibold)
+                                    .monospacedDigit()
+                            }
+                            Slider(
+                                value: Binding(
+                                    get: { Double(model.resourceMemoryMiB) },
+                                    set: { model.resourceMemoryMiB = Int($0) }),
+                                in: 1024.0...Double(max(1024, config.max_memory_mib)),
+                                step: 256)
+                            HStack {
+                                Text("1 GiB")
+                                Spacer()
+                                Text(String(format: "上限 %.2f GiB", Double(config.max_memory_mib) / 1024))
+                            }
+                            .font(.system(size: 10))
+                            .foregroundStyle(KiriPalette.muted(model.isLight))
+                        }
+                        .font(.system(size: 12))
+                        if model.online {
+                            Text("当前运行：\(model.snapshot?.info?.NCPU.map(String.init) ?? "—") CPU · \(model.snapshot?.memory?.vm_memory_ceiling_mib.map { String(format: "%.2f GiB", Double($0) / 1024) } ?? "读取中") 内存上限")
+                                .font(.system(size: 11))
+                                .foregroundStyle(KiriPalette.muted(model.isLight))
+                        }
+                        HStack(spacing: 8) {
+                            Button("仅保存") { model.saveResources(apply: false) }
+                                .disabled(!model.resourceEditsPending)
+                            Button(model.online ? "保存并重启 VM" : "保存并应用") {
+                                if !model.online || model.confirm(
+                                    "应用新的 CPU 和内存上限？",
+                                    detail: "需要重启虚拟机。运行中的容器将被中断，容器数据卷不会删除。") {
+                                    model.saveResources(apply: true)
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!model.resourceEditsPending &&
+                                      !model.resourceRestartRequired)
+                        }
+                    } else {
+                        Text("正在读取 Mac 资源限制…")
+                            .foregroundStyle(KiriPalette.muted(model.isLight))
+                    }
+                    Text("CPU 与最大内存是 VM 启动参数，修改后需重启才能生效；运行中的内存 Balloon 仍会自动伸缩，但不会改变已启动 VM 的物理内存上限。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                }
+                panelCard {
+                    Text("Mac 目录共享").font(.system(size:14,weight:.semibold))
+                    Text("选择允许 Docker 容器访问的 Mac 项目目录；未经授权不会共享整个 /Users 或 /Volumes。更改后需要重启 VM 才能生效。")
+                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                    if model.shares.isEmpty {
+                        Text("尚未授权目录")
+                            .foregroundStyle(KiriPalette.muted(model.isLight))
+                    }
+                    ForEach(model.shares,id:\.self) { share in
+                        HStack {
+                            Text(share).font(.system(size:11,design:.monospaced))
+                                .textSelection(.enabled)
+                            Spacer(minLength:8)
+                            smallAction("移除",destructive:true) {
+                                if model.confirm("移除对 \(share) 的共享授权？",
+                                                 detail:"生效前请重新启动 VM。") {
+                                    model.action("remove_share",
+                                                 fields:["path":share],title:"Remove share")
+                                }
+                            }
+                        }.padding(.vertical,3)
+                    }
+                    HStack(spacing: 8) {
+                        Button("选择共享目录…") { model.chooseShare() }
+                            .buttonStyle(.borderedProminent)
+                        Button("应用更改并重启 VM") {
+                            if model.confirm("重启 Moby VM 以应用目录授权？",
+                                             detail:"运行中的容器会被中断。") {
+                                model.action("apply_shares",title:"Apply shares")
+                            }
                         }
                     }
                 }
-                HStack {
-                    Button("授权目录…") { model.chooseShare() }
-                    Button("应用共享变更（重启 VM）") {
-                        if model.confirm("应用目录共享？",detail:"将重启 Linux VM。") {
-                            model.action("apply_shares",title:"Apply shares")
-                        }
-                    }
-                }
-                Text("只共享显式授权的 /Users 或 /Volumes 项目目录；不会自动共享整个 Mac。")
-                    .font(.caption).foregroundStyle(.secondary)
             }
-        }.formStyle(.grouped)
+            .padding(20)
+        }
     }
+
 }
 
 @main
@@ -738,9 +3547,10 @@ private struct KiriMobyNativeApp: App {
         WindowGroup("Kiri Moby") {
             RootView().environmentObject(model)
         }
-        .defaultSize(width: 1130, height: 740)
+        .defaultSize(width: 940, height: 600)
+        .windowToolbarStyle(.unified)
+
         .commands {
-            CommandGroup(replacing: .newItem) {}
             CommandMenu("Moby") {
                 Button("刷新") { model.refresh() }.keyboardShortcut("r")
                 Button("启动 VM") {
@@ -754,7 +3564,16 @@ private struct KiriMobyNativeApp: App {
             }
         }
 
-        MenuBarExtra("Kiri Moby", systemImage:"shippingbox") {
+        WindowGroup("容器控制台", id: "container-console", for: ConsoleSession.self) { $session in
+            if let session {
+                DetachedConsoleView(session: session)
+            } else {
+                Text("请选择一个容器会话")
+            }
+        }
+        .defaultSize(width: 860, height: 550)
+
+        MenuBarExtra {
             Text(model.online ? "Moby VM Running" : "Moby VM Stopped")
             Button("刷新") { model.refresh() }
             Button(model.online ? "停止 VM" : "启动 VM") {
@@ -767,6 +3586,10 @@ private struct KiriMobyNativeApp: App {
                 NSApplication.shared.windows.first?.makeKeyAndOrderFront(nil)
             }
             Button("退出 Kiri Moby") { NSApplication.shared.terminate(nil) }
+        } label: {
+            Image(nsImage: KiriMenuBarIcon.image)
+                .renderingMode(.template)
+                .opacity(model.online ? 1 : 0.42)
         }
     }
 }

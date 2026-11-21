@@ -2,7 +2,7 @@ name: Moby shell script syntax
 
 on:
   push:
-    branches: [moby-engine, memory-reclaim]
+    branches: [moby-engine, apple-silicon-native-parity]
     paths:
       - "scripts/moby/**"
       - ".github/workflows/moby-script-lint.yml"

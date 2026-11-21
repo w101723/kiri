@@ -2,24 +2,30 @@ name: Native SwiftUI Moby GUI compile and bridge check
 
 on:
   push:
-    branches: [native-swiftui-moby]
+    branches: [native-swiftui-moby, apple-silicon-native-parity]
     paths:
       - "crates/kiri/native/**"
-      - "crates/kiri/src/ui/moby.rs"
-      - "crates/kiri/src/ui/mod.rs"
-      - "crates/kiri/src/main.rs"
+      - "scripts/moby/check-native-ui-parity.py"
+      - "scripts/moby/audit-native-runtime.py"
+      - "Cargo.toml"
+      - "crates/kiri/native/KiriMobyHost.swift"
       - ".github/workflows/moby-native-ui-check.yml"
   pull_request:
     paths:
       - "crates/kiri/native/**"
-      - "crates/kiri/src/ui/moby.rs"
-      - "crates/kiri/src/ui/mod.rs"
-      - "crates/kiri/src/main.rs"
+      - "scripts/moby/check-native-ui-parity.py"
+      - "scripts/moby/audit-native-runtime.py"
+      - "Cargo.toml"
       - ".github/workflows/moby-native-ui-check.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# Avoid a backlog of expensive SwiftTerm builds for superseded UI commits.
+concurrency:
+  group: native-moby-gui-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   swiftui:
@@ -29,6 +35,10 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
       - uses: actions/checkout@v4
+      - name: Compare native controls and layout with the original Moby UI
+        run: python3 scripts/moby/check-native-ui-parity.py
+      - name: Reject embedded web runtimes and obsolete menu-bar assets
+        run: python3 scripts/moby/audit-native-runtime.py
       - name: Cross-compile actual native SwiftUI app for Apple Silicon
         run: |
           set -euo pipefail
@@ -36,6 +46,7 @@ jobs:
           swiftc -parse-as-library -O \
             -target arm64-apple-macosx14.0 -sdk "$sdk" \
             crates/kiri/native/MobyApp.swift \
+            crates/kiri/native/MobyRuntime.swift \
             -o "$RUNNER_TEMP/kiri-moby-native-ui"
           test "$(lipo "$RUNNER_TEMP/kiri-moby-native-ui" -archs)" = arm64
           if otool -L "$RUNNER_TEMP/kiri-moby-native-ui" | grep -E 'WebKit|JavaScriptCore'; then
@@ -44,8 +55,57 @@ jobs:
           fi
           codesign --force --sign - "$RUNNER_TEMP/kiri-moby-native-ui"
           codesign --verify --strict "$RUNNER_TEMP/kiri-moby-native-ui"
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
-      - name: Compile existing Rust backend with native command bridge
-        run: cargo check -p kiri --target aarch64-apple-darwin
+      - name: Exercise Swift Docker Unix socket client using a local mock dockerd
+        run: |
+          set -euo pipefail
+          sdk="$(xcrun --sdk macosx --show-sdk-path)"
+          swiftc -parse-as-library -O -target x86_64-apple-macosx14.0 -sdk "$sdk" \
+            crates/kiri/native/MobyRuntime.swift \
+            scripts/moby/native-runtime-smoke.swift \
+            -o "$RUNNER_TEMP/native-moby-uds-smoke"
+          "$RUNNER_TEMP/native-moby-uds-smoke"
+
+  swift-host:
+    name: Compile independent Swift VZ host for Apple Silicon
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile full Swift Virtualization.framework host
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="$(xcrun --sdk macosx --show-sdk-path)"
+          swiftc -parse-as-library -O -target arm64-apple-macosx14.0 -sdk "$sdk" \
+            crates/kiri/native/KiriMobyHost.swift -o "$RUNNER_TEMP/kiri-moby-host"
+          test "$(lipo "$RUNNER_TEMP/kiri-moby-host" -archs)" = arm64
+          if otool -L "$RUNNER_TEMP/kiri-moby-host" | grep -E 'WebKit|JavaScriptCore'; then exit 1; fi
+          codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$RUNNER_TEMP/kiri-moby-host"
+          codesign --verify --strict "$RUNNER_TEMP/kiri-moby-host"
+
+  swiftterm:
+    name: Verify SwiftTerm-backed production terminal on Apple Silicon
+    runs-on: macos-15-intel
+    timeout-minutes: 25
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve pinned SwiftTerm and cross-compile production AppKit executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift build --package-path crates/kiri/native -c release \
+            --triple arm64-apple-macosx14.0 --product kiri-moby-ui
+          find crates/kiri/native/.build -type f -name kiri-moby-ui -print
+          file="$(find crates/kiri/native/.build -type f -name kiri-moby-ui | head -n1)"
+          test -n "$file"
+          test "$(lipo "$file" -archs)" = arm64
+          if otool -L "$file" | grep -E 'WebKit|JavaScriptCore'; then
+            echo "SwiftTerm build unexpectedly links WebKit" >&2
+            exit 1
+          fi
+          codesign --force --sign - "$file"
+          codesign --verify --strict "$file"
