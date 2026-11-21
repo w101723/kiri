@@ -2267,7 +2267,6 @@ private struct RootView: View {
     }
 
     @ViewBuilder
-    @ViewBuilder
     private func nativeSidebarItem(_ page: Page) -> some View {
         let selected = model.page == page
         let row = Label {
