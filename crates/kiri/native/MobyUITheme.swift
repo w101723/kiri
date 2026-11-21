@@ -82,8 +82,8 @@ enum KiriLayoutMetrics {
     static let sidebarMin: CGFloat = 180
     static let sidebarIdeal: CGFloat = 180
     static let sidebarMax: CGFloat = 220
-    static let contentMin: CGFloat = 280
-    static let contentIdeal: CGFloat = 320
+    static let contentMin: CGFloat = 316
+    static let contentIdeal: CGFloat = 340
     static let contentMax: CGFloat = 600
     static let detailMin: CGFloat = 420
     static let containerRowHeight: CGFloat = 44

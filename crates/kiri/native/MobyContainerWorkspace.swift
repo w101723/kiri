@@ -178,15 +178,15 @@ struct ContainerWorkspaceDetail: View {
 
     var body: some View {
         ZStack {
-            KiriArcBoxContainerInfoTab(telemetry: model.telemetry, container: container)
-                .opacity(activeTab == .overview ? 1 : 0)
-                .allowsHitTesting(activeTab == .overview)
-                .accessibilityHidden(activeTab != .overview)
-
-            ModernInspectorView(telemetry: model.telemetry, item: container, onAction: onAction)
-                .opacity(activeTab == .metrics ? 1 : 0)
-                .allowsHitTesting(activeTab == .metrics)
-                .accessibilityHidden(activeTab != .metrics)
+            // Unlike PTY sessions, Info and Metrics are lightweight and
+            // should only exist while visible to avoid duplicate inspect calls.
+            if activeTab == .overview {
+                KiriArcBoxContainerInfoTab(telemetry: model.telemetry, container: container)
+            }
+            if activeTab == .metrics {
+                ModernInspectorView(telemetry: model.telemetry,
+                                    item: container, onAction: onAction)
+            }
 
             ForEach(loadedLogIDs.sorted(), id: \.self) { id in
                 EmbeddedContainerLogsView(

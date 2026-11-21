@@ -359,14 +359,16 @@ private struct RootView: View {
                 get: { model.page },
                 set: { if let page = $0 { model.page = page } }
             )) {
-                Section("Docker") {
-                    ForEach([Page.containers, .volumes, .images, .builds,
-                             .networks, .compose], id: \.self) { page in
+                Section("SYSTEM") {
+                    nativeSidebarItem(.overview)
+                }
+                Section("DOCKER") {
+                    ForEach([Page.containers, .volumes, .images, .networks,
+                             .compose, .builds], id: \.self) { page in
                         nativeSidebarItem(page)
                     }
                 }
-                Section("系统") {
-                    nativeSidebarItem(.overview)
+                Section("KIRI") {
                     nativeSidebarItem(.settings)
                 }
             }
