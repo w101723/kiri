@@ -2187,7 +2187,6 @@ private struct RootView: View {
         .onChange(of: model.page) { _, _ in
             model.search = ""
             isSearching = false
-            activeDetailTab = .overview
         }
         .onChange(of: selectedContainerIDs) { old, new in
             if let added = new.subtracting(old).first {
@@ -2468,6 +2467,126 @@ private struct RootView: View {
         .padding(.horizontal, 13)
         .padding(.bottom, 12)
         .padding(.top, 6)
+    }
+
+    private var selectedContainer: ContainerItem? {
+        model.containers.first(where: { $0.Id == selectedInspectorID })
+    }
+
+    private var currentPageSubtitle: String {
+        switch model.page {
+        case .containers:
+            let running = model.containers.filter { $0.State == "running" }.count
+            return "\(running) / \(model.containers.count) 运行中"
+        case .images:
+            let bytes = model.images.reduce(Int64(0)) { $0 + max(0, $1.Size ?? 0) }
+            return "\(model.images.count) 个镜像 · \(sizeLabel(bytes)) 总计"
+        case .volumes: return "\(model.volumes.count) 个数据卷"
+        case .networks: return "\(model.networks.count) 个网络"
+        case .compose: return "\(composeProjects.count) 个项目"
+        case .builds: return "Dockerfile / BuildKit"
+        case .overview: return model.online ? "标准 Docker Engine 运行中" : "引擎未启动"
+        case .settings: return "虚拟机设置与目录授权"
+        }
+    }
+
+    private func createResource() {
+        switch model.page {
+        case .containers:
+            if let image = model.ask("输入要创建的容器镜像", placeholder: "nginx:alpine") {
+                model.perform(["run", image], title: "新建容器", showResult: false)
+            }
+        case .images:
+            if let name = model.ask("镜像名称", placeholder: "alpine:3.22") {
+                model.perform(["pull", name], title: "Pull image", showResult: false)
+            }
+        case .volumes:
+            if let name = model.ask("新 Volume 名称") {
+                model.action("create_volume", fields: ["name": name], title: "Create volume")
+            }
+        case .networks:
+            if let name = model.ask("网络名称") {
+                model.action("create_network", fields: ["name": name], title: "Create network")
+            }
+        default: break
+        }
+    }
+
+    // The middle column gives resources an actual navigable identity; the
+    // right column retains full management controls for every existing page.
+    private var resourceNavigator: some View {
+        List {
+            switch model.page {
+            case .images:
+                ForEach(model.images.filter { match([$0.title, $0.Id]) }) { item in
+                    Button {
+                        model.action("inspect", fields: ["kind": "images", "id": item.Id],
+                                     title: "inspect")
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "square.stack.3d.up.fill")
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 25)
+                            VStack(alignment: .leading, spacing: 4) {
+                                styledImageName(item.title)
+                                    .font(.system(size: 12.5))
+                                    .lineLimit(1)
+                                Text(sizeLabel(item.Size))
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(minHeight: 45, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                }
+            case .volumes:
+                ForEach(model.volumes.filter { match([$0.Name, $0.Driver ?? ""]) }) { item in
+                    Button {
+                        model.action("inspect", fields: ["kind": "volumes", "id": item.Name],
+                                     title: "inspect")
+                    } label: {
+                        Label(item.Name, systemImage: "externaldrive.fill")
+                            .font(.system(size: 12))
+                            .frame(minHeight: 45, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                }
+            case .networks:
+                ForEach(model.networks.filter { match([$0.Name, $0.Id]) }) { item in
+                    Button {
+                        model.action("inspect", fields: ["kind": "networks", "id": item.Id],
+                                     title: "inspect")
+                    } label: {
+                        Label(item.Name, systemImage: "network")
+                            .font(.system(size: 12))
+                            .frame(minHeight: 45, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                }
+            case .compose:
+                ForEach(composeProjects.filter { match([$0]) }, id: \.self) { project in
+                    Label(project, systemImage: "square.3.layers.3d")
+                        .font(.system(size: 12))
+                        .frame(minHeight: 45, alignment: .leading)
+                }
+            case .builds:
+                Label("Dockerfile / BuildKit", systemImage: "hammer.fill")
+                Label(model.buildPlatform, systemImage: "cpu")
+            case .overview:
+                Label("Docker Engine", systemImage: "shippingbox.fill")
+                Label("VM 资源与内存", systemImage: "memorychip")
+                Label("镜像和卷", systemImage: "square.stack.3d.up")
+            case .settings:
+                Label("虚拟机", systemImage: "cpu")
+                Label("CPU 与内存", systemImage: "memorychip")
+                Label("Mac 目录共享", systemImage: "folder")
+            case .containers:
+                EmptyView()
+            }
+        }
+        .listStyle(.inset)
+        .scrollContentBackground(.hidden)
     }
 
     @ViewBuilder private var content: some View {
