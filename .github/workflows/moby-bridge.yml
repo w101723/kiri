@@ -1,0 +1,61 @@
+name: Moby bridge verification
+
+on:
+  push:
+    branches: [moby-engine, apple-silicon-native-parity]
+    paths:
+      - "crates/kiri-moby-bridge/**"
+      - "crates/kiri/native/**"
+      - "scripts/moby/check-native-ui-parity.py"
+      - ".github/workflows/moby-bridge.yml"
+  pull_request:
+    paths:
+      - 'crates/kiri-moby-bridge/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/moby-bridge.yml'
+
+concurrency:
+  group: moby-bridge-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  guest:
+    name: Linux arm64 guest transport / Rust tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - name: Host unit tests
+        run: cargo test -p kiri-moby-bridge --lib
+      - name: Compile guest for Linux arm64
+        run: cargo check -p kiri-moby-bridge --bin kiri-moby-guest --target aarch64-unknown-linux-musl
+
+  macos:
+    name: Native Swift Host / macOS ARM64
+    runs-on: macos-15-intel
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and sign native Swift Host
+        run: |
+          set -euo pipefail
+          mkdir -p target/moby-dist
+          swiftc -parse-as-library -O -target arm64-apple-macosx14.0 \
+            -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
+            crates/kiri/native/KiriMobyHost.swift -o target/moby-dist/kiri-moby-host
+          test "$(lipo target/moby-dist/kiri-moby-host -archs)" = arm64
+          codesign --force --sign - --entitlements crates/kiri/kiri.entitlements target/moby-dist/kiri-moby-host
+          codesign --verify --strict target/moby-dist/kiri-moby-host
+          tar -C target/moby-dist -czf target/moby-dist/kiri-moby-host-arm64.tgz kiri-moby-host
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kiri-moby-host-arm64
+          path: target/moby-dist/kiri-moby-host-arm64.tgz
+          retention-days: 7

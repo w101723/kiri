@@ -1,0 +1,58 @@
+name: Build standard Moby ARM64 Guest
+
+# The unified milestone workflow already builds the full Guest on each
+# relevant moby-engine commit. Keep this redundant Guest-only build available
+# for explicit diagnostics without automatically compiling a second kernel.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: moby-guest-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  guest:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - name: Tools for ARM64 guest and ext4 image
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends musl-tools cpio e2fsprogs
+      - name: Compile native ARM64 guest vsock bridge
+        run: cargo build --release --target aarch64-unknown-linux-musl -p kiri-moby-bridge --bin kiri-moby-guest
+      - name: Export standard Docker Engine guest rootfs and sparse data disk
+        run: ./scripts/moby/build-guest.sh
+      - name: Build Linux ARM64 kernel for Kiri Moby
+        run: |
+          set -euo pipefail
+          mkdir -p guest/out target/kernel-build
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD/guest/kernel:/src:ro" \
+            -v "$PWD/guest/out:/out" \
+            -v "$PWD/target/kernel-build:/build" \
+            ubuntu:24.04 sh /src/build.sh
+          test -s guest/out/Image
+      - name: Bundle bootable guest assets and record fingerprints
+        run: |
+          cp guest/out/Image target/moby-guest/Image
+          (cd target/moby-guest && sha256sum Image >> SHA256SUMS)
+          mkdir -p target/moby-dist
+          tar -C target/moby-guest -czf target/moby-dist/kiri-moby-guest-arm64.tgz \
+            Image initramfs.cpio data.img.tgz system.img.tgz rootfs.revision SHA256SUMS
+          ls -lh target/moby-dist/
+      - name: Upload experimental guest boot assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: kiri-moby-guest-arm64
+          path: target/moby-dist/kiri-moby-guest-arm64.tgz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

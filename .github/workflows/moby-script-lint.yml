@@ -1,0 +1,55 @@
+name: Moby shell script syntax
+
+on:
+  push:
+    branches: [moby-engine, apple-silicon-native-parity]
+    paths:
+      - "scripts/moby/**"
+      - ".github/workflows/moby-script-lint.yml"
+  pull_request:
+    paths:
+      - "scripts/moby/**"
+      - ".github/workflows/moby-script-lint.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  bash-syntax:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail on malformed upgrade and install scripts
+        shell: bash
+        run: |
+          bash -n scripts/moby/upgrade-artifacts-macos.sh
+          bash -n scripts/moby/install-artifacts-macos.sh
+          bash -n scripts/moby/build-guest.sh
+          bash -n scripts/moby/smoke-macos.sh
+          bash -n scripts/moby/test-port-events-macos.sh
+          bash -n scripts/moby/upgrade-host-macos.sh
+          bash -n scripts/moby/install-milestone-macos.sh
+          bash -n scripts/moby/sign-notarize-macos.sh
+          bash -n scripts/moby/sign-personal-macos.sh
+          bash -n scripts/moby/setup-personal-signing-macos.sh
+          bash -n scripts/moby/install-local-macos.sh
+          bash -n scripts/moby/package-dmg-macos.sh
+          # On Linux the opt-in command must refuse to authorize a Mac app.
+          bash scripts/moby/install-local-macos.sh --status
+          if bash scripts/moby/install-local-macos.sh --trust-local-builds; then
+            echo "Local trust must require macOS interactive approval" >&2
+            exit 1
+          fi
+          # The fallback cannot claim trusted signing. Incomplete secret
+          # configuration must fail closed before touching macOS Keychain.
+          output="$RUNNER_TEMP/kiri-signing-mode"
+          GITHUB_OUTPUT="$output" bash scripts/moby/sign-notarize-macos.sh /nonexistent
+          grep -Fxq 'notarized=false' "$output"
+          if MACOS_DEVELOPER_ID_P12_BASE64=dummy bash scripts/moby/sign-notarize-macos.sh /nonexistent; then
+            echo "Partially configured signing must fail" >&2
+            exit 1
+          fi
+          sh -n scripts/moby/guest/stage1-init
+          sh -n scripts/moby/guest/init
+          sh -n scripts/moby/guest/udhcpc-script
+          sh -n scripts/moby/guest/rosetta.sh

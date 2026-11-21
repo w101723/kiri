@@ -1,0 +1,130 @@
+#!/bin/sh
+# Persistent ext4 stage-2 PID1: dockerd never runs from initramfs.
+set -eu
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 022
+log() { echo "[kiri-moby-init] $*" >&2; }
+die() { log "FATAL: $*"; exec /bin/sh; }
+[ "$#" -eq 1 ] && [ "$1" = --ext4-root ] ||
+    die "refusing to run Docker Engine outside real ext4 root"
+
+# STAGE 2: PID 1 after switch_root. Verify it is a real ext4 mount.
+root_mount="$(awk '$5 == "/" { print; exit }' /proc/self/mountinfo)"
+case "$root_mount" in
+    *" - ext4 "*) log "Stage 2: ext4 root verified (runc pivot_root compatible)" ;;
+    *) die "Stage 2 root is not ext4: $root_mount" ;;
+esac
+log "Guest build: $(/usr/local/sbin/kiri-moby-guest --version 2>&1)"
+mkdir -p /dev/pts /dev/shm /sys/fs/cgroup /run /tmp /var/lib /mnt/mac /Users /Volumes
+mount -t devpts devpts /dev/pts || die "mount devpts"
+mount -t tmpfs tmpfs /dev/shm || die "mount /dev/shm"
+mount -t tmpfs tmpfs /run || die "mount /run"
+mount -t tmpfs tmpfs /tmp || die "mount /tmp"
+mount -t cgroup2 cgroup2 /sys/fs/cgroup || die "mount cgroup v2"
+# Evict cold dentry/inode caches a little more readily while leaving the
+# useful Docker image/build page cache alone. Does not promise macOS RSS drop.
+printf '%s\n' 160 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null || true
+
+# The Apple VZ guest RTC may initially be 1970. Sync BEFORE dockerd.
+boot_epoch=""
+idle_drop_caches=0
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in
+        kiri.moby_boot_time=*) boot_epoch="${arg#*=}" ;;
+        kiri.moby_idle_drop_caches=1) idle_drop_caches=1 ;;
+    esac
+done
+case "$boot_epoch" in
+    ''|*[!0-9]*) die "Invalid/missing Mac boot epoch" ;;
+esac
+log "Synchronizing CLOCK_REALTIME from Mac epoch=$boot_epoch"
+/usr/local/sbin/kiri-moby-guest --set-clock "$boot_epoch" ||
+    die "Guest time synchronization failed"
+log "Guest clock: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+[ "$(date -u '+%s')" -ge 1700000000 ] || die "Guest clock remains invalid"
+
+hostname kiri-moby
+echo kiri-moby >/etc/hostname
+mkdir -p /var/lib/docker /var/lib/containerd /run/containerd /run/docker /var/log
+# Explicit project shares use hex-coded mount mappings from the trusted
+# Mac launcher; legacy full /Users and /Volumes access requires an explicit
+# KIRI_MOBY_SHARE_MAC=1 opt-in on the Host.
+share_spec=""
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in kiri.moby_shares=*) share_spec="${arg#*=}" ;; esac
+done
+if mount -t virtiofs kiri-mac /mnt/mac; then
+    if [ -n "$share_spec" ]; then
+        /usr/local/sbin/kiri-moby-guest --mount-shares "$share_spec" ||
+            die "authorized Mac directory mounts failed"
+    else
+        [ ! -d /mnt/mac/Users ] ||
+            mount --bind /mnt/mac/Users /Users || die "Mac /Users bind failed"
+        [ ! -d /mnt/mac/Volumes ] ||
+            mount --bind /mnt/mac/Volumes /Volumes || die "Mac /Volumes bind failed"
+    fi
+else
+    [ -z "$share_spec" ] || die "VirtioFS required for authorized Mac directory shares"
+    log "Mac host file shares disabled"
+fi
+/usr/local/sbin/kiri-rosetta || log "Rosetta not available"
+
+ip link set lo up
+ip link set eth0 up || die "guest eth0 missing"
+udhcpc -i eth0 -s /usr/local/sbin/kiri-udhcpc -n -q -t 12 || die "guest DHCP failed"
+
+containerd --root /var/lib/containerd --state /run/containerd >/dev/console 2>&1 &
+containerd_pid=$!
+dockerd --host unix:///run/docker.sock --containerd /run/containerd/containerd.sock \
+    --data-root /var/lib/docker --exec-root /run/docker \
+    --storage-driver overlay2 --iptables=true --ip6tables=true \
+    >/dev/console 2>&1 &
+dockerd_pid=$!
+KIRI_MOBY_ENGINE_SOCKET=/run/docker.sock /usr/local/sbin/kiri-moby-guest >/dev/console 2>&1 &
+bridge_pid=$!
+
+shutdown() {
+    trap - TERM INT
+    log "Stopping dockerd/containerd and flushing ext4 data"
+    [ -z "${idle_cache_worker_pid:-}" ] || kill -TERM "$idle_cache_worker_pid" 2>/dev/null || true
+    kill -TERM "$dockerd_pid" "$containerd_pid" "$bridge_pid" 2>/dev/null || true
+    n=0
+    while kill -0 "$dockerd_pid" 2>/dev/null && [ "$n" -lt 20 ]; do
+        sleep 1
+        n=$((n + 1))
+    done
+    sync
+    # The root filesystem cannot be unmounted while PID 1 is running.
+    mount -o remount,ro / 2>/dev/null || log "ext4 root still busy; journaling handles recovery"
+    poweroff -f
+}
+trap shutdown TERM INT
+log "Moby services started on ext4 root"
+# Optional A/B experiment: release only CLEAN Linux file cache once after an
+# idle window. This is deliberately NOT the normal memory policy: evicting
+# cache on every poll harms Docker builds and may not reduce macOS VZ RSS.
+# Two successful, container-free Docker queries guard against early startup
+# and restart-policy containers. No dirty cache or Docker state is deleted.
+idle_cache_worker_pid=""
+if [ "$idle_drop_caches" = 1 ]; then
+    (
+        sleep 60
+        kill -0 "$dockerd_pid" 2>/dev/null || exit 0
+        running="$(docker --host unix:///run/docker.sock ps -q 2>/dev/null)" || exit 0
+        [ -z "$running" ] || exit 0
+        sleep 15
+        kill -0 "$dockerd_pid" 2>/dev/null || exit 0
+        running="$(docker --host unix:///run/docker.sock ps -q 2>/dev/null)" || exit 0
+        [ -z "$running" ] || exit 0
+        before="$(awk '$1 == "Cached:" { print $2; exit }' /proc/meminfo)"
+        if printf '1\n' > /proc/sys/vm/drop_caches; then
+            after="$(awk '$1 == "Cached:" { print $2; exit }' /proc/meminfo)"
+            log "Memory lab: idle file-cache eviction once, Cached ${before:-?} -> ${after:-?} KiB; verify macOS Physical footprint separately"
+        else
+            log "Memory lab: idle file-cache eviction unavailable"
+        fi
+    ) &
+    idle_cache_worker_pid="$!"
+fi
+wait "$dockerd_pid" || log "dockerd exited unexpectedly"
+shutdown

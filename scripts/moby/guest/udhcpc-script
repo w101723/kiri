@@ -1,0 +1,16 @@
+#!/bin/sh
+# BusyBox udhcpc callback; avoids systemd and OpenRC.
+set -e
+case "$1" in
+  bound|renew)
+    ifconfig "$interface" "$ip" netmask "$subnet" up
+    ip route del default dev "$interface" 2>/dev/null || true
+    if [ -n "$router" ]; then
+      set -- $router
+      ip route replace default via "$1" dev "$interface"
+    fi
+    : >/etc/resolv.conf
+    for server in $dns; do echo "nameserver $server" >>/etc/resolv.conf; done
+    ;;
+  deconfig) ip addr flush dev "$interface" || true ;;
+esac

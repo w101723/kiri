@@ -1,0 +1,143 @@
+name: Native Moby visual screenshot (source-rendered)
+
+on:
+  push:
+    branches: [apple-silicon-native-parity]
+    paths:
+      - "crates/kiri/native/**"
+      - "scripts/moby/check-native-ui-parity.py"
+      - "brand/icon/png/**"
+      - ".github/workflows/moby-native-visual-preview.yml"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/kiri/native/**"
+      - "scripts/moby/check-native-ui-parity.py"
+      - ".github/workflows/moby-native-visual-preview.yml"
+      - "brand/icon/png/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: moby-visual-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  screenshot:
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert production UI parity source contract
+        run: python3 scripts/moby/check-native-ui-parity.py
+      - name: Compile native SwiftUI preview (test-only x86 binary, release remains arm64-only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="$(xcrun --sdk macosx --show-sdk-path)"
+          app="$RUNNER_TEMP/Kiri Moby UI Preview.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$RUNNER_TEMP/Kiri.iconset"
+          for spec in '16 1' '16 2' '32 1' '32 2' '128 1' '128 2' '256 1' '256 2' '512 1' '512 2'; do
+            set -- $spec
+            pixels="$(($1 * $2))"
+            name="icon_${1}x${1}"
+            if [ "$2" = 2 ]; then name="${name}@2x"; fi
+            cp "brand/icon/png/kiri-app-icon-${pixels}.png" "$RUNNER_TEMP/Kiri.iconset/${name}.png"
+          done
+          iconutil -c icns -o "$app/Contents/Resources/Kiri.icns" "$RUNNER_TEMP/Kiri.iconset"
+          cat > "$app/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>kiri-moby-ui-preview</string>
+            <key>CFBundleIdentifier</key><string>dev.kiri.moby.preview</string>
+            <key>CFBundleName</key><string>Kiri Moby UI Preview</string>
+            <key>CFBundleIconFile</key><string>Kiri</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleVersion</key><string>1</string>
+          </dict></plist>
+          PLIST
+          swiftc -parse-as-library -D KIRI_UI_PREVIEW \
+            -target x86_64-apple-macosx14.0 -sdk "$sdk" \
+            crates/kiri/native/MobyApp.swift \
+            crates/kiri/native/MobyRuntime.swift \
+            -o "$app/Contents/MacOS/kiri-moby-ui-preview"
+          mkdir -p "$app/Contents/Resources"
+          python3 scripts/moby/audit-native-runtime.py --app "$app"
+          codesign --force --sign - "$app"
+      - name: Render a real AppKit window with explicitly synthetic preview data
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p screenshots
+          app="$RUNNER_TEMP/Kiri Moby UI Preview.app"
+          # First capture the full-height table and four inspector overview cards.
+          KIRI_MOBY_UI_PREVIEW=1 KIRI_MOBY_UI_PREVIEW_NO_FLOATING=1 \
+            "$app/Contents/MacOS/kiri-moby-ui-preview" \
+            > screenshots/preview-containers.log 2>&1 &
+          table_pid="$!"
+          # CI macOS may need a cold-start delay before an NSWindow exists.
+          # Verify center-of-screen pixels are not the black Finder desktop:
+          # a successful screencapture exit code alone is insufficient.
+          cat > "$RUNNER_TEMP/check-visual.swift" <<'SWIFT'
+          import AppKit
+          let url = URL(fileURLWithPath: CommandLine.arguments[1])
+          guard let data = try? Data(contentsOf: url),
+                let rep = NSBitmapImageRep(data: data),
+                let color = rep.colorAt(x: rep.pixelsWide / 2,
+                                         y: rep.pixelsHigh / 2)?
+                    .usingColorSpace(.deviceRGB),
+                color.brightnessComponent > 0.15 else {
+            fputs("Screen center is black: native UI may not be ready\n", stderr)
+            exit(1)
+          }
+          SWIFT
+          swiftc "$RUNNER_TEMP/check-visual.swift" -o "$RUNNER_TEMP/check-visual"
+          table_ok=false
+          for attempt in 1 2 3 4; do
+            sleep 4
+            if ! kill -0 "$table_pid" 2>/dev/null; then break; fi
+            screencapture -x -t png screenshots/native-moby-container-resources.png || true
+            if "$RUNNER_TEMP/check-visual" screenshots/native-moby-container-resources.png; then
+              table_ok=true
+              break
+            fi
+          done
+          kill "$table_pid" 2>/dev/null || true
+          test "$table_ok" = true
+          sleep 1
+          # Then capture the embedded third-column SwiftTerm card.
+          KIRI_MOBY_UI_PREVIEW=1 "$app/Contents/MacOS/kiri-moby-ui-preview" \
+            > screenshots/preview-console.log 2>&1 &
+          pid="$!"
+          sleep 8
+          if kill -0 "$pid" 2>/dev/null; then
+            if screencapture -x -t png screenshots/native-moby-preview.png; then
+              test -s screenshots/native-moby-preview.png
+              echo "Screenshot captured from real SwiftUI/AppKit view (sample data)" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "Screen capture unavailable on hosted macOS runner" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            kill "$pid" 2>/dev/null || true
+          else
+            echo "Native preview process exited before capture" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kiri-moby-native-ui-visual-preview
+          path: screenshots/
+          if-no-files-found: warn
+          retention-days: 14
+      # Upload the exact SwiftUI/AppKit/SwiftTerm source under test, so the
+      # complete compilable view code is available without checking out Git.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kiri-moby-complete-swiftui-source
+          path: |
+            crates/kiri/native/MobyApp.swift
+            crates/kiri/native/MobyRuntime.swift
+            crates/kiri/native/Package.swift
+          retention-days: 14

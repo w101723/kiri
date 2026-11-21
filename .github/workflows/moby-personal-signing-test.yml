@@ -1,0 +1,155 @@
+name: Kiri Moby personal signing identity test
+
+on:
+  pull_request:
+    paths:
+      - "scripts/moby/sign-personal-macos.sh"
+      - "scripts/moby/setup-personal-signing-macos.sh"
+      - "scripts/moby/install-local-macos.sh"
+      - ".github/workflows/moby-personal-signing-test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  personal-identity:
+    name: Verify stable self-signed P12 with real macOS codesign
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate personal signer using a disposable throwaway certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          export KIRI_PERSONAL_SIGN_DIR="$RUNNER_TEMP/kiri-test-signing"
+          bash scripts/moby/setup-personal-signing-macos.sh
+          export KIRI_PERSONAL_SIGN_P12_BASE64="$(cat "$KIRI_PERSONAL_SIGN_DIR/p12-base64")"
+          export KIRI_PERSONAL_SIGN_P12_PASSWORD="$(cat "$KIRI_PERSONAL_SIGN_DIR/p12-password")"
+          export KIRI_PERSONAL_SIGN_CERT_SHA256="$(cat "$KIRI_PERSONAL_SIGN_DIR/cert-sha256")"
+          export KIRI_REQUIRE_PERSONAL_SIGNING=true
+          app="packaged/Kiri Moby.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/bin/cli-plugins"
+          cat > "$app/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <plist version="1.0"><dict>
+          <key>CFBundleIdentifier</key><string>dev.kiri.app.moby</string>
+          <key>CFBundleExecutable</key><string>kiri-moby-ui</string>
+          <key>CFBundlePackageType</key><string>APPL</string>
+          <key>CFBundleVersion</key><string>1</string>
+          </dict></plist>
+          PLIST
+          cat > "$RUNNER_TEMP/test.c" <<'C'
+          int main(void) { return 0; }
+          C
+          clang -arch x86_64 -o "$app/Contents/MacOS/kiri-moby-ui" "$RUNNER_TEMP/test.c"
+                    for bin in kiri-moby-host docker cli-plugins/docker-compose cli-plugins/docker-buildx; do
+            cp "$app/Contents/MacOS/kiri-moby-ui" "$app/Contents/Resources/bin/$bin"
+          done
+          bash scripts/moby/sign-personal-macos.sh "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -d --extract-certificates="$RUNNER_TEMP/check-" "$app" >/dev/null 2>&1
+          test "$(shasum -a 256 "$RUNNER_TEMP/check-0" | awk '{print $1}')" = "$KIRI_PERSONAL_SIGN_CERT_SHA256"
+          echo "Stable identity signed a real macOS app; certificate fingerprint pinned correctly."
+          # A second build from the same P12 must retain its signing identity.
+          bash scripts/moby/sign-personal-macos.sh "$app"
+          codesign -d --extract-certificates="$RUNNER_TEMP/check-again-" "$app" >/dev/null 2>&1
+          cmp "$RUNNER_TEMP/check-0" "$RUNNER_TEMP/check-again-0"
+          echo "Personal leaf certificate unchanged across two full signatures."
+          # CI must not revert silently to ad-hoc when personal signing is mandatory.
+          if env -u KIRI_PERSONAL_SIGN_P12_BASE64 -u KIRI_PERSONAL_SIGN_P12_PASSWORD \
+            -u KIRI_PERSONAL_SIGN_CERT_SHA256 \
+            bash scripts/moby/sign-personal-macos.sh "$app"; then
+            echo "FAIL: missing private identity unexpectedly permitted" >&2
+            exit 1
+          fi
+          echo "PASS: fail-closed missing-secrets case."
+
+      - name: Verify CA-issued personal identity without Apple trusted root
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/private-ca-test"
+          mkdir -p "$work"
+          cat > "$work/root.cnf" <<'CONF'
+          [ req ]
+          prompt = no
+          distinguished_name = dn
+          x509_extensions = ca
+          [ dn ]
+          CN = Kiri CI Temporary Root CA
+          [ ca ]
+          basicConstraints = critical, CA:TRUE
+          keyUsage = critical, keyCertSign, cRLSign
+          subjectKeyIdentifier = hash
+          CONF
+          openssl req -new -x509 -nodes -newkey rsa:2048 -sha256 -days 2 \
+            -config "$work/root.cnf" -keyout "$work/root.key" -out "$work/root.pem" 2>/dev/null
+          openssl req -new -nodes -newkey rsa:2048 -sha256 \
+            -subj "/CN=Kiri CI Issued Code Signing" \
+            -keyout "$work/leaf.key" -out "$work/leaf.csr" 2>/dev/null
+          cat > "$work/leaf.ext" <<'CONF'
+          basicConstraints = critical, CA:FALSE
+          keyUsage = critical, digitalSignature
+          extendedKeyUsage = codeSigning
+          CONF
+          openssl x509 -req -in "$work/leaf.csr" -CA "$work/root.pem" \
+            -CAkey "$work/root.key" -CAcreateserial -days 2 \
+            -extfile "$work/leaf.ext" -out "$work/leaf.pem"
+          openssl pkcs12 -export -inkey "$work/leaf.key" -in "$work/leaf.pem" \
+            -certfile "$work/root.pem" -name "Kiri CI Issued Code Signing" \
+            -passout pass:CI-only-test-password -out "$work/issued.p12"
+          export KIRI_PERSONAL_SIGN_P12_BASE64="$(base64 < "$work/issued.p12" | tr -d '\r\n')"
+          export KIRI_PERSONAL_SIGN_P12_PASSWORD=CI-only-test-password
+          export KIRI_PERSONAL_SIGN_CERT_SHA256="$(openssl x509 -in "$work/leaf.pem" -outform DER | shasum -a 256 | awk '{print $1}')"
+          export KIRI_REQUIRE_PERSONAL_SIGNING=true
+          bash scripts/moby/sign-personal-macos.sh "packaged/Kiri Moby.app"
+          codesign --verify --deep --strict --verbose=2 "packaged/Kiri Moby.app"
+          echo "PASS: Private-CA-issued leaf signed using its bundled CA certificate."
+
+
+  real-certificate:
+    name: Validate actual repository P12 in a fresh macOS keychain environment
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create isolated native-entrypoint signing fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="packaged/Kiri Moby.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/bin/cli-plugins"
+          cat > "$app/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <plist version="1.0"><dict>
+          <key>CFBundleIdentifier</key><string>dev.kiri.app.moby</string>
+          <key>CFBundleExecutable</key><string>kiri-moby-ui</string>
+          <key>CFBundlePackageType</key><string>APPL</string>
+          <key>CFBundleVersion</key><string>1</string>
+          </dict></plist>
+          PLIST
+          printf 'int main(void){return 0;}\n' > "$RUNNER_TEMP/fixture.c"
+          clang -arch x86_64 -o "$app/Contents/MacOS/kiri-moby-ui" "$RUNNER_TEMP/fixture.c"
+                    for bin in kiri-moby-host docker cli-plugins/docker-compose cli-plugins/docker-buildx; do
+            cp "$app/Contents/MacOS/kiri-moby-ui" "$app/Contents/Resources/bin/$bin"
+          done
+      - name: Sign with the actual P12 and verify the native Finder executable
+        shell: bash
+        env:
+          KIRI_PERSONAL_SIGN_P12_BASE64: ${{ secrets.KIRI_PERSONAL_SIGN_P12_BASE64 }}
+          KIRI_PERSONAL_SIGN_P12_PASSWORD: ${{ secrets.KIRI_PERSONAL_SIGN_P12_PASSWORD }}
+          KIRI_PERSONAL_SIGN_CERT_SHA256: ${{ secrets.KIRI_PERSONAL_SIGN_CERT_SHA256 }}
+          KIRI_PERSONAL_SIGN_CA_PEM_BASE64: ${{ secrets.KIRI_PERSONAL_SIGN_CA_PEM_BASE64 }}
+          KIRI_REQUIRE_PERSONAL_SIGNING: "true"
+        run: |
+          set -euo pipefail
+          test -n "$(printenv KIRI_PERSONAL_SIGN_CA_PEM_BASE64)" || {
+            echo "Missing public private-root CA PEM"; exit 1;
+          }
+          bash scripts/moby/sign-personal-macos.sh "packaged/Kiri Moby.app"
+          codesign --verify --deep --strict --verbose=2 "packaged/Kiri Moby.app"
+          codesign --verify --strict "packaged/Kiri Moby.app/Contents/MacOS/kiri-moby-ui"
+          echo "PASS: actual Kiri personal P12 signed native SwiftUI bundle in a clean runner."
