@@ -3,7 +3,8 @@
 set -e
 case "$1" in
   bound|renew)
-    ifconfig "$interface" "$ip" netmask "$subnet" up
+    # Debian does not ship applet symlinks for ifconfig; call BusyBox directly.
+    /bin/busybox ifconfig "$interface" "$ip" netmask "$subnet" up
     ip route del default dev "$interface" 2>/dev/null || true
     if [ -n "$router" ]; then
       set -- $router

@@ -2,14 +2,14 @@
 # Builds the Linux ARM64 Guest kernel for Apple Silicon hosts.
 # Runs inside a Debian/Ubuntu container and writes /out/Image.
 set -eu
-KVER="${KVER:-6.18.58}"
+KVER="${KVER:-7.3.5}"
 case "$(uname -m)" in
   aarch64) cross="" pkgs="" ;;
   *) cross=aarch64-linux-gnu- pkgs=gcc-aarch64-linux-gnu ;;
 esac
 apt-get update -qq && apt-get install -y -qq build-essential flex bison bc libssl-dev libelf-dev dwarves curl xz-utils python3 $pkgs >/dev/null
 cd /build
-[ -f "linux-$KVER/Makefile" ] && [ -f "linux-$KVER/scripts/Kbuild.include" ] || { rm -rf "linux-$KVER"; curl -fsSL "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz" | tar xJ; }
+[ -f "linux-$KVER/Makefile" ] && [ -f "linux-$KVER/scripts/Kbuild.include" ] || { rm -rf "linux-$KVER"; curl -fsSL "https://cdn.kernel.org/pub/linux/kernel/v${KVER%%.*}.x/linux-$KVER.tar.xz" | tar xJ; }
 cd "linux-$KVER"
 # Kiri's kernel patches. Reverse-apply first so re-runs on a cached tree stay clean.
 for p in /src/patches/*.patch; do

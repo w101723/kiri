@@ -11,15 +11,14 @@
  #include <net/netdev_queues.h>
  #include <net/xdp_sock_drv.h>
 +#include <linux/tcp.h>
+ #include <net/page_pool/helpers.h>
  
  static int napi_weight = NAPI_POLL_WEIGHT;
- module_param(napi_weight, int, 0444);
-@@ -2580,7 +2581,42 @@
- 	}
+@@ -2491,6 +2492,41 @@
  	skb_set_hash(skb, virtio_net_hash_value(hdr_hash), rss_hash_type);
  }
-+
-+/* Kiri: Virtualization.framework's NAT hands the guest TCP packets of up to
+ 
++/* Kiri: Virtualization.framework/libslirp NAT hands the guest TCP packets of up to
 + * 64 KiB, coalesced from the Mac's segments, with DF clear and no segment
 + * size. Delivered locally that is fine; forwarded to a container (published
 + * ports) each one was cut into MTU-size IP fragments for the container to
@@ -31,7 +30,7 @@
 +	const struct iphdr *iph;
 +	const struct tcphdr *th;
 +	unsigned int ihl, hlen, mss;
- 
++
 +	if (skb->protocol != htons(ETH_P_IP) || skb->len <= dev->mtu || skb_is_gso(skb))
 +		return;
 +	if (skb->ip_summed != CHECKSUM_UNNECESSARY && skb->ip_summed != CHECKSUM_PARTIAL)
@@ -57,7 +56,7 @@
  static void virtnet_receive_done(struct virtnet_info *vi, struct receive_queue *rq,
  				 struct sk_buff *skb, u8 flags)
  {
-@@ -2611,6 +2647,7 @@
+@@ -2523,6 +2559,7 @@
  
  	skb_record_rx_queue(skb, vq2rxq(rq->vq));
  	skb->protocol = eth_type_trans(skb, dev);

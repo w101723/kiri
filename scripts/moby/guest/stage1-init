@@ -1,10 +1,13 @@
 #!/bin/sh
-# Tiny first-stage boot: all Alpine/Moby packages live on EXT4, NOT in RAM.
-# /dev/vda: persistent Docker & Alpine ext4 root. /dev/vdb: read-only seed.
+# Tiny first-stage boot: the full Debian/Moby root lives on EXT4, NOT in RAM.
+# /dev/vda: persistent Docker data ext4 root. /dev/vdb: read-only system seed.
 set -eu
 export PATH=/bin:/sbin
 umask 022
 bb=/bin/busybox
+# Debian busybox-static has no blkid applet; the initramfs ships util-linux
+# /bin/blkid. Alpine keeps a BusyBox applet fallback.
+blkid() { if [ -x /bin/blkid ]; then /bin/blkid "$@"; else $bb blkid "$@"; fi; }
 log() { echo "[kiri-early-init] $*" >/dev/console; }
 die() { log "FATAL: $*"; exec /bin/sh; }
 
@@ -22,7 +25,7 @@ for attempt in 1 2 3 4 5 6 7 8 9 10; do
         [ -b "$device" ] || continue
         # BusyBox blkid does not guarantee util-linux -s/-o flags.
         # Parse its default tagged output rather than shelling out to udev.
-        labels="$($bb blkid "$device" 2>/dev/null || true)"
+        labels="$(blkid "$device" 2>/dev/null || true)"
         case "$labels" in
             *'LABEL="kiri-moby"'*) data_dev="$device" ;;
             *'LABEL="kiri-system"'*) seed_dev="$device" ;;
@@ -86,6 +89,6 @@ $bb umount /seed || die "unmount read-only system seed"
 $bb mount --move /dev /newroot/dev || die "move /dev"
 $bb mount --move /proc /newroot/proc || die "move /proc"
 $bb mount --move /sys /newroot/sys || die "move /sys"
-log "Switching to ext4 root without retaining Alpine initramfs in RAM"
+log "Switching to ext4 root without retaining the boot initramfs in RAM"
 exec /bin/busybox switch_root -c /dev/console /newroot /init --ext4-root
 die "switch_root failed"

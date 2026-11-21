@@ -130,7 +130,12 @@ fi
 
 ip link set lo up
 ip link set eth0 up || die "guest eth0 missing"
-udhcpc -i eth0 -s /usr/local/sbin/kiri-udhcpc -n -q -t 12 || die "guest DHCP failed"
+# Debian ships udhcpc only as a BusyBox applet; Alpine had a standalone link.
+udhcpc_bin="$(command -v udhcpc || echo /bin/busybox udhcpc)"
+$udhcpc_bin -i eth0 -s /usr/local/sbin/kiri-udhcpc -n -q -t 12 || die "guest DHCP failed"
+# Fallback DNS: the libslirp NAT forwarder always answers on 10.0.2.2 when the
+# DHCP-provided resolver list is empty or malformed.
+grep -qs "nameserver" /etc/resolv.conf || echo "nameserver 10.0.2.2" > /etc/resolv.conf
 
 containerd --root /var/lib/containerd --state /run/containerd >/dev/console 2>&1 &
 containerd_pid=$!
