@@ -181,7 +181,9 @@ private final class HVFHelper {
 
     // The bundled Docker Engine binaries live in the app bundle
     // (Resources/docker/bin). Exported read-only under the "docker" tag when
-    // complete; a missing bundle keeps the guest on its seed's engine.
+    // complete. The seed ships no engine: a missing bundle fails closed in
+    // the guest (init refuses to start dockerd), surfacing the packaging
+    // mistake instead of silently booting an old engine.
     static func bundledEngineDirectory() -> String? {
         let root = Bundle.main.bundleURL
             .deletingLastPathComponent().deletingLastPathComponent()
@@ -298,7 +300,7 @@ private final class HVFHelper {
         if let engine {
             trace("Injected Docker Engine: \(engine)")
         } else {
-            trace("No bundled Docker Engine; the guest seed's engine will be used")
+            trace("No bundled Docker Engine; the guest will fail closed (seed ships none)")
         }
         trace("Starting in-process libkrun in Helper PID \(getpid())")
         let launch: (UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> Int32 = { [self] translation, engineDir in

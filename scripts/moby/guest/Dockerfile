@@ -1,16 +1,11 @@
-# Stock Alpine base with only the support packages dockerd needs at runtime.
-# The Docker Engine itself is NOT installed from Alpine (28.x there): the
-# launcher exports the pinned engine binaries (docker-ce 29.x, built for
-# aarch64 by upstream) read-only over VirtioFS under the "docker" tag and PID1
-# prefers them, mirroring OrbStack's app-injected engine. The seed's own
-# /usr/bin/dockerd (Alpine package) remains as a fallback for backends that do
-# not export the tag.
+# Minimal Alpine base with only the support packages dockerd needs at runtime.
+# The Docker Engine is NOT part of the seed: the launcher exports the pinned
+# engine binaries (docker-ce 29.x, built for aarch64 by upstream) read-only
+# over VirtioFS under the "docker" tag and PID1 prefers them, mirroring
+# OrbStack's app-injected engine. A missing tag fails closed: an incomplete
+# injection is a packaging mistake, not a reason to boot an old engine.
 FROM --platform=linux/arm64 alpine:3.22
-# The Alpine docker package (28.x) stays as the fallback engine for backends
-# that do not export the injected tag; the launcher's pinned 29.x engine wins
-# when present.
-RUN apk add --no-cache docker docker-engine iptables ip6tables iproute2 e2fsprogs util-linux ca-certificates tzdata \
- && command -v dockerd && command -v containerd && command -v runc \
+RUN apk add --no-cache iptables ip6tables iproute2 e2fsprogs util-linux ca-certificates tzdata \
  && command -v iptables && command -v ip \
  && /bin/busybox --list | grep -qx switch_root \
  && /bin/busybox --list | grep -qx blkid \

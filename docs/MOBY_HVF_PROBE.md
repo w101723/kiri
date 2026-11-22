@@ -5,7 +5,7 @@ Helper loads libkrun into its own process and executes the vCPUs using Apple's
 public [Hypervisor.framework](https://developer.apple.com/documentation/hypervisor).
 There is no `Virtualization.framework` backend, Apple Virtualization worker or
 separate VMM/network proxy in this build. libslirp provides IPv4 DHCP/DNS/NAT in
-that process; dockerd and containerd still run inside Linux.
+that process; dockerd and containerd still run inside Linux. The engine comes only from the app bundle injection; the seed ships no engine and the guest fails closed without the tag.
 
 The GUI starts its bundled Helper on demand. The Helper holds `moby-vm.lock`,
 checks and installs bundled Guest assets, reads CPU/RAM and approved directory
