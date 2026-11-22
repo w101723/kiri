@@ -95,8 +95,6 @@ fn main() -> std::io::Result<()> {
     const CONTROL_VSOCK_PORT: u32 = 2376; // authenticated by guest-only vsock boundary
     const TCP_FORWARD_VSOCK_PORT: u32 = 2377; // Docker guest TCP published ports
     const MEMORY_VSOCK_PORT: u32 = 2378; // read-only /proc/meminfo telemetry
-
-
     // SAFETY: creates an AF_VSOCK stream socket and transfers ownership to
     // OwnedFd immediately; all addresses and lengths are initialized.
     fn listen(port: u32) -> io::Result<OwnedFd> {
@@ -197,6 +195,17 @@ fn main() -> std::io::Result<()> {
     });
 
     let socket = listen(DOCKER_VSOCK_PORT)?;
+    let machine_listener = listen(kiri_moby_bridge::machines::MACHINE_VSOCK_PORT)?;
+    // Machines + k8s lifecycle: one JSON request line per connection.
+    thread::spawn(move || loop {
+        let fd = unsafe {
+            libc::accept4(machine_listener.as_raw_fd(), std::ptr::null_mut(),
+                std::ptr::null_mut(), libc::SOCK_CLOEXEC)
+        };
+        if fd < 0 { continue; }
+        let stream = UnixStream::from(unsafe { OwnedFd::from_raw_fd(fd) });
+        kiri_moby_bridge::machines::serve(stream);
+    });
     let engine_path = std::env::var("KIRI_MOBY_ENGINE_SOCKET")
         .unwrap_or_else(|_| "/var/run/docker.sock".into());
 

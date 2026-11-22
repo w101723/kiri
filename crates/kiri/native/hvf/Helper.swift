@@ -226,7 +226,8 @@ private final class HVFHelper {
         guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { throw hostError("Another Helper owns the VM disk") }
         try guardedDirectory(data.appendingPathComponent("run"))
         try guardedDirectory(data.appendingPathComponent("logs"))
-        for name in ["host-control.sock", "docker.sock", "memory.sock", "ports.sock", "shutdown.sock"] {
+        for name in ["host-control.sock", "docker.sock", "memory.sock", "ports.sock",
+                     "machines.sock", "shutdown.sock"] {
             try removeStaleSocket(socketPath(name))
         }
         if unlink(shutdownDisposition.path) != 0 && errno != ENOENT {

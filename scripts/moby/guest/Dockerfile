@@ -8,8 +8,11 @@ FROM --platform=linux/arm64 alpine:3.22
 # docker-cli stays (no engine deps): PID1's memory worker uses `docker events`
 # to trigger file-cache eviction when the last container exits, and the
 # injected engine tag ships daemon binaries only.
-RUN apk add --no-cache docker-cli iptables ip6tables iproute2 e2fsprogs util-linux ca-certificates tzdata \
- && command -v docker iptables ip \
+# btrfs-progs: PID1's machines controller clones machine rootfs subvolumes
+# (`btrfs subvolume create/delete`); kernel + stage1 handle mounting.
+# curl: on-demand k3s download when the user enables Kubernetes.
+RUN apk add --no-cache docker-cli iptables ip6tables iproute2 e2fsprogs util-linux btrfs-progs curl ca-certificates tzdata \
+ && command -v docker iptables ip btrfs curl \
  && /bin/busybox --list | grep -qx switch_root \
  && /bin/busybox --list | grep -qx blkid \
  && /bin/busybox --list | grep -qx udhcpc

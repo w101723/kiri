@@ -8,11 +8,16 @@ die() { log "FATAL: $*"; exec /bin/sh; }
 [ "$#" -eq 1 ] && [ "$1" = --ext4-root ] ||
     die "refusing to run Docker Engine outside real ext4 root"
 
-# STAGE 2: PID 1 after switch_root. Verify it is a real ext4 mount.
+# STAGE 2: PID 1 after switch_root. Verify the root mount.
 root_mount="$(awk '$5 == "/" { print; exit }' /proc/self/mountinfo)"
 case "$root_mount" in
-    *" - ext4 "*) log "Stage 2: ext4 root verified (runc pivot_root compatible)" ;;
-    *) die "Stage 2 root is not ext4: $root_mount" ;;
+    *" - ext4 "*)
+        log "Stage 2: ext4 root verified (runc pivot_root compatible)" ;;
+    *" - btrfs "*)
+        # Btrfs data disk: the docker subvolume is the running root. Same
+        # pivot_root compatibility as ext4 (a real mountable filesystem).
+        log "Stage 2: btrfs docker subvolume verified as root" ;;
+    *) die "Stage 2 root is neither ext4 nor btrfs: $root_mount" ;;
 esac
 log "Guest build: $(/usr/local/sbin/kiri-moby-guest --version 2>&1)"
 mkdir -p /dev/pts /dev/shm /sys/fs/cgroup /run /tmp /var/lib /mnt/mac /Users /Volumes
@@ -21,6 +26,20 @@ mount -t tmpfs tmpfs /dev/shm || die "mount /dev/shm"
 mount -t tmpfs tmpfs /run || die "mount /run"
 mount -t tmpfs tmpfs /tmp || die "mount /tmp"
 mount -t cgroup2 cgroup2 /sys/fs/cgroup || die "mount cgroup v2"
+# Data disk: stage 1 already mounted the btrfs (label kiri-moby) and bind-
+# mounted it at /mnt/data, with the docker subvolume as the running root.
+# Verify the layout; legacy ext4 boots simply have no /mnt/data mount.
+if mount | grep -q " on /mnt/data "; then
+    for sub in docker machines k8s; do
+        [ -d "/mnt/data/$sub" ] || die "btrfs data disk missing subvolume: $sub"
+    done
+    log "Data disk: btrfs with docker/machines/k8s subvolumes"
+    mkdir -p /mnt/data/docker/var/lib/docker /mnt/data/docker/var/lib/containerd
+    mount --bind /mnt/data/docker/var/lib/docker /var/lib/docker ||
+        die "docker state bind failed"
+else
+    log "Data disk: legacy ext4 layout (no btrfs subvolumes)"
+fi
 # Evict cold dentry/inode caches a little more readily while leaving the
 # useful Docker image/build page cache alone. Does not promise macOS RSS drop.
 printf '%s\n' 160 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null || true

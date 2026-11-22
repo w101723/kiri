@@ -16,8 +16,8 @@ $bb mount -t sysfs sysfs /sys || die "mount /sys"
 $bb mount -t devtmpfs devtmpfs /dev || die "mount /dev"
 exec >/dev/console 2>&1
 
-# Linux device enumeration can differ between boots. Require distinct ext4
-# labels before mounting anything writable: never mount the OS seed RW.
+# Linux device enumeration can differ between boots. Require distinct data
+# and seed labels before mounting anything writable: never mount the OS seed RW.
 data_dev=""
 seed_dev=""
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
@@ -37,7 +37,19 @@ done
 [ -n "$data_dev" ] && [ -n "$seed_dev" ] &&
     [ "$data_dev" != "$seed_dev" ] || die "missing Kiri data or system disk label"
 log "Mounting persistent root $data_dev and read-only OS seed $seed_dev"
-$bb mount -t ext4 -o noatime "$data_dev" /newroot || die "mount Docker data/root disk"
+# The data disk is btrfs (docker/machines/k8s subvolumes); the OS tree that
+# becomes / lives in the docker subvolume. Legacy images are ext4. BusyBox
+# blkid output carries no TYPE= field, so detect by trying btrfs first.
+$bb mkdir -p /data-mnt
+if $bb mount -t btrfs -o nodatasum,nodatacow,noatime "$data_dev" /data-mnt 2>/dev/null; then
+    [ -d /data-mnt/docker ] || die "btrfs data disk missing docker subvolume"
+    $bb mount -o bind /data-mnt/docker /newroot || die "bind docker subvol as newroot"
+    # The btrfs root stays mounted for stage 2 (machines/k8s subvolumes).
+    $bb mkdir -p /newroot/mnt/data
+    $bb mount -o bind /data-mnt /newroot/mnt/data || die "bind btrfs root into newroot"
+else
+    $bb mount -t ext4 -o noatime "$data_dev" /newroot || die "mount Docker data/root disk"
+fi
 $bb mount -t ext4 -o ro,noatime "$seed_dev" /seed || die "mount signed read-only OS seed"
 
 stamp=.kiri-moby-rootfs-revision

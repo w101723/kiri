@@ -18,3 +18,7 @@
 CLAUDE.md
 CLAUDE.local.md
 .claude/
+
+# Session/tool working directories: never in the repo.
+/.zcode/
+/crates/kiri/native/.build/

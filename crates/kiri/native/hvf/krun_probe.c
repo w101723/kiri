@@ -28,7 +28,7 @@ static int32_t run(const char *directory, uint32_t memory_mib, uint8_t cpus,
                    const char *rosetta_directory, const char *docker_directory) {
     char kernel[PATH_MAX], initrd[PATH_MAX], data[PATH_MAX], seed[PATH_MAX], console[PATH_MAX];
     char docker[sizeof(((struct sockaddr_un *)0)->sun_path)], stop[sizeof(docker)],
-         telemetry[sizeof(docker)], ports[sizeof(docker)];
+         telemetry[sizeof(docker)], ports[sizeof(docker)], machines[sizeof(docker)];
     char cmdline[2048];
 #define PATH_IN(buf, name) do { \
     int n = snprintf(buf, sizeof(buf), "%s/%s", directory, name); \
@@ -42,6 +42,7 @@ static int32_t run(const char *directory, uint32_t memory_mib, uint8_t cpus,
     PATH_IN(docker, helper ? "run/docker.sock" : "docker.sock");
     PATH_IN(stop, helper ? "run/shutdown.sock" : "shutdown.sock");
     PATH_IN(telemetry, helper ? "run/memory.sock" : "memory.sock");
+    PATH_IN(machines, helper ? "run/machines.sock" : "machines.sock");
     if (helper) PATH_IN(ports, "run/ports.sock");
 #undef PATH_IN
     int length = snprintf(cmdline, sizeof(cmdline),
@@ -80,6 +81,7 @@ static int32_t run(const char *directory, uint32_t memory_mib, uint8_t cpus,
     CHECK(krun_add_vsock_port2(ctx, 2375, docker, true));
     CHECK(krun_add_vsock_port2(ctx, 2376, stop, true));
     CHECK(krun_add_vsock_port2(ctx, 2378, telemetry, true));
+    CHECK(krun_add_vsock_port2(ctx, 2379, machines, true));
     if (helper) CHECK(krun_add_vsock_port2(ctx, 2377, ports, true));
     for (uint8_t i = 0; i < share_count; i++) {
         char tag[16];

@@ -91,15 +91,28 @@ rm -f "$seed" "$disk"
 truncate -s "$system_mib"M "$seed"
 sudo mkfs.ext4 -q -F -m 0 -L kiri-system -E lazy_itable_init=1,lazy_journal_init=1 \
   -d "$work/root" "$seed"
+# Data disk: btrfs, seeded with the same tree. Subvolumes give machines and
+# k8s OrbStack-style per-rootfs snapshots; docker keeps its own subvolume.
 truncate -s "$size"G "$disk"
-sudo mkfs.ext4 -q -F -m 0 -L kiri-moby -E lazy_itable_init=1,lazy_journal_init=1 \
-  -d "$work/root" "$disk"
+sudo mkfs.btrfs -q -L kiri-moby "$disk"
+data_mnt="$work/data-mnt"
+sudo mkdir -p "$data_mnt"
+sudo mount -o loop "$disk" "$data_mnt"
+trap 'sudo umount "$data_mnt" 2>/dev/null || true' EXIT
+# Seed the docker subvolume with the OS tree (same content as before), then
+# create the machines/k8s layout for later use.
+sudo btrfs subvolume create "$data_mnt/docker"
+sudo cp -a "$work/root/." "$data_mnt/docker/"
+sudo btrfs subvolume create "$data_mnt/machines"
+sudo btrfs subvolume create "$data_mnt/k8s"
+sudo umount "$data_mnt"
+trap - EXIT
 
-# Check both filesystem stamps while the filesystem images are offline.
-for img in "$seed" "$disk"; do
-  stamp="$(debugfs -R 'cat .kiri-moby-rootfs-revision' "$img" 2>/dev/null)"
-  [ "$stamp" = "$revision" ] || { echo "Rootfs stamp mismatch in $img" >&2; exit 1; }
-done
+# Check the ext4 seed stamp while offline (debugfs is ext4-only). The btrfs
+# data disk carries the same revision file inside the docker subvolume; the
+# guest verifies it after mounting.
+stamp="$(debugfs -R 'cat .kiri-moby-rootfs-revision' "$seed" 2>/dev/null)"
+[ "$stamp" = "$revision" ] || { echo "Rootfs stamp mismatch in seed" >&2; exit 1; }
 # Bounded sanity check: initial ramdisk must stay tiny and exclude Docker.
 initrd_mib="$(du -m "$out/initramfs.cpio" | awk '{print $1}')"
 [ "$initrd_mib" -lt 16 ] || { echo "Boot initramfs unexpectedly large: $initrd_mib MiB" >&2; exit 1; }

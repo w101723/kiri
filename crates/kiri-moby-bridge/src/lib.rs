@@ -213,3 +213,7 @@ pub mod shares;
 
 /// Adaptive Guest memory telemetry and conservative balloon policy.
 pub mod memory;
+
+/// Machine (per-distro rootfs subvolume) and k3s cluster lifecycle control,
+/// driven over the authenticated vsock control channel.
+pub mod machines;
