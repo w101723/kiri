@@ -5,8 +5,11 @@
 # OrbStack's app-injected engine. A missing tag fails closed: an incomplete
 # injection is a packaging mistake, not a reason to boot an old engine.
 FROM --platform=linux/arm64 alpine:3.22
-RUN apk add --no-cache iptables ip6tables iproute2 e2fsprogs util-linux ca-certificates tzdata \
- && command -v iptables && command -v ip \
+# docker-cli stays (no engine deps): PID1's memory worker uses `docker events`
+# to trigger file-cache eviction when the last container exits, and the
+# injected engine tag ships daemon binaries only.
+RUN apk add --no-cache docker-cli iptables ip6tables iproute2 e2fsprogs util-linux ca-certificates tzdata \
+ && command -v docker iptables ip \
  && /bin/busybox --list | grep -qx switch_root \
  && /bin/busybox --list | grep -qx blkid \
  && /bin/busybox --list | grep -qx udhcpc

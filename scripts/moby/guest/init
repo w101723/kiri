@@ -176,29 +176,40 @@ shutdown() {
 }
 trap shutdown TERM INT
 log "Moby services started on ext4 root"
-# Optional A/B experiment: release only CLEAN Linux file cache once after an
-# idle window. This is deliberately NOT the normal memory policy: evicting
-# cache on every poll harms Docker builds and may not reduce macOS VZ RSS.
-# Two successful, container-free Docker queries guard against early startup
-# and restart-policy containers. No dirty cache or Docker state is deleted.
+# Optional A/B experiment: release only CLEAN Linux file cache after the
+# last container leaves. This is deliberately NOT the normal memory policy:
+# evicting cache on every poll harms Docker builds and may not reduce macOS
+# VZ RSS. The worker follows Docker's event stream instead of blind polling:
+# each container die/destroy event starts a short quiescence window, and two
+# successful container-free Docker queries guard against early startup and
+# restart-policy containers. No dirty cache or Docker state is deleted.
 idle_cache_worker_pid=""
 if [ "$idle_drop_caches" = 1 ]; then
     (
-        sleep 60
-        kill -0 "$dockerd_pid" 2>/dev/null || exit 0
-        running="$(docker --host unix:///run/docker.sock ps -q 2>/dev/null)" || exit 0
-        [ -z "$running" ] || exit 0
-        sleep 15
-        kill -0 "$dockerd_pid" 2>/dev/null || exit 0
-        running="$(docker --host unix:///run/docker.sock ps -q 2>/dev/null)" || exit 0
-        [ -z "$running" ] || exit 0
-        before="$(awk '$1 == "Cached:" { print $2; exit }' /proc/meminfo)"
-        if printf '1\n' > /proc/sys/vm/drop_caches; then
-            after="$(awk '$1 == "Cached:" { print $2; exit }' /proc/meminfo)"
-            log "Memory lab: idle file-cache eviction once, Cached ${before:-?} -> ${after:-?} KiB; verify macOS Physical footprint separately"
-        else
-            log "Memory lab: idle file-cache eviction unavailable"
-        fi
+        while kill -0 "$dockerd_pid" 2>/dev/null; do
+            # Stream only lifecycle events; a die or destroy of the last
+            # running container is the signal that its anonymous pages are
+            # gone and only page cache remains to hand back to the balloon.
+            events="$(docker --host unix:///run/docker.sock events \
+                --filter type=container --filter event=die \
+                --filter event=destroy --format '{{.Actor.ID}}' 2>/dev/null | head -1)"
+            [ -n "$events" ] || { sleep 5; continue; }
+            sleep 5
+            kill -0 "$dockerd_pid" 2>/dev/null || exit 0
+            running="$(docker --host unix:///run/docker.sock ps -q 2>/dev/null)" || continue
+            [ -z "$running" ] || continue
+            sleep 5
+            kill -0 "$dockerd_pid" 2>/dev/null || exit 0
+            running="$(docker --host unix:///run/docker.sock ps -q 2>/dev/null)" || continue
+            [ -z "$running" ] || continue
+            before="$(awk '$1 == "Cached:" { print $2; exit }' /proc/meminfo)"
+            if printf '1\n' > /proc/sys/vm/drop_caches; then
+                after="$(awk '$1 == "Cached:" { print $2; exit }' /proc/meminfo)"
+                log "Memory: file-cache eviction after last container exit, Cached ${before:-?} -> ${after:-?} KiB"
+            else
+                log "Memory: file-cache eviction unavailable"
+            fi
+        done
     ) &
     idle_cache_worker_pid="$!"
 fi

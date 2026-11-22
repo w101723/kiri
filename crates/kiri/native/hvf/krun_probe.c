@@ -45,9 +45,10 @@ static int32_t run(const char *directory, uint32_t memory_mib, uint8_t cpus,
     if (helper) PATH_IN(ports, "run/ports.sock");
 #undef PATH_IN
     int length = snprintf(cmdline, sizeof(cmdline),
-                          "console=hvc0 rdinit=/init panic=-1 kiri.moby_boot_time=%lld%s%s%s%s",
+                          "console=hvc0 rdinit=/init panic=-1 kiri.moby_boot_time=%lld%s%s%s%s%s",
                           (long long)time(NULL), helper ? " kiri.moby_share_layout=per-directory" : "",
                           rosetta_directory ? " kiri.moby_hvf_rosetta=1" : "",
+                          " kiri.moby_idle_drop_caches=1",
                           share_count ? " kiri.moby_shares=" : "", share_spec);
     if (length < 0 || length >= (int)sizeof(cmdline) || share_count > 16) return -EINVAL;
 
