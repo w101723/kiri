@@ -28,6 +28,7 @@ private struct RootView: View {
     @State private var showVMPopover = false
     @State private var showingPullSheet = false
     @State private var showingNetworkSheet = false
+    @State private var showingMachineSheet = false
     @Environment(\.openWindow) private var openWindow
     // Three true navigation columns share a single native macOS titlebar.
     var body: some View {
@@ -223,6 +224,11 @@ private struct RootView: View {
         }
         .sheet(isPresented: $showingNetworkSheet) {
             KiriNewNetworkSheet {
+                model.refresh()
+            }
+        }
+        .sheet(isPresented: $showingMachineSheet) {
+            KiriNewMachineSheet {
                 model.refresh()
             }
         }
@@ -474,6 +480,7 @@ private struct RootView: View {
         case .images: model.images.count
         case .volumes: model.volumes.count
         case .networks: model.networks.count
+        case .machines: model.machines.count
         case .compose: Set(model.containers.compactMap(\.composeProject)).count
         default: nil
         }
@@ -581,6 +588,9 @@ private struct RootView: View {
             return "\(model.images.count) 个镜像 · \(sizeLabel(bytes)) 总计"
         case .volumes: return "\(model.volumes.count) 个数据卷"
         case .networks: return "\(model.networks.count) 个网络"
+        case .machines:
+            let running = model.machines.filter(\.isRunning).count
+            return "\(running) / \(model.machines.count) 运行中"
         case .compose: return "\(composeProjects.count) 个项目"
         case .activity: return "CPU / 内存 / 网络实时采样"
         case .builds: return "Dockerfile / BuildKit"
@@ -603,6 +613,8 @@ private struct RootView: View {
             }
         case .networks:
             showingNetworkSheet = true
+        case .machines:
+            showingMachineSheet = true
         default: break
         }
     }
@@ -659,6 +671,16 @@ private struct RootView: View {
                         id: $0.Id, title: $0.Name, subtitle: $0.Driver ?? "—",
                         symbol: "point.3.filled.connected.trianglepath.dotted")
                 }
+            case .machines:
+                return model.machines.filter { match([$0.name]) }.map {
+                    KiriArcBoxResourceEntry(
+                        id: $0.name, title: $0.name,
+                        subtitle: $0.isRunning ? "运行中" : "已停止",
+                        symbol: $0.isRunning ? "desktopcomputer" : "moon",
+                        tintColor: $0.isRunning
+                            ? NSColor(srgbRed: 0.20, green: 0.62, blue: 0.44, alpha: 1)
+                            : NSColor(srgbRed: 0.55, green: 0.55, blue: 0.58, alpha: 1))
+                }
             default: return []
             }
         }()
@@ -673,6 +695,9 @@ private struct RootView: View {
             case .networks:
                 return ("暂无网络", "network",
                         "创建网络以连接需要互通的容器。", "新建网络")
+            case .machines:
+                return ("暂无虚拟机", "desktopcomputer",
+                        "从官方发行版镜像创建完整的 Linux 虚拟机。", "新建虚拟机")
             default:
                 return ("暂无资源", "square.stack", "当前没有可显示的项目。", "新建")
             }
@@ -707,6 +732,7 @@ private struct RootView: View {
         case .images: images
         case .volumes: volumes
         case .networks: networks
+        case .machines: machines
         case .activity: KiriActivityView()
         case .compose: compose
         case .builds: builds
@@ -1166,6 +1192,133 @@ private struct RootView: View {
                     }
                 }.frame(minWidth: 918)
             }
+        }
+    }
+
+
+    private var machines: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("虚拟机").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button("新建虚拟机") {
+                    showingMachineSheet = true
+                }.buttonStyle(.borderedProminent)
+            }.padding(.horizontal, 20).frame(height: 47)
+            ScrollView([.horizontal, .vertical]) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 0) {
+                        tableTitle("名称", width: 280)
+                        tableTitle("状态", width: 140)
+                        tableTitle("发行版", width: 170)
+                        tableTitle("操作", width: 260)
+                    }
+                    tableDivider
+                    ForEach(model.machines.filter { match([$0.name]) }) { item in
+                        HStack(spacing: 0) {
+                            tableValue(
+                                Text(item.name).foregroundStyle(KiriPalette.link(model.isLight))
+                                    .fontWeight(.semibold), width: 280)
+                            tableValue(
+                                HStack(spacing: 6) {
+                                    Circle().fill(item.isRunning
+                                        ? KiriPalette.mint : KiriPalette.faint(model.isLight))
+                                        .frame(width: 7, height: 7)
+                                    Text(item.isRunning ? "运行中" : "已停止")
+                                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                                }, width: 140)
+                            tableValue(
+                                Text(distroTitle(item.name)).foregroundStyle(KiriPalette.muted(model.isLight)),
+                                width: 170)
+                            tableValue(
+                                HStack(spacing: 5) {
+                                    if item.isRunning {
+                                        smallAction("停止") {
+                                            model.perform(["machines", "stop", item.name],
+                                                          title: "停止虚拟机", showResult: false)
+                                        }
+                                        smallAction("执行命令") {
+                                            if let command = model.ask("在 \(item.name) 中执行",
+                                                                       placeholder: "uname -a") {
+                                                model.perform(["machines", "exec", item.name, command],
+                                                              title: "执行命令", showResult: true)
+                                            }
+                                        }
+                                    } else {
+                                        smallAction("启动") {
+                                            model.perform(["machines", "start", item.name],
+                                                          title: "启动虚拟机", showResult: false)
+                                        }
+                                    }
+                                    smallAction("删除", destructive: true) {
+                                        if model.confirm("删除虚拟机 \(item.name)？",
+                                                         detail: "其根文件系统（btrfs 子卷）将被删除。") {
+                                            model.perform(["machines", "delete", item.name],
+                                                          title: "删除虚拟机", showResult: false)
+                                        }
+                                    }
+                                }, width: 260)
+                        }.frame(minHeight: 53)
+                        tableDivider
+                    }
+                    if model.machines.isEmpty {
+                        Text("暂无虚拟机").foregroundStyle(KiriPalette.muted(model.isLight))
+                            .frame(maxWidth: .infinity, minHeight: 130)
+                    }
+                }.frame(minWidth: 880)
+            }
+            Divider()
+            kubernetesCard
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+        }
+    }
+
+    /// Machines run distro images; the name alone cannot carry the distro, so
+    /// derive it from the seed container id recorded at creation is not
+    /// possible client-side — keep the label generic unless the snapshot adds
+    /// distro metadata later.
+    private func distroTitle(_ name: String) -> String {
+        let lower = name.lowercased()
+        for preset in MachineDistro.allCases where lower.contains(preset.rawValue) {
+            return preset.title
+        }
+        return "Linux"
+    }
+
+    /// Kubernetes card: single k3s cluster inside the same VM, OrbStack-style.
+    private var kubernetesCard: some View {
+        panelCard {
+            HStack(spacing: 10) {
+                Image(systemName: "containers.fill")
+                    .foregroundStyle(KiriPalette.blue)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Kubernetes").font(.system(size: 12, weight: .semibold))
+                    Text(kubernetesStateLabel)
+                        .font(.system(size: 11))
+                        .foregroundStyle(KiriPalette.muted(model.isLight))
+                }
+                Spacer(minLength: 8)
+                if model.kubernetesState == "running" {
+                    smallAction("关闭") {
+                        model.perform(["machines", "k8s_disable"], title: "Kubernetes",
+                                      showResult: false)
+                    }
+                } else {
+                    smallAction("启用") {
+                        model.perform(["machines", "k8s_enable"], title: "Kubernetes")
+                    }
+                }
+            }
+        }
+    }
+
+    private var kubernetesStateLabel: String {
+        switch model.kubernetesState {
+        case "running": return "运行中 · k3s · kubeconfig 在 /mnt/data/k8s"
+        case "disabled": return "未启用 · 首次启用将下载 k3s 单文件二进制"
+        case "unavailable": return "暂不可用 · 需要较新的 VM 数据盘布局"
+        default: return model.kubernetesState
         }
     }
 

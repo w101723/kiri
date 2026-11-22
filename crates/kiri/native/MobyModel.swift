@@ -26,7 +26,9 @@ let uiPreviewJSON = """
   "memory":{"vm_memory_ceiling_mib":8192,"balloon_target_mib":4096,
             "guest_total_kib":8388608,"guest_available_kib":4194304},
   "vm_config":{"cpus":2,"memory_mib":8192,"max_cpus":10,"max_memory_mib":16384},
-  "shares":[]
+  "shares":[],
+  "machines":[{"name":"dev","state":"running"},{"name":"ci","state":"stopped"}],
+  "kubernetes":"disabled"
 }
 """
 #endif
@@ -66,6 +68,8 @@ final class MobyModel: ObservableObject {
     var images: [ImageItem] { snapshot?.images ?? [] }
     var volumes: [VolumeItem] { snapshot?.volumes ?? [] }
     var networks: [NetworkItem] { snapshot?.networks ?? [] }
+    var machines: [MachineItem] { snapshot?.machines ?? [] }
+    var kubernetesState: String { snapshot?.kubernetes ?? "unavailable" }
     var shares: [String] { snapshot?.shares ?? [] }
     var resourceEditsPending: Bool {
         guard let saved = snapshot?.vm_config else { return false }

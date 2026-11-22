@@ -190,3 +190,79 @@ struct KiriNewNetworkSheet: View {
         }
     }
 }
+
+/// Creates a machine from an official distro image; the rootfs lands in a
+/// fresh btrfs subvolume and boots the distro's real init (OrbStack-style).
+struct KiriNewMachineSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var model: MobyModel
+    var onCreated: () -> Void = {}
+
+    @State private var isCreating = false
+    @State private var errorMessage: String?
+    @State private var name = ""
+    @State private var distro = MachineDistro.alpine.rawValue
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("New Machine")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("从官方发行版镜像克隆完整根文件系统，独立 PID/挂载命名空间运行真实 init。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(AppColors.textSecondary)
+                SheetErrorMessage(message: errorMessage)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .bottom) { Divider() }
+
+            Form {
+                Section {
+                    TextField("Name", text: $name, prompt: Text("e.g. dev"))
+                    Picker("Distro", selection: $distro) {
+                        ForEach(MachineDistro.allCases) { Text($0.title).tag($0.rawValue) }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .disabled(isCreating)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(isCreating ? "Creating…" : "Create") {
+                    Task { await create() }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || isCreating)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+        .frame(width: 380)
+    }
+
+    private func create() async {
+        isCreating = true
+        errorMessage = nil
+        let clean = name.trimmingCharacters(in: .whitespaces)
+        let selected = distro
+        let result = await Task.detached(priority: .userInitiated) { () -> String? in
+            let data = (try? MobyRuntime.request(["machines", "create", clean, selected])) ?? Data()
+            guard let reply = try? JSONDecoder().decode(Reply.self, from: data) else {
+                return "Invalid response"
+            }
+            return reply.ok ? nil : (reply.error ?? "Create failed")
+        }.value
+        isCreating = false
+        if let result {
+            errorMessage = result
+        } else {
+            onCreated()
+            dismiss()
+        }
+    }
+}

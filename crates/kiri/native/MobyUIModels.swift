@@ -9,6 +9,7 @@ enum Page: String, CaseIterable, Hashable, Identifiable {
     case images = "Images"
     case volumes = "Volumes"
     case networks = "Networks"
+    case machines = "Machines"
     case activity = "Activity"
     case compose = "Compose"
     case builds = "Builds"
@@ -22,6 +23,7 @@ enum Page: String, CaseIterable, Hashable, Identifiable {
         case .images: "镜像"
         case .volumes: "存储卷"
         case .networks: "网络"
+        case .machines: "虚拟机"
         case .activity: "活动监视"
         case .compose: "Compose"
         case .builds: "构建"
@@ -36,6 +38,7 @@ enum Page: String, CaseIterable, Hashable, Identifiable {
         case .volumes: "externaldrive"
         case .activity: "waveform.path.ecg"
         case .networks: "point.3.connected.trianglepath.dotted"
+        case .machines: "desktopcomputer"
         case .compose: "square.3.layers.3d"
         case .builds: "hammer"
         case .settings: "gearshape"
@@ -171,6 +174,23 @@ struct Snapshot: Decodable {
     let memory: BalloonInfo?
     let shares: [String]?
     let vm_config: VmResourceSettings?
+    let machines: [MachineItem]?
+    let kubernetes: String?
+}
+
+/// One btrfs-subvolume machine from the guest controller's machine_list.
+struct MachineItem: Decodable, Identifiable, Hashable {
+    let name: String
+    let state: String
+    var id: String { name }
+    var isRunning: Bool { state == "running" }
+}
+
+/// Distro presets offered when creating a machine.
+enum MachineDistro: String, CaseIterable, Identifiable {
+    case alpine, debian, ubuntu, fedora
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
 }
 
 struct Reply: Decodable {

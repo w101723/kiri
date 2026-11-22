@@ -27,6 +27,7 @@ enum MobyPaths {
     }
     static var socket: URL { data.appendingPathComponent("run/docker.sock") }
     static var control: URL { data.appendingPathComponent("run/host-control.sock") }
+    static var machines: URL { data.appendingPathComponent("run/machines.sock") }
     static var resources: URL { Bundle.main.bundleURL.appendingPathComponent("Contents/Resources", isDirectory: true) }
     static var docker: URL { resources.appendingPathComponent("bin/docker") }
     #if KIRI_HVF_LOCAL
@@ -119,6 +120,20 @@ enum DockerUnixHTTP {
         throw fail("Docker response exceeds \(maxBytes) bytes")
     }
 
+    /// Shared line/EOF reader for private (non-HTTP) control sockets.
+    static func readAllPrivate(_ fd: Int32, maxBytes: Int) throws -> Data {
+        var result = Data()
+        var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+        while result.count <= maxBytes {
+            let n = Darwin.read(fd, &buffer, buffer.count)
+            if n == 0 { return result }
+            if n < 0 && errno == EINTR { continue }
+            if n < 0 { throw fail("Read socket: \(String(cString: strerror(errno)))") }
+            result.append(contentsOf: buffer.prefix(n))
+        }
+        throw fail("Response exceeds \(maxBytes) bytes")
+    }
+
     private static func unchunk(_ input: Data, limit: Int) throws -> Data {
         let bytes = [UInt8](input)
         var index = 0
@@ -175,6 +190,39 @@ enum DockerUnixHTTP {
 
     static func ping() -> Bool {
         (try? request("GET", "/_ping", timeout: 1).status) == 200
+    }
+}
+
+// One JSON line per request, one JSON line per reply over the vsock-mapped
+// machines channel — the same wire protocol the guest controller speaks.
+enum MachinesChannel {
+    struct Reply: Decodable {
+        let ok: Bool
+        let message: String?
+        let error: String?
+    }
+
+    static func call(_ payload: [String: Any], timeout: TimeInterval = 300) throws -> String {
+        let fd = try DockerUnixHTTP.connect(MobyPaths.machines.path, timeout: timeout)
+        defer { Darwin.close(fd) }
+        var request = try JSONSerialization.data(withJSONObject: payload)
+        request.append(0x0A)
+        try DockerUnixHTTP.send(fd, request)
+        // Single-line reply; the socket closes after it, so read to EOF.
+        let data = try DockerUnixHTTP.readAllPrivate(fd, maxBytes: 1024 * 1024)
+        guard let line = String(decoding: data, as: UTF8.self)
+            .split(separator: "\n").first, !line.isEmpty else {
+            throw fail("Machines controller closed without a reply")
+        }
+        let reply = try JSONDecoder().decode(Reply.self, from: Data(line.utf8))
+        if reply.ok, let message = reply.message { return message }
+        throw fail(reply.error ?? "Machines operation failed")
+    }
+
+    static func available() -> Bool {
+        guard let fd = try? DockerUnixHTTP.connect(MobyPaths.machines.path, timeout: 2) else { return false }
+        Darwin.close(fd)
+        return true
     }
 }
 
@@ -595,6 +643,40 @@ enum MobyRuntime {
         }
         return ["stats": result, "truncated": truncated]
     }
+    /// Machines + Kubernetes control verbs delegated to the guest controller.
+    /// Names/distros are validated here so the error surfaces in the UI, not
+    /// just in the guest.
+    private static func machinesCommand(_ verb: String, name: String?, distro: String?,
+                                        command: String? = nil) throws -> [String: Any] {
+        switch verb {
+        case "create":
+            let distros = ["alpine", "debian", "ubuntu", "fedora"]
+            guard let distro, distros.contains(distro) else {
+                throw fail("Unsupported distro: \(distro ?? "nil")")
+            }
+            guard let name, !name.isEmpty else { throw fail("Missing machine name") }
+            return ["message": try MachinesChannel.call(["op": "machine_create",
+                                                         "distro": distro, "name": name],
+                                                        timeout: 600)]
+        case "start", "stop", "delete":
+            guard let name, !name.isEmpty else { throw fail("Missing machine name") }
+            return ["message": try MachinesChannel.call(["op": "machine_\(verb)", "name": name],
+                                                        timeout: verb == "stop" ? 60 : 120)]
+        case "exec":
+            guard let name, !name.isEmpty else { throw fail("Missing machine name") }
+            return ["message": try MachinesChannel.call(
+                ["op": "machine_exec", "name": name,
+                 "command": (command ?? "uname -a").isEmpty ? "uname -a" : command ?? "uname -a"],
+                timeout: 120)]
+        case "k8s_enable":
+            return ["message": try MachinesChannel.call(["op": "k8s_enable"], timeout: 600)]
+        case "k8s_disable":
+            return ["message": try MachinesChannel.call(["op": "k8s_disable"], timeout: 60)]
+        default:
+            throw fail("Unsupported machines operation: \(verb)")
+        }
+    }
+
     private static func snapshot() throws -> [String: Any] {
         let settings = try MobyConfig.readResources()
         let vmConfig: [String: Any] = ["cpus": settings["cpus"] ?? 4,
@@ -608,12 +690,26 @@ enum MobyRuntime {
                     "memory": NSNull(), "vm_config": vmConfig]
         }
         let volumes = try dockerJSON("/volumes")
+        // Machines/Kubernetes ride the guest machines controller; when it is
+        // unreachable (old seed, VM booting) the pages degrade to empty.
+        var machines: [[String: Any]] = []
+        var kubernetes = "unavailable"
+        if MachinesChannel.available() {
+            let listing = try? MachinesChannel.call(["op": "machine_list"])
+            machines = (listing ?? "").split(separator: ", ").map { pair -> [String: Any] in
+                let parts = pair.split(separator: ":")
+                return ["name": String(parts.first ?? ""),
+                        "state": parts.count > 1 ? String(parts[1]) : "stopped"]
+            }.filter { ($0["name"] as? String)?.isEmpty == false }
+            kubernetes = (try? MachinesChannel.call(["op": "k8s_status"])) ?? "unavailable"
+        }
         return ["online": true, "containers": try dockerJSON("/containers/json?all=1"),
                 "images": try dockerJSON("/images/json"),
                 "volumes": dict(volumes)["Volumes"] ?? [],
                 "networks": try dockerJSON("/networks"),
                 "info": try dockerJSON("/info"), "version": try dockerJSON("/version"),
-                "memory": MobyVM.stat(), "shares": shares, "vm_config": vmConfig]
+                "memory": MobyVM.stat(), "shares": shares, "vm_config": vmConfig,
+                "machines": machines, "kubernetes": kubernetes]
     }
     private static func action(_ value: [String: Any]) throws -> String {
         let kind = value["action"] as? String ?? ""
@@ -714,6 +810,12 @@ enum MobyRuntime {
         }
         switch operation {
         case "snapshot": return try snapshot()
+        case "machines":
+            let extra = Array(args.dropFirst(2))
+            return try machinesCommand(try argument(1),
+                                       name: args.count > 2 ? argument(2) : nil,
+                                       distro: args.count > 3 ? argument(3) : nil,
+                                       command: args.count > 3 ? extra.dropFirst().joined(separator: " ") : nil)
         case "stats": return try stats()
         case "start":
             try MobyVM.start()
