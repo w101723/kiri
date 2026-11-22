@@ -63,6 +63,13 @@ static int32_t run(const char *directory, uint32_t memory_mib, uint8_t cpus,
 } while (0)
     CHECK(krun_set_log_level(2));
     CHECK(krun_set_vm_config(ctx, cpus, memory_mib));
+    // OrbStack-style dynamic memory reclaim: the guest kernel reports fully
+    // free 2 MiB blocks through virtio-balloon free-page reporting, and the
+    // VMM replaces them with fresh anonymous memory so XNU actually drops the
+    // pages the guest touched. DEFAULT only madvise()s, which on macOS never
+    // releases written pages. Falls back internally when RAM can't be mapped
+    // in blocks. Needs CONFIG_PAGE_REPORTING + virtio-balloon in the guest.
+    CHECK(krun_set_balloon_free_page_reporting_mode(ctx, KRUN_FREE_PAGE_REPORTING_MODE_REPLACE));
     CHECK(krun_set_kernel(ctx, kernel, KRUN_KERNEL_FORMAT_RAW, initrd, cmdline));
     CHECK(krun_add_disk3(ctx, "kiri-moby", data, KRUN_DISK_FORMAT_RAW, false, false, KRUN_SYNC_FULL));
     CHECK(krun_add_disk3(ctx, "kiri-system", seed, KRUN_DISK_FORMAT_RAW, true, false, KRUN_SYNC_FULL));
