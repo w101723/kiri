@@ -76,6 +76,16 @@ func prepareDisks(_ data: URL) throws -> (URL, URL) {
     if !fm.fileExists(atPath: disk.path) {
         try installDisk(guest.appendingPathComponent("data.img.tgz"), disk, "data.img")
     }
+    // Btrfs data disk is mandatory. Check the primary superblock magic at
+    // 64 KiB + 0x40 BEFORE launching either VZ or HVF. Do not migrate,
+    // format, replace or delete an existing ext4 (or unknown) data image.
+    let dataHandle = try FileHandle(forReadingFrom: disk)
+    try dataHandle.seek(toOffset: 0x10040)
+    let filesystemMagic = try dataHandle.read(upToCount: 8)
+    try dataHandle.close()
+    guard filesystemMagic == Data("_BHRfS_M".utf8) else {
+        throw hostError("Unsupported Kiri data.img filesystem: Btrfs is required. Existing disk left untouched; use a separate KIRI_MOBY_DATA_DIR for a clean installation.")
+    }
     let revision = try readLineFile(guest.appendingPathComponent("rootfs.revision"))
     guard revision.count == 64, revision.utf8.allSatisfy({
         (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0)
