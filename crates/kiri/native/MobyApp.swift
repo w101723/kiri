@@ -1204,7 +1204,7 @@ private struct RootView: View {
                 Button("新建环境") {
                     showingMachineSheet = true
                 }.buttonStyle(.borderedProminent)
-                 .disabled(model.kubernetesState == "unavailable")
+                 .disabled(!model.machinesUsable)
             }.padding(.horizontal, 20).frame(height: 47)
             ScrollView([.horizontal, .vertical]) {
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -1263,22 +1263,25 @@ private struct RootView: View {
                         tableDivider
                     }
                     if model.machines.isEmpty {
-                        Text(model.kubernetesState == "unavailable"
-                             ? "需要使用 Btrfs 数据盘及支持 Machines 的 Guest。现有磁盘不会被自动修改。"
-                             : "暂无 Linux 环境")
+                        Text(machinesEmptyMessage)
                             .foregroundStyle(KiriPalette.muted(model.isLight))
                             .frame(maxWidth: .infinity, minHeight: 130)
                     }
                 }.frame(minWidth: 660)
             }
             Divider()
-            if model.kubernetesState == "running" ||
-                ProcessInfo.processInfo.environment["KIRI_MOBY_EXPERIMENTAL_K8S"] == "1" {
-                kubernetesCard
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 16)
-            }
+            kubernetesCard
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
         }
+    }
+
+    private var machinesEmptyMessage: String {
+        if !model.online { return "VM 未运行" }
+        if !model.machinesUsable {
+            return "当前 Guest 不支持 Machines；请更新 Guest 镜像"
+        }
+        return "暂无 Linux 环境"
     }
 
     private func distroTitle(_ value: String?) -> String {
@@ -1304,7 +1307,7 @@ private struct RootView: View {
                         model.perform(["machines", "k8s_disable"], title: "Kubernetes",
                                       showResult: false)
                     }
-                } else {
+                } else if model.kubernetesState == "disabled" {
                     smallAction("启用") {
                         model.perform(["machines", "k8s_enable"], title: "Kubernetes")
                     }
@@ -1317,7 +1320,9 @@ private struct RootView: View {
         switch model.kubernetesState {
         case "running": return "运行中 · k3s · kubeconfig 在 /mnt/data/k8s"
         case "disabled": return "实验功能 · 尚未提供 Mac 端 Kubernetes API 接入"
-        case "unavailable": return "暂不可用 · 需要较新的 VM 数据盘布局"
+        case "unavailable": return "暂不可用 · 需要 Btrfs 数据盘及 k8s 子卷"
+        case "unsupported": return "暂不可用 · 当前 Guest 不支持 Kubernetes"
+        case "offline": return "VM 未运行"
         default: return model.kubernetesState
         }
     }

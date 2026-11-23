@@ -659,18 +659,20 @@ enum MobyRuntime {
                                                         timeout: 600)]
         case "start", "stop", "delete":
             guard let name, !name.isEmpty else { throw fail("Missing machine name") }
+            // Stop/delete may wait behind a same-machine exec (bounded at
+            // 120 s in the Guest), so the client timeout must be longer.
             return ["message": try MachinesChannel.call(["op": "machine_\(verb)", "name": name],
-                                                        timeout: verb == "stop" ? 60 : 120)]
+                                                        timeout: verb == "start" ? 120 : 180)]
         case "exec":
             guard let name, !name.isEmpty else { throw fail("Missing machine name") }
             return ["message": try MachinesChannel.call(
                 ["op": "machine_exec", "name": name,
                  "command": (command ?? "uname -a").isEmpty ? "uname -a" : command ?? "uname -a"],
-                timeout: 120)]
+                timeout: 150)]
         case "k8s_enable":
             return ["message": try MachinesChannel.call(["op": "k8s_enable"], timeout: 600)]
         case "k8s_disable":
-            return ["message": try MachinesChannel.call(["op": "k8s_disable"], timeout: 60)]
+            return ["message": try MachinesChannel.call(["op": "k8s_disable"], timeout: 120)]
         default:
             throw fail("Unsupported machines operation: \(verb)")
         }
@@ -686,14 +688,19 @@ enum MobyRuntime {
         guard DockerUnixHTTP.ping() else {
             return ["online": false, "containers": [], "images": [],
                     "volumes": [], "networks": [], "shares": shares,
-                    "memory": NSNull(), "vm_config": vmConfig]
+                    "memory": NSNull(), "vm_config": vmConfig,
+                    "machines": [], "machines_supported": false,
+                    "kubernetes": "offline"]
         }
         let volumes = try dockerJSON("/volumes")
-        // Machines/Kubernetes ride the guest machines controller; when it is
-        // unreachable (old seed, VM booting) the pages degrade to empty.
+        // Machines/Kubernetes ride the guest machines controller. Distinguish
+        // "Guest has no controller" (old seed) from "channel is reachable but
+        // the disk layout is missing" instead of collapsing both into one
+        // unavailable state.
         var machines: [[String: Any]] = []
-        var kubernetes = "unavailable"
-        if MachinesChannel.available() {
+        var kubernetes = "unsupported"
+        let machinesSupported = MachinesChannel.available()
+        if machinesSupported {
             let listing = try? MachinesChannel.call(["op": "machine_list"])
             machines = (listing ?? "").components(separatedBy: ", ").map { pair -> [String: Any] in
                 let parts = pair.split(separator: ":")
@@ -709,7 +716,8 @@ enum MobyRuntime {
                 "networks": try dockerJSON("/networks"),
                 "info": try dockerJSON("/info"), "version": try dockerJSON("/version"),
                 "memory": MobyVM.stat(), "shares": shares, "vm_config": vmConfig,
-                "machines": machines, "kubernetes": kubernetes]
+                "machines": machines, "machines_supported": machinesSupported,
+                "kubernetes": kubernetes]
     }
     private static func action(_ value: [String: Any]) throws -> String {
         let kind = value["action"] as? String ?? ""

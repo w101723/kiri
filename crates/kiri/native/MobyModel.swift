@@ -27,7 +27,9 @@ let uiPreviewJSON = """
             "guest_total_kib":8388608,"guest_available_kib":4194304},
   "vm_config":{"cpus":2,"memory_mib":8192,"max_cpus":10,"max_memory_mib":16384},
   "shares":[],
-  "machines":[{"name":"dev","state":"running"},{"name":"ci","state":"stopped"}],
+  "machines":[{"name":"dev","state":"running","distro":"alpine"},
+              {"name":"ci","state":"stopped","distro":"debian"}],
+  "machines_supported":true,
   "kubernetes":"disabled"
 }
 """
@@ -69,7 +71,10 @@ final class MobyModel: ObservableObject {
     var volumes: [VolumeItem] { snapshot?.volumes ?? [] }
     var networks: [NetworkItem] { snapshot?.networks ?? [] }
     var machines: [MachineItem] { snapshot?.machines ?? [] }
-    var kubernetesState: String { snapshot?.kubernetes ?? "unavailable" }
+    var kubernetesState: String { snapshot?.kubernetes ?? "offline" }
+    /// Machines need the Guest controller; the create request itself still
+    /// fails closed if the Btrfs layout is unavailable.
+    var machinesUsable: Bool { snapshot?.machines_supported == true }
     var shares: [String] { snapshot?.shares ?? [] }
     var resourceEditsPending: Bool {
         guard let saved = snapshot?.vm_config else { return false }

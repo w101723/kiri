@@ -175,6 +175,9 @@ struct Snapshot: Decodable {
     let shares: [String]?
     let vm_config: VmResourceSettings?
     let machines: [MachineItem]?
+    /// The Guest controller answered a health probe. Independent of whether
+    /// Kubernetes is enabled.
+    let machines_supported: Bool?
     let kubernetes: String?
 }
 
