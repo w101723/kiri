@@ -270,6 +270,29 @@ driver, multi-stage builds, caches, image push/pull, bind mounts, >=120
 image layers, restarts, volumes, TCP/UDP, `--network host` semantics,
 Testcontainers, Rosetta amd64 builds, sleep/wake, and VM crashes.
 
+## Linux Machines and Kubernetes
+
+One VM hosts Docker and every Linux environment. A machine is a Btrfs
+subvolume cloned from an official distro image; it runs the distro's real
+init as PID1 in private mount, PID, cgroup and UTS namespaces. The rootfs is
+bind-mounted as `/` before `chroot`, which systemd requires for
+`mount --make-rslave /`; a plain chroot makes systemd abort while starting
+its generators. Each machine gets its own cgroup subtree and hostname.
+
+Official `debian:*`, `ubuntu:*` and `fedora:*` images are minimal and ship
+**no init**. On the first machine of such a distro, the Guest installs
+`systemd`/`dbus` in a temporary container, commits the result as
+`kiri-machine/<distro>:<tag>`, and labels it with the base image ID. Later
+machines reuse the cached image; a refreshed base image triggers a rebuild.
+`alpine:*` already carries BusyBox init. Cached base images are hidden from
+the UI Images list; removing one with Docker is safe and only makes the next
+create reinstall it.
+
+The Kubernetes card lives on the Linux 环境 page. It enables a single k3s
+cluster inside the same VM, downloads the pinned k3s binary with SHA-256
+verification, and stores state in the Btrfs `k8s` subvolume. It requires the
+Btrfs data layout; there is no separate Kubernetes VM.
+
 ## Security and data principles
 
 - The Docker Unix socket gives root-equivalent control over the **guest**.

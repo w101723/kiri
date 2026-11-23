@@ -95,6 +95,130 @@ fn distro_image(distro: &str) -> Option<&'static str> {
     DISTROS.iter().find(|(name, _)| *name == distro).map(|(_, image)| *image)
 }
 
+fn image_tag(image: &str) -> &str {
+    image.rsplit_once(':').map(|(_, tag)| tag).unwrap_or("latest")
+}
+
+/// Local image carrying a bootstrapped rootfs for an official distro image.
+fn machine_image(distro: &str, image: &str) -> String {
+    format!("kiri-machine/{distro}:{}", image_tag(image))
+}
+
+/// Package install command that adds a real init to images that ship none.
+/// Only Debian-family and Fedora base images need it; Alpine already carries
+/// BusyBox init.
+fn bootstrap_script(distro: &str) -> Option<&'static str> {
+    match distro {
+        "debian" | "ubuntu" => Some(
+            "apt-get update -qq && \
+             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+             --no-install-recommends systemd systemd-sysv dbus && \
+             mkdir -p /etc/systemd/system/systemd-modules-load.service.d && \
+             printf '[Unit]\\nConditionPathExists=/lib/modules\\n' > \
+             /etc/systemd/system/systemd-modules-load.service.d/10-kiri.conf && \
+             apt-get clean && rm -rf /var/lib/apt/lists/*",
+        ),
+        "fedora" => Some(
+            "dnf -y --setopt=install_weak_deps=False install systemd && \
+             mkdir -p /etc/systemd/system/systemd-modules-load.service.d && \
+             printf '[Unit]\\nConditionPathExists=/lib/modules\\n' > \
+             /etc/systemd/system/systemd-modules-load.service.d/10-kiri.conf && \
+             dnf clean all",
+        ),
+        _ => None,
+    }
+}
+
+fn stderr_tail(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    text.chars().rev().take(800).collect::<String>().chars().rev().collect()
+}
+
+/// True when the image has an executable init. The probe runs the distro's
+/// own shell, so a missing init exits 1; any other failure is reported.
+fn image_has_init(image: &str) -> Result<bool, String> {
+    let result = Command::new("docker")
+        .args([
+            "run", "--rm", "--entrypoint", "sh", image, "-c",
+            "test -x /sbin/init || test -x /usr/sbin/init",
+        ])
+        .output()
+        .map_err(|e| format!("cannot probe image {image}: {e}"))?;
+    match result.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(format!("cannot probe image {image}: {}", stderr_tail(&result.stderr))),
+    }
+}
+
+fn image_id(image: &str) -> Result<String, String> {
+    sh("docker", &["image", "inspect", "-f", "{{.Id}}", image])
+        .map(|id| id.trim().to_string())
+        .map_err(|e| format!("cannot inspect image {image}: {e}"))
+}
+
+fn label_format(label: &str) -> String {
+    format!("{{{{index .Config.Labels \"{label}\"}}}}")
+}
+
+fn image_label(image: &str, label: &str) -> Option<String> {
+    let format = label_format(label);
+    sh("docker", &["image", "inspect", "-f", &format, image])
+        .ok()
+        .map(|value| value.trim().to_string())
+}
+
+/// Returns an image whose rootfs contains a real init. Official Debian,
+/// Ubuntu and Fedora images are minimal and ship no init, so the first
+/// machine of such a distro installs systemd once and caches the result as
+/// `kiri-machine/<distro>:<tag>`. The cache is keyed on the base image ID so
+/// a refreshed base image triggers a rebuild.
+fn ensure_machine_image(distro: &str, image: &str, name: &str) -> Result<String, String> {
+    if image_has_init(image)? {
+        return Ok(image.to_string());
+    }
+    let cached = machine_image(distro, image);
+    let base_id = image_id(image)?;
+    if image_label(&cached, "dev.kiri.machine-base").as_deref() == Some(base_id.as_str())
+        && image_has_init(&cached).unwrap_or(false)
+    {
+        return Ok(cached);
+    }
+    let script = bootstrap_script(distro).ok_or_else(|| {
+        format!("image {image} has no /sbin/init and distro '{distro}' cannot bootstrap one")
+    })?;
+    let container = format!("kiri-machine-bootstrap-{name}");
+    let _ = sh("docker", &["rm", "-f", &container]);
+    let run = Command::new("docker")
+        .args(["run", "--name", &container, "--entrypoint", "sh", image, "-c", script])
+        .output();
+    let failure = match run {
+        Ok(output) if output.status.success() => None,
+        Ok(output) => Some(format!("installing systemd into {image} failed: {}",
+                                   stderr_tail(&output.stderr))),
+        Err(error) => Some(format!("installing systemd into {image} failed: {error}")),
+    };
+    if let Some(error) = failure {
+        let _ = sh("docker", &["rm", "-f", &container]);
+        return Err(error);
+    }
+    let change = format!("LABEL dev.kiri.machine-base={base_id}");
+    let commit = Command::new("docker")
+        .args(["commit", "--change", &change, &container, &cached])
+        .output();
+    let _ = sh("docker", &["rm", "-f", &container]);
+    match commit {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => return Err(format!("cannot cache machine image {cached}: {}",
+                                         stderr_tail(&output.stderr))),
+        Err(error) => return Err(format!("cannot cache machine image {cached}: {error}")),
+    }
+    if !image_has_init(&cached)? {
+        return Err(format!("bootstrapped image {cached} still has no /sbin/init"));
+    }
+    Ok(cached)
+}
+
 /// Creates a machine by cloning an official distro image rootfs into a fresh
 /// btrfs subvolume. `docker create` + `docker export` yields the rootfs tree;
 /// unpacking into the subvolume keeps it snapshot-ready.
@@ -107,7 +231,7 @@ pub fn machine_create(distro: &str, name: &str) -> Result<String, String> {
     }
     let rootfs = machine_rootfs(name);
     let parent = format!("{MACHINES_ROOT}/{name}");
-    let image = distro_image(distro)
+    let base_image = distro_image(distro)
         .ok_or_else(|| format!("unknown distro '{distro}'; supported: {}", {
             let names: Vec<&str> = DISTROS.iter().map(|(n, _)| *n).collect();
             names.join(", ")
@@ -129,7 +253,8 @@ pub fn machine_create(distro: &str, name: &str) -> Result<String, String> {
     // A crash between `docker create` and mkdir leaves only the seed
     // container behind; it must not block the new attempt.
     let _ = sh("docker", &["rm", "-f", &container]);
-    sh("docker", &["create", "--name", &container, image])
+    let image = ensure_machine_image(distro, base_image, name)?;
+    sh("docker", &["create", "--name", &container, &image])
         .map_err(|e| format!("docker create failed: {e}"))?;
     // mkdir first: `btrfs subvolume create` needs the (otherwise absent)
     // per-machine parent, and refuses to create a subvolume over a dir.
@@ -217,9 +342,13 @@ fn machine_pid(name: &str) -> Option<u32> {
     None
 }
 
-/// Starts a machine: private mount/PID namespaces, its rootfs subvolume as
-/// /, the distro's real init as PID1. Runs detached; `machine_pid` finds it
-/// again through its /proc root link.
+fn machine_cgroup(name: &str) -> String {
+    format!("/sys/fs/cgroup/kiri-machines/{name}")
+}
+
+/// Starts a machine: private mount/PID/cgroup/UTS namespaces, its rootfs
+/// subvolume as /, the distro's real init as PID1. Runs detached;
+/// `machine_pid` finds it again through its /proc root link.
 pub fn machine_start(name: &str) -> Result<String, String> {
     if !valid_name(name) { return Err("invalid machine name".into()); }
     if machine_pid(name).is_some() { return Ok(format!("machine '{name}' already running")); }
@@ -238,19 +367,34 @@ pub fn machine_start(name: &str) -> Result<String, String> {
     if !Path::new(&resolv).exists() && !Path::new(&resolv).is_symlink() {
         let _ = std::fs::write(&resolv, b"");
     }
-    // The mount namespace is private; never share the host's /run/docker.sock.
+    // Each machine gets its own hostname/UTS namespace. Writing the file
+    // keeps systemd and the Guest from sharing (and changing) one hostname.
+    std::fs::write(format!("{rootfs}/etc/hostname"), format!("{name}\n"))
+        .map_err(|e| format!("prepare machine hostname: {e}"))?;
+    // Each machine gets its own cgroup subtree, then a private cgroup
+    // namespace rooted there. Without this systemd would share the Guest
+    // root cgroup with every other machine and journald fails to start.
+    // The bind mount makes the chrooted rootfs the root of a mount, which
+    // systemd requires for `mount --make-rslave /`; a plain chroot returns
+    // EINVAL and systemd aborts while starting its generators.
+    let cgroup = machine_cgroup(name);
     let script = format!(
-        "unshare --mount --pid --fork --mount-proc={rootfs}/proc \
+        "mkdir -p {cgroup} && echo $$ > {cgroup}/cgroup.procs || \
+         {{ echo 'cannot isolate machine cgroup' >&2; exit 1; }}; \
+         unshare --mount --pid --cgroup --uts --fork --mount-proc={rootfs}/proc \
          sh -c 'mount --make-rprivate / && \
+                mount --bind {rootfs} {rootfs} && \
                 mount --rbind /dev {rootfs}/dev && \
                 mount --rbind /sys {rootfs}/sys && \
+                mount -t cgroup2 cgroup2 {rootfs}/sys/fs/cgroup && \
                 mount -t tmpfs tmpfs {rootfs}/run && \
+                hostname {name} && \
                 {{ mount --bind /etc/resolv.conf {rootfs}/etc/resolv.conf 2>/dev/null || true; }} && \
                 exec chroot {rootfs} /sbin/init' \
          >{MACHINES_ROOT}/{name}/boot.log 2>&1 </dev/null &"
     );
     sh("sh", &["-c", &script]).map_err(|e| format!("machine start failed: {e}"))?;
-    for _ in 0..40 {
+    for _ in 0..150 {
         if machine_pid(name).is_some() { return Ok(format!("machine '{name}' started")); }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -317,6 +461,9 @@ pub fn machine_delete(name: &str) -> Result<String, String> {
     // Remove a seed container left behind by an interrupted create.
     let _ = sh("docker", &["rm", "-f", &format!("kiri-machine-seed-{name}")]);
     machine_stop(name)?;
+    // Best effort: cgroup2 keeps empty directories, and systemd may have
+    // left child cgroups. A non-empty cgroup is not an error.
+    let _ = std::fs::remove_dir(machine_cgroup(name));
     let rootfs = machine_rootfs(name);
     let parent = format!("{MACHINES_ROOT}/{name}");
     if !Path::new(&rootfs).exists() {
@@ -420,9 +567,12 @@ pub fn machine_exec(name: &str, command: &str) -> Result<String, String> {
     if !valid_name(name) { return Err("invalid machine name".into()); }
     let pid = machine_pid(name).ok_or_else(|| format!("machine '{name}' is not running"))?;
     // -m/-p alone leaves the caller's rootfs intact. --root adopts the
-    // target machine init's chroot, --wd=/ prevents inheriting the host CWD.
-    bounded_command("nsenter", &["--target", &pid.to_string(), "--mount", "--pid",
-        "--root", "--wd=/", "--", "/bin/sh", "-c", command])
+    // target machine init's chroot. Explicitly cd to the machine root:
+    // nsenter's --wd can leave the shell with an invalid inherited CWD, and
+    // `pwd` then prints an empty string.
+    let command = format!("cd / || exit 1; {command}");
+    bounded_command("nsenter", &["--target", &pid.to_string(), "--mount", "--pid", "--uts",
+        "--root", "--", "/bin/sh", "-c", &command])
 }
 
 // MARK: - Kubernetes (k3s in the same VM)
@@ -773,5 +923,27 @@ mod tests {
     fn k3s_pin_is_a_full_sha256() {
         assert_eq!(K3S_SHA256.len(), 64);
         assert!(K3S_SHA256.bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn machine_image_names_are_valid_docker_references() {
+        assert_eq!(machine_image("debian", "debian:trixie"), "kiri-machine/debian:trixie");
+        assert_eq!(machine_image("alpine", "alpine:3.22"), "kiri-machine/alpine:3.22");
+        assert_eq!(machine_image("fedora", "fedora:41"), "kiri-machine/fedora:41");
+    }
+
+    #[test]
+    fn only_initless_images_are_bootstrapped() {
+        for distro in ["debian", "ubuntu", "fedora"] {
+            assert!(bootstrap_script(distro).is_some(), "{distro} needs an init");
+        }
+        assert!(bootstrap_script("alpine").is_none());
+        assert!(bootstrap_script("unknown").is_none());
+    }
+
+    #[test]
+    fn image_label_format_is_a_go_template() {
+        assert_eq!(label_format("dev.kiri.machine-base"),
+                   r#"{{index .Config.Labels "dev.kiri.machine-base"}}"#);
     }
 }
