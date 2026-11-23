@@ -1199,26 +1199,26 @@ private struct RootView: View {
     private var machines: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("虚拟机").font(.system(size: 13, weight: .semibold))
+                Text("Linux 环境").font(.system(size: 13, weight: .semibold))
                 Spacer()
-                Button("新建虚拟机") {
+                Button("新建环境") {
                     showingMachineSheet = true
                 }.buttonStyle(.borderedProminent)
             }.padding(.horizontal, 20).frame(height: 47)
             ScrollView([.horizontal, .vertical]) {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 0) {
-                        tableTitle("名称", width: 280)
-                        tableTitle("状态", width: 140)
-                        tableTitle("发行版", width: 170)
-                        tableTitle("操作", width: 260)
+                        tableTitle("名称", width: 200)
+                        tableTitle("状态", width: 110)
+                        tableTitle("发行版", width: 125)
+                        tableTitle("操作", width: 225)
                     }
                     tableDivider
                     ForEach(model.machines.filter { match([$0.name]) }) { item in
                         HStack(spacing: 0) {
                             tableValue(
                                 Text(item.name).foregroundStyle(KiriPalette.link(model.isLight))
-                                    .fontWeight(.semibold), width: 280)
+                                    .fontWeight(.semibold), width: 200)
                             tableValue(
                                 HStack(spacing: 6) {
                                     Circle().fill(item.isRunning
@@ -1226,16 +1226,16 @@ private struct RootView: View {
                                         .frame(width: 7, height: 7)
                                     Text(item.isRunning ? "运行中" : "已停止")
                                         .foregroundStyle(KiriPalette.muted(model.isLight))
-                                }, width: 140)
+                                }, width: 110)
                             tableValue(
-                                Text(distroTitle(item.name)).foregroundStyle(KiriPalette.muted(model.isLight)),
-                                width: 170)
+                                Text(distroTitle(item.distro)).foregroundStyle(KiriPalette.muted(model.isLight)),
+                                width: 125)
                             tableValue(
                                 HStack(spacing: 5) {
                                     if item.isRunning {
                                         smallAction("停止") {
                                             model.perform(["machines", "stop", item.name],
-                                                          title: "停止虚拟机", showResult: false)
+                                                          title: "停止环境", showResult: false)
                                         }
                                         smallAction("执行命令") {
                                             if let command = model.ask("在 \(item.name) 中执行",
@@ -1247,7 +1247,7 @@ private struct RootView: View {
                                     } else {
                                         smallAction("启动") {
                                             model.perform(["machines", "start", item.name],
-                                                          title: "启动虚拟机", showResult: false)
+                                                          title: "启动环境", showResult: false)
                                         }
                                     }
                                     smallAction("删除", destructive: true) {
@@ -1257,15 +1257,15 @@ private struct RootView: View {
                                                           title: "删除虚拟机", showResult: false)
                                         }
                                     }
-                                }, width: 260)
+                                }, width: 225)
                         }.frame(minHeight: 53)
                         tableDivider
                     }
                     if model.machines.isEmpty {
-                        Text("暂无虚拟机").foregroundStyle(KiriPalette.muted(model.isLight))
+                        Text("暂无 Linux 环境").foregroundStyle(KiriPalette.muted(model.isLight))
                             .frame(maxWidth: .infinity, minHeight: 130)
                     }
-                }.frame(minWidth: 880)
+                }.frame(minWidth: 660)
             }
             Divider()
             kubernetesCard
@@ -1274,16 +1274,9 @@ private struct RootView: View {
         }
     }
 
-    /// Machines run distro images; the name alone cannot carry the distro, so
-    /// derive it from the seed container id recorded at creation is not
-    /// possible client-side — keep the label generic unless the snapshot adds
-    /// distro metadata later.
-    private func distroTitle(_ name: String) -> String {
-        let lower = name.lowercased()
-        for preset in MachineDistro.allCases where lower.contains(preset.rawValue) {
-            return preset.title
-        }
-        return "Linux"
+    private func distroTitle(_ value: String?) -> String {
+        guard let value, let preset = MachineDistro(rawValue: value) else { return "Linux" }
+        return preset.title
     }
 
     /// Kubernetes card: single k3s cluster inside the same VM, OrbStack-style.
