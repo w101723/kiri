@@ -378,6 +378,9 @@ private struct RootView: View {
                 Section("系统") {
                     nativeSidebarItem(.overview)
                 }
+                Section("Linux") {
+                    nativeSidebarItem(.machines)
+                }
                 Section("Docker") {
                     ForEach([Page.containers, .volumes, .images, .networks,
                              .compose, .builds], id: \.self) { page in
