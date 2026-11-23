@@ -96,7 +96,7 @@ jobs:
       - name: Guest build dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends musl-tools cpio e2fsprogs
+          sudo apt-get install -y --no-install-recommends musl-tools cpio e2fsprogs btrfs-progs
       - name: Syntax-check tiny boot stage and ext4 userspace init
         run: |
           sh -n scripts/moby/guest/stage1-init
