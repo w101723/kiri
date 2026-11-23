@@ -33,6 +33,7 @@ private let vsockDocker: UInt32 = 2375
 private let vsockShutdown: UInt32 = 2376
 private let vsockPorts: UInt32 = 2377
 private let vsockMemory: UInt32 = 2378
+private let vsockMachines: UInt32 = 2379
 
 func guardedDirectory(_ url: URL) throws {
     try fm.createDirectory(at: url, withIntermediateDirectories: true)
@@ -411,6 +412,7 @@ private final class KiriMobyHost: NSObject, VZVirtualMachineDelegate {
     private var guestSocket: VZVirtioSocketDevice!
     private var consoleHandle: FileHandle?
     private var dockerListener: Int32 = -1
+    private var machinesListener: Int32 = -1
     private var controlListener: Int32 = -1
     private var diskLock: Int32 = -1
     private var tcp: LocalListeners?
@@ -527,7 +529,7 @@ private final class KiriMobyHost: NSObject, VZVirtualMachineDelegate {
         }
         let run = data.appendingPathComponent("run")
         try guardedDirectory(run)
-        for filename in ["docker.sock", "host-control.sock"] {
+        for filename in ["docker.sock", "host-control.sock", "machines.sock"] {
             let path = run.appendingPathComponent(filename).path
             var sb = stat()
             if lstat(path, &sb) == 0 {
@@ -577,6 +579,7 @@ private final class KiriMobyHost: NSObject, VZVirtualMachineDelegate {
         guard started.wait(timeout: .now() + 40) == .success else { throw hostError("VZ VM start timed out") }
         if let startError { throw startError }
         dockerListener = try unixListen(run.appendingPathComponent("docker.sock"))
+        machinesListener = try unixListen(run.appendingPathComponent("machines.sock"))
         controlListener = try unixListen(run.appendingPathComponent("host-control.sock"))
         trace("VM started: unix://\(run.appendingPathComponent("docker.sock").path)")
         trace("Default Docker context unchanged")
@@ -600,6 +603,13 @@ private final class KiriMobyHost: NSObject, VZVirtualMachineDelegate {
             let guest = try socket(vsockDocker)
             ByteRelay.relay(fd, guest)
         } catch { trace("Docker vsock connect: \(error)") }
+    }
+    private func handleMachines(_ fd: Int32) {
+        defer { Darwin.close(fd) }
+        do {
+            let guest = try socket(vsockMachines)
+            ByteRelay.relay(fd, guest)
+        } catch { trace("Machines vsock connect: \(error)") }
     }
     private func handleControl(_ fd: Int32) {
         defer { Darwin.close(fd) }
@@ -773,8 +783,9 @@ private final class KiriMobyHost: NSObject, VZVirtualMachineDelegate {
             _ = done.wait(timeout: .now() + 12)
         }
         if dockerListener >= 0 { Darwin.close(dockerListener) }
+        if machinesListener >= 0 { Darwin.close(machinesListener) }
         if controlListener >= 0 { Darwin.close(controlListener) }
-        for name in ["docker.sock", "host-control.sock"] {
+        for name in ["docker.sock", "host-control.sock", "machines.sock"] {
             _ = unlink(data.appendingPathComponent("run/\(name)").path)
         }
         if diskLock >= 0 { flock(diskLock, LOCK_UN); Darwin.close(diskLock) }
@@ -791,6 +802,7 @@ private final class KiriMobyHost: NSObject, VZVirtualMachineDelegate {
             signalSources.append(source)
         }
         acceptLoop(dockerListener) { [weak self] client in self?.handleDocker(client) }
+        acceptLoop(machinesListener) { [weak self] client in self?.handleMachines(client) }
         acceptLoop(controlListener) { [weak self] client in self?.handleControl(client) }
         startPortsWatcher()
         while !shouldStop {
