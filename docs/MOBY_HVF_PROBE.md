@@ -14,8 +14,12 @@ lifetime is one VM session: closing the GUI leaves the VM running; clean Guest
 poweroff ends the Helper. A stop timeout exits the Helper but is recorded as a
 forced stop, not a confirmed disk sync. Files and Docker context from the older
 VZ app are not used. The local build defaults to `~/.kiri-moby-hvf`; use an
-explicit, dedicated `KIRI_MOBY_DATA_DIR` for tests. The `vm/data.img` writable
-ext4 and `vm/system.img` read-only seed layout is unchanged.
+explicit, dedicated `KIRI_MOBY_DATA_DIR` for tests. Newly created
+`vm/data.img` disks are Btrfs (with `docker`, `machines`, and `k8s`
+subvolumes); `vm/system.img` remains a read-only ext4 seed. An existing
+ext4 data disk continues to boot without being reformatted. Linux Machines
+are unavailable on that legacy layout until an explicit migration is
+implemented; do not delete the old disk to enable them.
 
 ## Build the local app
 
@@ -209,3 +213,35 @@ Rosetta runtime is present and exported (the behavior is opt-out via
 `KIRI_MOBY_DISABLE_ROSETTA=1`, which removes the share entirely); without the
 runtime, amd64 images fail with `exec format error` and there is no silent
 fallback to another translator.
+
+## Linux Machines and Kubernetes safeguards
+
+Linux Machines share this Guest's kernel, resources, and networking.
+They are isolated Linux namespace root filesystems, **not additional VMs
+or security boundaries**. Do not treat a Machine as a sandbox for
+untrusted privileged workloads. Management uses the private Machines
+vsock channel (2379), bridged to `run/machines.sock` on both the VZ
+and HVF Helpers; no TCP management port is opened.
+
+The controller validates Machine names, decodes JSON escapes strictly,
+caps request size and concurrent clients, enters the Machine's root when
+executing a command, and refuses destructive deletion while the init or
+other processes still hold its rootfs. Machine launch confirms the init
+process actually started; failed deletions preserve the Btrfs data.
+
+A distro rootfs must contain a working `/sbin/init` or
+`/usr/sbin/init`. Minimal official container images may lack a real
+init and are rejected with an error rather than shown as booted. Only
+the Alpine preset has been exercised in an end-to-end Machine test; the
+other presets need separate validation before production enablement.
+
+k3s is **experimental** and not a required component of the Docker
+Engine. The Kubernetes UI is hidden unless
+`KIRI_MOBY_EXPERIMENTAL_K8S=1` is set (or an existing cluster is
+running). The Guest-side kubeconfig does not yet provide a Mac-facing
+Kubernetes API endpoint. Do not advertise the cluster as fully
+Mac-accessible until that path is implemented and tested.
+
+The idle Docker cache eviction worker now checks for running Machines
+and k3s before dropping the Guest's global clean file cache. No
+implicit ext4-to-Btrfs migration or destructive reset is performed.
