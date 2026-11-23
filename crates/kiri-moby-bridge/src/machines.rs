@@ -11,9 +11,9 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, Read, Write};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 pub const MACHINE_VSOCK_PORT: u32 = 2379;
 
@@ -263,14 +263,57 @@ pub fn machine_delete(name: &str) -> Result<String, String> {
     Ok(format!("machine '{name}' deleted"))
 }
 
+// Limit output and execution time before returning to a GUI caller.
+fn bounded_command(program: &str, args: &[&str]) -> Result<String, String> {
+    const LIMIT: usize = 1024 * 1024;
+    let mut child = Command::new(program).args(args)
+        .stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().map_err(|e| format!("exec spawn failed: {e}"))?;
+    let stdout = child.stdout.take().ok_or("missing stdout pipe")?;
+    let stderr = child.stderr.take().ok_or("missing stderr pipe")?;
+    let out = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.take((LIMIT + 1) as u64).read_to_end(&mut bytes);
+        bytes
+    });
+    let err = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.take((LIMIT + 1) as u64).read_to_end(&mut bytes);
+        bytes
+    });
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let (status, timed_out) = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break (status, false),
+            Ok(None) if Instant::now() < deadline =>
+                std::thread::sleep(Duration::from_millis(50)),
+            Ok(None) => {
+                let _ = child.kill();
+                let status = child.wait().map_err(|e| e.to_string())?;
+                break (status, true);
+            }
+            Err(e) => return Err(format!("exec wait failed: {e}")),
+        }
+    };
+    let stdout = out.join().map_err(|_| "stdout reader failed")?;
+    let stderr = err.join().map_err(|_| "stderr reader failed")?;
+    if timed_out { return Err("machine command timed out after 120s".into()); }
+    if stdout.len() > LIMIT || stderr.len() > LIMIT {
+        return Err("machine command output exceeds 1 MiB".into());
+    }
+    if !status.success() {
+        return Err(format!("machine command failed: {}", String::from_utf8_lossy(&stderr)));
+    }
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
+}
+
 pub fn machine_exec(name: &str, command: &str) -> Result<String, String> {
     if !valid_name(name) { return Err("invalid machine name".into()); }
     let pid = machine_pid(name).ok_or_else(|| format!("machine '{name}' is not running"))?;
     // -m/-p alone leaves the caller's rootfs intact. --root adopts the
     // target machine init's chroot, --wd=/ prevents inheriting the host CWD.
-    sh("nsenter", &["--target", &pid.to_string(), "--mount", "--pid",
+    bounded_command("nsenter", &["--target", &pid.to_string(), "--mount", "--pid",
         "--root", "--wd=/", "--", "/bin/sh", "-c", command])
-        .map_err(|e| format!("machine exec failed: {e}"))
 }
 
 // MARK: - Kubernetes (k3s in the same VM)
@@ -298,6 +341,9 @@ fn ensure_k3s() -> Result<(), String> {
 }
 
 pub fn k8s_enable() -> Result<String, String> {
+    if !data_layout_ready() {
+        return Err("Kubernetes requires the new Btrfs data disk; legacy ext4 data is preserved".into());
+    }
     if k8s_status() == "running" {
         return Ok("kubernetes already running".into());
     }
@@ -332,6 +378,7 @@ pub fn k8s_disable() -> Result<String, String> {
     Ok("kubernetes stopped (state kept)".into())
 }
 pub fn k8s_status() -> String {
+    if !data_layout_ready() { return "unavailable".into(); }
     if k8s_pid().is_some() { "running" } else { "disabled" }.into()
 }
 
@@ -475,7 +522,19 @@ fn dispatch_inner(line: &str) -> String {
 }
 
 fn escape(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")
+    let mut out = String::new();
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c <= '\u{001f}' => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Serves the control channel: one line-buffered request per connection.
