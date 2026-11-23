@@ -158,12 +158,15 @@ fn machine_pid(name: &str) -> Option<u32> {
         if root.to_string_lossy() != rootfs {
             continue;
         }
-        let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) else {
+        // NSpid's last value is 1 only for init in its own PID namespace.
+        // BusyBox may report its executable name rather than "init".
+        let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
             continue;
         };
-        if comm.trim() == "init" || comm.trim() == "systemd" {
-            return Some(pid);
-        }
+        let is_init = status.lines().find(|line| line.starts_with("NSpid:"))
+            .and_then(|line| line.split_whitespace().last())
+            .and_then(|v| v.parse::<u32>().ok()) == Some(1);
+        if is_init { return Some(pid); }
     }
     None
 }
@@ -393,7 +396,7 @@ fn parse_fields(src: &str) -> Result<HashMap<String, String>, String> {
     let b = src.as_bytes();
     let mut i = 0usize;
     let whitespace = |i: &mut usize| {
-        while b.get(*i).is_some_and(|x| matches!(x, b' ' | b'\t' | b'\r' | b'\n')) { *i += 1; }
+        while b.get(*i).is_some_and(|x| matches!(*x, b' ' | b'\t' | b'\r' | b'\n')) { *i += 1; }
     };
     whitespace(&mut i);
     if b.get(i) != Some(&b'{') { return Err("expected JSON object".into()); }
@@ -401,7 +404,11 @@ fn parse_fields(src: &str) -> Result<HashMap<String, String>, String> {
     let mut result = HashMap::new();
     loop {
         whitespace(&mut i);
-        if b.get(i) == Some(&b'}') { i += 1; break; }
+        if b.get(i) == Some(&b'}') {
+            if !result.is_empty() { return Err("trailing comma".into()); }
+            i += 1;
+            break;
+        }
         let key = json_string(src, &mut i)?;
         whitespace(&mut i);
         if b.get(i) != Some(&b':') { return Err("expected colon".into()); }
@@ -411,8 +418,8 @@ fn parse_fields(src: &str) -> Result<HashMap<String, String>, String> {
         if result.insert(key, val).is_some() { return Err("duplicate JSON key".into()); }
         whitespace(&mut i);
         match b.get(i) {
-            Some(b',') => i += 1,
-            Some(b'}') => { i += 1; break; }
+            Some(&b',') => i += 1,
+            Some(&b'}') => { i += 1; break; }
             _ => return Err("expected comma or closing brace".into()),
         }
     }
