@@ -2,7 +2,7 @@ name: Moby shell script syntax
 
 on:
   push:
-    branches: [main]
+    branches: [main, apple-vc]
     paths:
       - "scripts/moby/**"
       - ".github/workflows/moby-script-lint.yml"
