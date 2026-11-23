@@ -48,8 +48,8 @@ writable mounts. VM shutdown uses the Guest's graceful SHUTDOWN vsock protocol,
 waits for disk release, and then cleans up sockets.
 
 The Linux disk ABI remains fixed:
-- `~/.kiri-moby/vm/data.img`: writable persistent ext4 Docker image, volumes and metadata (`/dev/vda`)
-- `~/.kiri-moby/vm/system.img`: read-only Guest rootfs seed (`/dev/vdb`)
+- `~/.kiri-moby/vm/data.img`: writable persistent **Btrfs** Docker root (`docker` subvolume), volumes and metadata (`/dev/vda`)
+- `~/.kiri-moby/vm/system.img`: read-only **ext4** Guest rootfs seed (`/dev/vdb`)
 - `~/.kiri-moby/guest/`: signed kernel, initramfs, seed archives and revision checksums
 
 Guest updates verify bundled `SHA256SUMS`, stage replacement boot assets under
