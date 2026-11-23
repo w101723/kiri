@@ -43,6 +43,24 @@ func guardedDirectory(_ url: URL) throws {
     try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
 }
 
+/// Docker Engine binaries shipped in `Contents/Resources/docker`. The Guest
+/// seed intentionally contains no engine, so a missing or incomplete bundle
+/// fails closed instead of silently running an old daemon.
+private func bundledEngineDirectory() -> URL? {
+    let root = Bundle.main.bundleURL
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Resources/docker", isDirectory: true)
+    let bin = root.appendingPathComponent("bin", isDirectory: true)
+    for name in ["dockerd", "containerd", "runc"] {
+        var info = stat()
+        guard lstat(bin.appendingPathComponent(name).path, &info) == 0,
+              info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else { return nil }
+    }
+    return root
+}
+
 private func installDisk(_ archive: URL, _ disk: URL, _ member: String) throws {
     guard fm.fileExists(atPath: archive.path) else { throw hostError("Missing Guest disk seed \(archive.path)") }
     let staging = disk.deletingLastPathComponent().appendingPathComponent("staging-\(member)")
@@ -510,6 +528,17 @@ private final class KiriMobyHost: NSObject, VZVirtualMachineDelegate {
             let fs = VZVirtioFileSystemDeviceConfiguration(tag: "kiri-mac")
             fs.share = VZMultipleDirectoryShare(directories: shares)
             fsDevices.append(fs)
+        }
+        // The seed ships no engine; the Guest refuses to start dockerd
+        // without this read-only "docker" tag.
+        if let engine = bundledEngineDirectory() {
+            let fs = VZVirtioFileSystemDeviceConfiguration(tag: "docker")
+            fs.share = VZSingleDirectoryShare(
+                directory: VZSharedDirectory(url: engine, readOnly: true))
+            fsDevices.append(fs)
+            trace("Injected Docker Engine: \(engine.path)")
+        } else {
+            trace("No bundled Docker Engine; the guest will fail closed")
         }
         if VZLinuxRosettaDirectoryShare.availability == .installed {
             if let rosetta = try? VZLinuxRosettaDirectoryShare() {

@@ -292,9 +292,15 @@ jobs:
             https://github.com/docker/compose/releases/download/v5.6.1/docker-compose-darwin-aarch64
           curl -fL --retry 3 --retry-delay 2 -o downloaded/cli/docker-buildx \
             https://github.com/docker/buildx/releases/download/v0.38.1/buildx-v0.38.1.darwin-arm64
+          # The persistent Guest seed ships no engine: the app must bundle the
+          # pinned static Linux ARM64 dockerd/containerd/runc binaries that the
+          # VZ/HVF launchers export read-only under the "docker" VirtioFS tag.
+          curl -fL --retry 3 --retry-delay 2 -o downloaded/cli/docker-engine.tgz \
+            https://download.docker.com/linux/static/stable/aarch64/docker-29.10.0.tgz
           echo 'ea8a2ce5ac31f9f5f3fb711a7a485e1e46cc7a69798a629a70306f6e6af25b7a  downloaded/cli/docker.tgz' | shasum -a 256 -c -
           echo 'fcce41226abd2b7b2936094e688bbd61284673dddafea542e08cb9a3b4423a8b  downloaded/cli/docker-compose' | shasum -a 256 -c -
           echo '6f20ba2437865311ef99015bf5d1039c3c8e4d2177c1c64aa41b134b5ecd3012  downloaded/cli/docker-buildx' | shasum -a 256 -c -
+          echo '6e5159e8b5615e0c0c2954a2a1a2a12bc65f5d9b603595dba24a10cb367408cd  downloaded/cli/docker-engine.tgz' | shasum -a 256 -c -
       - name: Build and sign single native Kiri Moby.app
         run: |
           set -euo pipefail
@@ -317,8 +323,15 @@ jobs:
           cp downloaded/cli/docker/docker "$res/bin/docker"
           cp downloaded/cli/docker-compose "$res/bin/cli-plugins/docker-compose"
           cp downloaded/cli/docker-buildx "$res/bin/cli-plugins/docker-buildx"
+          mkdir -p downloaded/engine "$res/docker/bin"
+          tar -xzf downloaded/cli/docker-engine.tgz -C downloaded/engine docker
+          cp downloaded/engine/docker/dockerd downloaded/engine/docker/containerd \
+             downloaded/engine/docker/containerd-shim-runc-v2 downloaded/engine/docker/runc \
+             downloaded/engine/docker/docker-init downloaded/engine/docker/docker-proxy \
+             "$res/docker/bin/"
           chmod 755 "$res/bin/docker" \
-            "$res/bin/cli-plugins/docker-compose" "$res/bin/cli-plugins/docker-buildx"
+            "$res/bin/cli-plugins/docker-compose" "$res/bin/cli-plugins/docker-buildx" \
+            "$res/docker/bin/"*
           cp LICENSE NOTICE "$res/"
           mkdir -p packaged/Kiri.iconset
           for spec in '16 1' '16 2' '32 1' '32 2' '128 1' '128 2' '256 1' '256 2' '512 1' '512 2'; do
@@ -363,7 +376,8 @@ jobs:
           codesign --force --sign - --entitlements crates/kiri/kiri.entitlements "$helper"
           codesign --verify --strict "$helper"
           for binary in "$res/bin/docker" \
-            "$res/bin/cli-plugins/docker-compose" "$res/bin/cli-plugins/docker-buildx"; do
+            "$res/bin/cli-plugins/docker-compose" "$res/bin/cli-plugins/docker-buildx" \
+            "$res/docker/bin/"*; do
             test "$(lipo "$binary" -archs)" = "arm64"
             codesign --force --sign - "$binary"
           done
