@@ -99,6 +99,40 @@ Further reducing the VM floor while dockerd is running could cause OOMs.
 Any further optimization must be backed by repeated host/guest memory tests
 on the same Apple Silicon Mac, workload, Guest and kernel revision.
 
+## 2026-11-23: governor dead-zone fix and measured VZ retention
+
+The owner reported that after running and stopping a container, host memory
+did not return to the ~400 MB fresh-idle state. Captured live telemetry showed
+a second governor dead zone: with `target=1145`, `guest_available=716 MiB`,
+`used≈265 MiB`, the desired target was ~1033, but the old `shrink < 128 MiB`
+guard refused the 112 MiB gap forever. The governor now uses a 32 MiB
+horizon/step; three quiet samples are still required before every shrink.
+`kiri-moby-host --memory-selftest` runs the captured 1145 -> 1033 case and a
+low-memory reinflation case (local Apple Silicon only; CI host jobs
+cross-compile arm64 on Intel runners).
+
+Measured on the same Mac, Guest and app with the fixed Host:
+
+| state | balloon target | Guest available | VZ XPC phys_footprint |
+| --- | ---: | ---: | ---: |
+| fresh idle (no containers) | 1024 MiB | 881 MiB | 441 MB |
+| 512 MiB tmpfs workload | 2048 MiB | ~1094 MiB | 975 MB |
+| 5 s after stop | 1289 MiB | 1112 MiB | 982 MB |
+| 45 s after stop | 1033 MiB | 617 MiB | 982 MB |
+
+The target now returns to idle; the host footprint does not. Dropping Guest
+clean file cache (`Cached` 353 -> 100 MiB; `MemFree` 474 -> 722 MiB) changed
+the VZ XPC footprint only from 1073 to 1073 MB. This is the documented Apple
+VZ behavior: ballooned/free Guest pages are not decommitted from the host
+process, because the ~1 GiB target page set was touched. A fresh VM start is
+the only tested way to return the same process to ~441 MB. OrbStack's lower
+figure comes from custom memory management, not the stock VZ balloon API.
+Do not lower the 1024 MiB target floor to chase the idle number; the Guest
+already keeps only ~600 MiB available at the floor.
+
+Use the UI's VM restart, or `STOP` + a new Host launch, when macOS host
+footprint matters more than keeping dockerd/machines running.
+
 ## What is still needed for OrbStack-like memory return
 
 Apple documents that VZ's balloon support is partial and released Guest RAM

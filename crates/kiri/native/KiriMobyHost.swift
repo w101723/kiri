@@ -322,7 +322,10 @@ private struct MemoryGovernor {
     let ceiling: Int
     private(set) var target: Int
     private var quiet = 0
-    init(_ ceiling: Int) { self.ceiling = ceiling; target = ceiling }
+    init(_ ceiling: Int, target: Int? = nil) {
+        self.ceiling = ceiling
+        self.target = target ?? ceiling
+    }
     mutating func sample(_ m: GuestMemory) -> Int? {
         let total = m.total / 1024, available = m.available / 1024
         let inflated = max(0, ceiling - target)
@@ -335,9 +338,14 @@ private struct MemoryGovernor {
         } else if desired > target + 128 {
             quiet = 0
             next = desired
-        } else if desired + 128 < target {
+        } else if desired + 32 < target {
+            // Do not require a 128 MiB step. Captured idle telemetry
+            // (target 1145, used 265, desired 1033) left a 112 MiB gap that
+            // the old 128 MiB floor refused forever. A 32 MiB horizon still
+            // has three quiet samples before each shrink, so the target does
+            // not chatter.
             let shrink = min(256, target - desired, max(0, available - 512))
-            if shrink < 128 { quiet = 0; return nil }
+            if shrink < 32 { quiet = 0; return nil }
             quiet += 1
             guard quiet >= 3 else { return nil }
             next = target - shrink
@@ -346,6 +354,39 @@ private struct MemoryGovernor {
         target = next
         return next
     }
+}
+
+/// Captured post-container telemetry used by both CI and local diagnosis.
+/// The old 128 MiB dead band left target 1145 unchanged forever even though
+/// the safe desired target was ~1034.
+private func runMemorySelfTest() -> Bool {
+    guard let idle = GuestMemory("KIRI_MEM_V1 4027180 733256 361376") else {
+        print("memory-selftest FAIL: invalid idle sample")
+        return false
+    }
+    var governor = MemoryGovernor(4096, target: 1145)
+    var firstChange: Int?
+    for _ in 0..<3 {
+        if let next = governor.sample(idle) { firstChange = next }
+    }
+    guard let firstChange, firstChange < 1145, firstChange >= 1024 else {
+        print("memory-selftest FAIL: dead-band target \(governor.target)")
+        return false
+    }
+    for _ in 0..<20 { _ = governor.sample(idle) }
+    guard governor.target >= 1024, governor.target <= 1034 else {
+        print("memory-selftest FAIL: final target \(governor.target)")
+        return false
+    }
+    let idleFinal = governor.target
+    guard let pressure = GuestMemory("KIRI_MEM_V1 4027180 400000 100000"),
+          let grown = governor.sample(pressure),
+          grown > idleFinal, grown <= 4096 else {
+        print("memory-selftest FAIL: pressure did not expand target")
+        return false
+    }
+    print("memory-selftest OK: first=\(firstChange) idle=\(idleFinal) pressure=\(grown)")
+    return true
 }
 
 private final class PortListener {
@@ -862,6 +903,9 @@ private enum HostMain {
         if CommandLine.arguments.contains("--version") {
             print("kiri-moby-host swift-native")
             return
+        }
+        if CommandLine.arguments.contains("--memory-selftest") {
+            exit(runMemorySelfTest() ? 0 : 1)
         }
         // Ignore writes to disconnected Docker peers; one EPIPE must not kill the VM.
         _ = Darwin.signal(SIGPIPE, SIG_IGN)
