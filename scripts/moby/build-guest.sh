@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build ARM64 stock Moby rootfs ON DISK, not in the Linux kernel initramfs.
-# Requires Linux ARM64, Docker, sudo, e2fsprogs, cpio and Cargo.
+# Requires Linux ARM64, Docker, sudo, e2fsprogs (read-only seed),
+# btrfs-progs (persistent data disk), cpio and Cargo.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 out="$root/target/moby-guest"
@@ -44,7 +45,7 @@ cid="$(docker create --platform linux/arm64 "$tag" /bin/true)"
 docker export "$cid" | sudo tar -xpf - -C "$work/root"
 docker rm "$cid" >/dev/null
 cid=""
-# The persistent ext4 root is populated at build time. There is no need to
+# The persistent Btrfs Docker root is populated at build time. No need to
 # inflate the full dockerd/Debian userspace into the Guest's memory on boot.
 sudo mkdir -p "$work/root/var/lib/docker" "$work/root/var/lib/containerd"
 sudo mkdir -p "$work/root/dev" "$work/root/proc" "$work/root/sys/fs/cgroup" "$work/root/run"
@@ -81,7 +82,7 @@ sudo chmod 0755 "$work/boot/init"
 sudo mknod -m 600 "$work/boot/dev/console" c 5 1
 sudo mknod -m 666 "$work/boot/dev/null" c 1 3
 # Enumerating two virtio disks by letter is unsafe: the tiny root must be
-# able to match partitionless ext4 labels before mounting writable storage.
+# able to match partitionless Btrfs data and ext4 read-only seed labels.
 (cd "$work/boot" && sudo find . -print0 | LC_ALL=C sort -z |
   sudo cpio --null --quiet -o -H newc) > "$out/initramfs.cpio"
 
@@ -114,7 +115,7 @@ sudo btrfs subvolume create "$data_mnt/k8s"
 sudo umount "$data_mnt"
 data_mnt=""
 
-# Check the ext4 seed stamp while offline (debugfs is ext4-only). The btrfs
+# Check the ext4 *read-only seed* stamp offline (debugfs is ext4-only). Btrfs
 # data disk carries the same revision file inside the docker subvolume; the
 # guest verifies it after mounting.
 stamp="$(debugfs -R 'cat .kiri-moby-rootfs-revision' "$seed" 2>/dev/null)"
