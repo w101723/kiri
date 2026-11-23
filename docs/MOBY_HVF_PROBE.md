@@ -223,13 +223,19 @@ They are isolated Linux namespace root filesystems, **not additional VMs
 or security boundaries**. Do not treat a Machine as a sandbox for
 untrusted privileged workloads. Management uses the private Machines
 vsock channel (2379), bridged to `run/machines.sock` on both the VZ
-and HVF Helpers; no TCP management port is opened.
+and HVF Helpers; no TCP management port is opened. Machines inherit the
+Guest's DHCP resolver through a private bind mount of
+`/etc/resolv.conf`; a distro-provided symlink is left untouched.
 
 The controller validates Machine names, decodes JSON escapes strictly,
-caps request size and concurrent clients, enters the Machine's root when
-executing a command, and refuses destructive deletion while the init or
-other processes still hold its rootfs. Machine launch confirms the init
-process actually started; failed deletions preserve the Btrfs data.
+caps request size and concurrent clients, serializes mutations per
+Machine (a long exec no longer blocks other Machines), enters the
+Machine's root when executing a command, and refuses destructive
+deletion while the init or other processes still hold its rootfs.
+Machine launch confirms the init process actually started; failed
+deletions preserve the Btrfs data. Interrupted creations are recoverable:
+the next create clears a stale seed container and partial subvolume, and
+delete also removes parent-only leftovers.
 
 A distro rootfs must contain a working `/sbin/init` or
 `/usr/sbin/init`. Minimal official container images may lack a real
@@ -238,12 +244,15 @@ the Alpine preset has been exercised in an end-to-end Machine test; the
 other presets need separate validation before production enablement.
 
 k3s is **experimental** and not a required component of the Docker
-Engine. The Kubernetes UI is hidden unless
-`KIRI_MOBY_EXPERIMENTAL_K8S=1` is set (or an existing cluster is
-running). The Guest-side kubeconfig does not yet provide a Mac-facing
-Kubernetes API endpoint. Do not advertise the cluster as fully
-Mac-accessible until that path is implemented and tested.
+Engine. The Kubernetes card is always visible on the Linux Environments
+page; enabling it is an explicit action and stays gated on the Btrfs
+`k8s` subvolume. The pinned k3s binary is downloaded on demand and must
+match its pinned SHA-256 before it is executed. The Guest-side kubeconfig
+does not yet provide a Mac-facing Kubernetes API endpoint. Do not
+advertise the cluster as fully Mac-accessible until that path is
+implemented and tested.
 
 The idle Docker cache eviction worker now checks for running Machines
-and k3s before dropping the Guest's global clean file cache. No ext4 data-disk compatibility, implicit migration, or destructive reset
+and k3s before dropping the Guest's global clean file cache. No ext4
+data-disk compatibility, implicit migration, or destructive reset
 is performed. The ext4 OS seed is intentionally still read-only.

@@ -10,19 +10,46 @@
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, Read, Write};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub const MACHINE_VSOCK_PORT: u32 = 2379;
 
 const MACHINES_ROOT: &str = "/mnt/data/machines";
 const MAX_REQUEST_BYTES: u64 = 64 * 1024;
-static OPERATIONS: Mutex<()> = Mutex::new(());
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+const COMMAND_OUTPUT_LIMIT: usize = 1024 * 1024;
+
+// Machine mutations are serialized per machine name. Kubernetes has its own
+// lock: a long k3s download must not block starting or stopping a machine.
+static MACHINE_LOCKS: Mutex<Vec<(String, Arc<Mutex<()>>)>> = Mutex::new(Vec::new());
+static K8S_OPERATION: Mutex<()> = Mutex::new(());
+
+fn machine_operation_lock(name: &str) -> Arc<Mutex<()>> {
+    let mut locks = MACHINE_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, lock)) = locks.iter().find(|(locked, _)| locked == name) {
+        return Arc::clone(lock);
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.push((name.to_string(), Arc::clone(&lock)));
+    lock
+}
 
 fn machine_rootfs(name: &str) -> String {
     format!("{MACHINES_ROOT}/{name}/rootfs")
+}
+
+/// Removes a partially unpacked rootfs. `btrfs subvolume delete` handles a
+/// real subvolume; rmdir only succeeds for an empty plain directory left by
+/// a failed subvolume create, never for a live subvolume.
+fn remove_partial_rootfs(rootfs: &str) {
+    let partial = format!("{rootfs}.new");
+    let _ = sh("btrfs", &["subvolume", "delete", &partial]);
+    let _ = std::fs::remove_dir(&partial);
 }
 
 fn valid_name(name: &str) -> bool {
@@ -45,9 +72,14 @@ fn sh(program: &str, args: &[&str]) -> io::Result<String> {
     }
 }
 
-/// True once the btrfs data layout is mounted (init mounts /mnt/data).
+/// True once the btrfs data layout needed by Machines is mounted.
 pub fn data_layout_ready() -> bool {
     Path::new("/mnt/data/machines").is_dir() && Path::new("/mnt/data/docker").is_dir()
+}
+
+/// Kubernetes additionally requires the dedicated k8s subvolume.
+fn k8s_layout_ready() -> bool {
+    data_layout_ready() && Path::new("/mnt/data/k8s").is_dir()
 }
 
 /// Distro presets accepted by `machine create`. Each maps to the official
@@ -75,9 +107,6 @@ pub fn machine_create(distro: &str, name: &str) -> Result<String, String> {
     }
     let rootfs = machine_rootfs(name);
     let parent = format!("{MACHINES_ROOT}/{name}");
-    if Path::new(&parent).exists() {
-        return Err(format!("machine '{name}' already exists or has an incomplete creation"));
-    }
     let image = distro_image(distro)
         .ok_or_else(|| format!("unknown distro '{distro}'; supported: {}", {
             let names: Vec<&str> = DISTROS.iter().map(|(n, _)| *n).collect();
@@ -85,6 +114,21 @@ pub fn machine_create(distro: &str, name: &str) -> Result<String, String> {
         }))?;
 
     let container = format!("kiri-machine-seed-{name}");
+    if Path::new(&parent).exists() {
+        if Path::new(&rootfs).is_dir() {
+            return Err(format!("machine '{name}' already exists"));
+        }
+        // Parent-only leftovers from an interrupted create. Such an entry is
+        // not listed in the UI, so delete cannot reach it: reclaim the name
+        // here instead of requiring manual Guest cleanup.
+        let _ = sh("docker", &["rm", "-f", &container]);
+        remove_partial_rootfs(&rootfs);
+        remove_machine_metadata(&parent)
+            .map_err(|e| format!("cannot recover incomplete machine '{name}': {e}"))?;
+    }
+    // A crash between `docker create` and mkdir leaves only the seed
+    // container behind; it must not block the new attempt.
+    let _ = sh("docker", &["rm", "-f", &container]);
     sh("docker", &["create", "--name", &container, image])
         .map_err(|e| format!("docker create failed: {e}"))?;
     // mkdir first: `btrfs subvolume create` needs the (otherwise absent)
@@ -100,7 +144,7 @@ pub fn machine_create(distro: &str, name: &str) -> Result<String, String> {
     );
     let _ = sh("docker", &["rm", "-f", &container]);
     if let Err(error) = unpack {
-        let _ = sh("btrfs", &["subvolume", "delete", &format!("{rootfs}.new")]);
+        remove_partial_rootfs(&rootfs);
         let _ = std::fs::remove_dir(&parent);
         return Err(format!("rootfs unpack failed: {error}"));
     }
@@ -112,8 +156,10 @@ pub fn machine_create(distro: &str, name: &str) -> Result<String, String> {
         let _ = machine_delete(name);
         return Err(format!("image {image} has no /sbin/init; not machine-capable"));
     }
-    std::fs::write(format!("{parent}/distro"), distro)
-        .map_err(|e| format!("machine metadata write failed: {e}"))?;
+    if let Err(error) = std::fs::write(format!("{parent}/distro"), distro) {
+        let _ = machine_delete(name);
+        return Err(format!("machine metadata write failed: {error}"));
+    }
     Ok(format!("machine '{name}' created ({distro})"))
 }
 
@@ -181,9 +227,16 @@ pub fn machine_start(name: &str) -> Result<String, String> {
     if !Path::new(&rootfs).is_dir() {
         return Err(format!("machine '{name}' does not exist"));
     }
-    for dir in ["dev", "sys", "proc", "run"] {
+    for dir in ["dev", "sys", "proc", "run", "etc"] {
         std::fs::create_dir_all(format!("{rootfs}/{dir}"))
             .map_err(|e| format!("prepare machine mountpoints: {e}"))?;
+    }
+    // Machines share the Guest network namespace, so the DHCP-written
+    // resolver applies to them as well. Create the mount target when the
+    // distro image ships none; a symlinked resolver is left untouched.
+    let resolv = format!("{rootfs}/etc/resolv.conf");
+    if !Path::new(&resolv).exists() && !Path::new(&resolv).is_symlink() {
+        let _ = std::fs::write(&resolv, b"");
     }
     // The mount namespace is private; never share the host's /run/docker.sock.
     let script = format!(
@@ -192,6 +245,7 @@ pub fn machine_start(name: &str) -> Result<String, String> {
                 mount --rbind /dev {rootfs}/dev && \
                 mount --rbind /sys {rootfs}/sys && \
                 mount -t tmpfs tmpfs {rootfs}/run && \
+                {{ mount --bind /etc/resolv.conf {rootfs}/etc/resolv.conf 2>/dev/null || true; }} && \
                 exec chroot {rootfs} /sbin/init' \
          >{MACHINES_ROOT}/{name}/boot.log 2>&1 </dev/null &"
     );
@@ -222,7 +276,14 @@ pub fn machine_stop(name: &str) -> Result<String, String> {
     let Some(pid) = machine_pid(name) else {
         return Ok(format!("machine '{name}' is not running"));
     };
-    let _ = Command::new("kill").args(["-s", "SIGRTMIN+3", &pid.to_string()]).status();
+    let rt = Command::new("kill")
+        .args(["-s", "SIGRTMIN+3", &pid.to_string()]).status();
+    if !rt.map(|status| status.success()).unwrap_or(false) {
+        // BusyBox kill may not resolve SIGRTMIN+n. SIGTERM is the portable
+        // shutdown request and is repeated below for inits that ignore the
+        // first one.
+        let _ = Command::new("kill").arg(pid.to_string()).status();
+    }
     for _ in 0..20 {
         if machine_pid(name).is_none() { return Ok(format!("machine '{name}' stopped")); }
         std::thread::sleep(Duration::from_millis(100));
@@ -240,67 +301,115 @@ pub fn machine_stop(name: &str) -> Result<String, String> {
     Err(format!("machine '{name}' init remains alive; data preserved"))
 }
 
+fn remove_machine_metadata(parent: &str) -> Result<(), String> {
+    for file in ["distro", "boot.log"] {
+        match std::fs::remove_file(format!("{parent}/{file}")) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("metadata cleanup failed: {e}")),
+        }
+    }
+    std::fs::remove_dir(parent).map_err(|e| format!("metadata directory cleanup failed: {e}"))
+}
+
 pub fn machine_delete(name: &str) -> Result<String, String> {
     if !valid_name(name) { return Err("invalid machine name".into()); }
+    // Remove a seed container left behind by an interrupted create.
+    let _ = sh("docker", &["rm", "-f", &format!("kiri-machine-seed-{name}")]);
     machine_stop(name)?;
     let rootfs = machine_rootfs(name);
-    if !Path::new(&rootfs).exists() { return Ok(format!("machine '{name}' did not exist")); }
+    let parent = format!("{MACHINES_ROOT}/{name}");
+    if !Path::new(&rootfs).exists() {
+        if !Path::new(&parent).exists() {
+            return Ok(format!("machine '{name}' did not exist"));
+        }
+        // Parent-only state from an interrupted create: drop the partial
+        // subvolume and metadata so the name becomes reusable again.
+        remove_partial_rootfs(&rootfs);
+        remove_machine_metadata(&parent)?;
+        return Ok(format!("machine '{name}' incomplete state removed"));
+    }
     if rooted_process_exists(&rootfs) {
         return Err(format!("machine '{name}' still has live processes; data preserved"));
     }
     // Never fall back to rm -rf on a mounted or busy btrfs subvolume.
     sh("btrfs", &["subvolume", "delete", &rootfs])
         .map_err(|e| format!("btrfs refused deletion (data preserved): {e}"))?;
-    let parent = format!("{MACHINES_ROOT}/{name}");
-    for file in ["distro", "boot.log"] {
-        match std::fs::remove_file(format!("{parent}/{file}")) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("rootfs removed but metadata cleanup failed: {e}")),
-        }
-    }
-    std::fs::remove_dir(&parent).map_err(|e| format!("metadata directory cleanup failed: {e}"))?;
+    remove_machine_metadata(&parent)
+        .map_err(|e| format!("rootfs removed but {e}"))?;
     Ok(format!("machine '{name}' deleted"))
 }
 
-// Limit output and execution time before returning to a GUI caller.
+/// Reads one pipe until EOF or the limit is exceeded. The overflow flag lets
+/// the owner stop the child immediately instead of waiting for the timeout.
+fn read_bounded(pipe: impl Read + Send + 'static, overflow: Arc<AtomicBool>)
+    -> std::thread::JoinHandle<Vec<u8>>
+{
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.take((COMMAND_OUTPUT_LIMIT + 1) as u64).read_to_end(&mut bytes);
+        if bytes.len() > COMMAND_OUTPUT_LIMIT {
+            overflow.store(true, Ordering::Relaxed);
+        }
+        bytes
+    })
+}
+
+/// Runs a command in its own session so a timeout or oversized output kills
+/// the whole command tree (nsenter, the shell and its children), not only the
+/// direct child. Runtime and output are bounded for GUI callers.
 fn bounded_command(program: &str, args: &[&str]) -> Result<String, String> {
-    const LIMIT: usize = 1024 * 1024;
-    let mut child = Command::new(program).args(args)
-        .stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn().map_err(|e| format!("exec spawn failed: {e}"))?;
+    let mut command = Command::new(program);
+    command.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // setsid() makes the child a session and process-group leader, so
+    // kill(-pid) reaches every descendant unless it deliberately escapes.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().map_err(|e| format!("exec spawn failed: {e}"))?;
     let stdout = child.stdout.take().ok_or("missing stdout pipe")?;
     let stderr = child.stderr.take().ok_or("missing stderr pipe")?;
-    let out = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = stdout.take((LIMIT + 1) as u64).read_to_end(&mut bytes);
-        bytes
-    });
-    let err = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = stderr.take((LIMIT + 1) as u64).read_to_end(&mut bytes);
-        bytes
-    });
-    let deadline = Instant::now() + Duration::from_secs(120);
-    let (status, timed_out) = loop {
+    let overflow = Arc::new(AtomicBool::new(false));
+    let out = read_bounded(stdout, Arc::clone(&overflow));
+    let err = read_bounded(stderr, Arc::clone(&overflow));
+    let child_pid = child.id();
+    let kill_tree = || {
+        // The child is a session leader: its process-group id is its PID.
+        unsafe { libc::kill(-(child_pid as i32), libc::SIGKILL) };
+    };
+    let deadline = Instant::now() + COMMAND_TIMEOUT;
+    let mut timed_out = false;
+    let mut exceeded = false;
+    let status = loop {
+        if overflow.load(Ordering::Relaxed) {
+            exceeded = true;
+            kill_tree();
+            let _ = child.kill();
+            break child.wait();
+        }
         match child.try_wait() {
-            Ok(Some(status)) => break (status, false),
+            Ok(Some(status)) => break Ok(status),
             Ok(None) if Instant::now() < deadline =>
-                std::thread::sleep(Duration::from_millis(50)),
+                std::thread::sleep(Duration::from_millis(20)),
             Ok(None) => {
+                timed_out = true;
+                kill_tree();
                 let _ = child.kill();
-                let status = child.wait().map_err(|e| e.to_string())?;
-                break (status, true);
+                break child.wait();
             }
             Err(e) => return Err(format!("exec wait failed: {e}")),
         }
     };
+    let status = status.map_err(|e| format!("exec wait failed: {e}"))?;
     let stdout = out.join().map_err(|_| "stdout reader failed")?;
     let stderr = err.join().map_err(|_| "stderr reader failed")?;
+    if exceeded { return Err("machine command output exceeds 1 MiB".into()); }
     if timed_out { return Err("machine command timed out after 120s".into()); }
-    if stdout.len() > LIMIT || stderr.len() > LIMIT {
-        return Err("machine command output exceeds 1 MiB".into());
-    }
     if !status.success() {
         return Err(format!("machine command failed: {}", String::from_utf8_lossy(&stderr)));
     }
@@ -321,11 +430,26 @@ pub fn machine_exec(name: &str, command: &str) -> Result<String, String> {
 const K8S_BIN: &str = "/mnt/data/k8s/bin/k3s";
 const K8S_BIN_DIR: &str = "/mnt/data/k8s/bin";
 const K8S_DATA: &str = "/mnt/data/k8s/state";
+/// SHA-256 of k3s v1.33.4+k3s1 `k3s-arm64` from the upstream
+/// sha256sum-arm64.txt release asset. Never execute an unverified download.
+const K3S_SHA256: &str = "0ba95d3933c90f4c72a502e1a0b39f3d1af311cc9961d2e049e321dd6db88be6";
+
+/// True only when the installed binary matches the pinned digest. A binary
+/// left by an older, unverified download is re-fetched rather than trusted.
+fn k3s_binary_verified() -> bool {
+    if !Path::new(K8S_BIN).exists() {
+        return false;
+    }
+    let script = format!(
+        "[ \"$(sha256sum {K8S_BIN} | cut -d' ' -f1)\" = '{K3S_SHA256}' ]"
+    );
+    sh("sh", &["-c", script.as_str()]).is_ok()
+}
 
 /// Downloads the pinned k3s single binary into the k8s subvolume on demand;
 /// the seed ships no cluster runtime (same policy as the engine).
 fn ensure_k3s() -> Result<(), String> {
-    if Path::new(K8S_BIN).exists() {
+    if k3s_binary_verified() {
         return Ok(());
     }
     let version = "v1.33.4+k3s1";
@@ -333,16 +457,19 @@ fn ensure_k3s() -> Result<(), String> {
         "https://github.com/k3s-io/k3s/releases/download/{version}/k3s-arm64"
     );
     let script = format!(
-        "mkdir -p {K8S_BIN_DIR} && curl -fsSL '{url}' -o {K8S_BIN}.tmp && chmod 0755 {K8S_BIN}.tmp && mv {K8S_BIN}.tmp {K8S_BIN}"
+        "set -eu; mkdir -p {K8S_BIN_DIR}; trap 'rm -f {K8S_BIN}.tmp' EXIT; \
+         rm -f {K8S_BIN}.tmp; curl -fsSL '{url}' -o {K8S_BIN}.tmp; \
+         [ \"$(sha256sum {K8S_BIN}.tmp | cut -d' ' -f1)\" = '{K3S_SHA256}' ]; \
+         chmod 0755 {K8S_BIN}.tmp; mv {K8S_BIN}.tmp {K8S_BIN}"
     );
     sh("sh", &["-c", script.as_str()])
         .map(|_| ())
-        .map_err(|e| format!("k3s download failed: {e}"))
+        .map_err(|e| format!("k3s download or checksum verification failed: {e}"))
 }
 
 pub fn k8s_enable() -> Result<String, String> {
-    if !data_layout_ready() {
-        return Err("Kubernetes requires a mounted Btrfs data disk".into());
+    if !k8s_layout_ready() {
+        return Err("Kubernetes requires a mounted Btrfs data disk with a k8s subvolume".into());
     }
     if k8s_status() == "running" {
         return Ok("kubernetes already running".into());
@@ -372,13 +499,22 @@ pub fn k8s_disable() -> Result<String, String> {
             if k8s_pid().is_none() { break; }
             std::thread::sleep(Duration::from_millis(100));
         }
+        if let Some(pid) = k8s_pid() {
+            // Escalate once TERM is ignored so "关闭" cannot silently leave
+            // k3s running while reporting failure to the user.
+            let _ = sh("kill", &["-9", &pid.to_string()]);
+            for _ in 0..30 {
+                if k8s_pid().is_none() { break; }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
         if k8s_pid().is_some() { return Err("k3s has not stopped".into()); }
     }
     let _ = std::fs::remove_file(format!("{K8S_DATA}.pid"));
     Ok("kubernetes stopped (state kept)".into())
 }
 pub fn k8s_status() -> String {
-    if !data_layout_ready() { return "unavailable".into(); }
+    if !k8s_layout_ready() { return "unavailable".into(); }
     if k8s_pid().is_some() { "running" } else { "disabled" }.into()
 }
 
@@ -494,11 +630,18 @@ fn dispatch_inner(line: &str) -> String {
     };
     let field = |name: &str| fields.get(name).map(String::as_str).unwrap_or("");
     let op = field("op");
-    // Serialize mutations while allowing list/status queries to run concurrently.
-    let _guard = if matches!(op, "machine_create" | "machine_start" | "machine_stop"
-        | "machine_delete" | "machine_exec" | "k8s_enable" | "k8s_disable") {
-        Some(OPERATIONS.lock().unwrap_or_else(|e| e.into_inner()))
-    } else { None };
+    // Mutations are serialized per machine, so a long exec on one machine
+    // does not delay start/stop/delete of another. Kubernetes operations use
+    // a separate lock; list/status queries never take a lock.
+    let machine_lock = matches!(op, "machine_create" | "machine_start" | "machine_stop"
+        | "machine_delete" | "machine_exec")
+        .then(|| field("name"))
+        .filter(|name| valid_name(name))
+        .map(machine_operation_lock);
+    let _machine_guard = machine_lock.as_ref()
+        .map(|lock| lock.lock().unwrap_or_else(|e| e.into_inner()));
+    let _k8s_guard = matches!(op, "k8s_enable" | "k8s_disable")
+        .then(|| K8S_OPERATION.lock().unwrap_or_else(|e| e.into_inner()));
     let result: Result<String, String> = match op {
         "machine_create" => machine_create(field("distro"), field("name")),
         "machine_start" => machine_start(field("name")),
@@ -603,5 +746,32 @@ mod tests {
         client.read_to_string(&mut output).unwrap();
         worker.join().unwrap();
         assert!(output.contains("request too large"));
+    }
+
+    #[test]
+    fn machine_locks_are_scoped_per_name() {
+        let first = machine_operation_lock("alpha");
+        let same = machine_operation_lock("alpha");
+        let other = machine_operation_lock("beta");
+        assert!(Arc::ptr_eq(&first, &same));
+        assert!(!Arc::ptr_eq(&first, &other));
+    }
+
+    #[test]
+    fn bounded_command_returns_output_and_rejects_overflow() {
+        assert_eq!(bounded_command("/bin/sh", &["-c", "printf ok"]).unwrap(), "ok");
+        // The reader stops at LIMIT+1; the controller must notice the
+        // overflow flag and kill the process group immediately, not wait
+        // for the 120 s deadline.
+        let start = Instant::now();
+        let error = bounded_command("/bin/sh", &["-c", "yes x | head -c 2000000"]).unwrap_err();
+        assert!(error.contains("exceeds 1 MiB"), "unexpected error: {error}");
+        assert!(start.elapsed() < Duration::from_secs(30));
+    }
+
+    #[test]
+    fn k3s_pin_is_a_full_sha256() {
+        assert_eq!(K3S_SHA256.len(), 64);
+        assert!(K3S_SHA256.bytes().all(|b| b.is_ascii_hexdigit()));
     }
 }
