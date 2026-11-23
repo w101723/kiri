@@ -16,7 +16,7 @@ done
 
 mkdir -p "$out"
 work="$(mktemp -d)"
-tag="kiri-moby-guest:temp-$"
+tag="kiri-moby-guest:temp-$$"
 cid=""
 data_mnt=""
 cleanup() {

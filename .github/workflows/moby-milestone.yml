@@ -82,7 +82,7 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$app"
           echo "PASS: fixed P12 identity can sign an App before building Linux Guest."
   guest:
-    name: Linux ARM64 Guest (Docker Engine and ext4)
+    name: Linux ARM64 Guest (Docker Engine and Btrfs data disk)
     needs: signing-preflight
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
@@ -97,7 +97,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends musl-tools cpio e2fsprogs btrfs-progs
-      - name: Syntax-check tiny boot stage and ext4 userspace init
+      - name: Syntax-check tiny boot stage and Btrfs userspace init
         run: |
           sh -n scripts/moby/guest/stage1-init
           sh -n scripts/moby/guest/init

@@ -22,7 +22,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-unknown-linux-musl
-      - name: Tools for ARM64 guest and ext4 image
+      - name: Tools for ARM64 guest and disk images
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends musl-tools cpio e2fsprogs btrfs-progs

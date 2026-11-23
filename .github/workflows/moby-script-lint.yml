@@ -58,6 +58,10 @@ jobs:
           grep -Fq -- '/init --btrfs-root' scripts/moby/guest/stage1-init
           grep -Fq -- '[ "$1" = --btrfs-root ]' scripts/moby/guest/init
           grep -Fq 'filesystemMagic == Data("_BHRfS_M".utf8)' crates/kiri/native/KiriMobyHost.swift
+          # Docker tags allow [A-Za-z0-9_.-] only: a bare trailing "$" is a
+          # literal dollar sign and makes docker build fail before an image is
+          # created. The tag must keep the expanded PID ($$ in shell).
+          grep -Fq 'tag="kiri-moby-guest:temp-$$"' scripts/moby/build-guest.sh
           if grep -Eq -- 'mount -t ext4.*data_dev|--ext4-root|legacy ext4 layout' \
               scripts/moby/guest/stage1-init scripts/moby/guest/init; then
             echo "Persistent ext4 compatibility is prohibited" >&2

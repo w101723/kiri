@@ -203,8 +203,8 @@ this is **lower latency than the old 2-second polling**, not a synchronous
 port-publish guarantee. UDP and LAN-exposed bind-address semantics are not
 implemented. Export `KIRI_MOBY_DEBUG=1` for detailed relay errors.
 
-To install a new event-driven **Host** without replacing Guest or ext4 data,
-stop the Kiri VM and run:
+To install a new event-driven **Host** without replacing Guest or the existing
+data disk, stop the Kiri VM and run:
 
 ```sh
 export KIRI_MOBY_DATA_DIR="/tmp/kiri-test/.kiri-moby"
