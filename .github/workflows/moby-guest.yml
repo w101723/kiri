@@ -25,7 +25,7 @@ jobs:
       - name: Tools for ARM64 guest and ext4 image
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends musl-tools cpio e2fsprogs
+          sudo apt-get install -y --no-install-recommends musl-tools cpio e2fsprogs btrfs-progs
       - name: Compile native ARM64 guest vsock bridge
         run: cargo build --release --target aarch64-unknown-linux-musl -p kiri-moby-bridge --bin kiri-moby-guest
       - name: Export standard Docker Engine guest rootfs and sparse data disk
