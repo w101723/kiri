@@ -120,13 +120,19 @@ VM reclamation must be validated against actual macOS process footprints.
 4. Stress test Compose, multi-architecture Buildx and allocation bursts
    before calling the change production-ready.
 
-## Low-memory boot redesign (memory-reclaim branch)
+## Low-memory boot redesign (historical `memory-reclaim` branch)
+
+**Current `apple-vc`:** persistent `data.img` uses Btrfs with separate
+`docker`, `machines` and `k8s` subvolumes. The `system.img` upgrade seed
+continues to use ext4 read-only. The ext4 data-disk design below is
+historical and is not supported by the current Guest boot sequence.
+
 
 The old full Alpine + Docker userspace initramfs caused boot-time inflation and
 then copied the userspace into an ext4 disk **every single boot**. This is a
 plausible source of elevated Mac RSS, but remains unverified until Mac sampling.
 
-The new pipeline moves Alpine, dockerd, containerd and the guest bridge onto a
+The earlier pipeline moved Alpine, dockerd, containerd and the guest bridge onto a
 prepopulated persistent ext4 disk. The initial RAM filesystem contains only
 BusyBox, musl and the first-stage init. The VM also attaches a second,
 read-only ext4 seed disk for one-time userspace updates on existing installs.
