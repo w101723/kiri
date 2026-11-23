@@ -1,6 +1,6 @@
 #!/bin/sh
-# Tiny first-stage boot: the full Debian/Moby root lives on EXT4, NOT in RAM.
-# /dev/vda: persistent Docker data ext4 root. /dev/vdb: read-only system seed.
+# Tiny first-stage boot: Docker runs from a persistent Btrfs subvolume, not RAM.
+# kiri-moby: writable Btrfs data disk; kiri-system: read-only ext4 OS seed.
 set -eu
 export PATH=/bin:/sbin
 umask 022
@@ -37,44 +37,31 @@ done
 [ -n "$data_dev" ] && [ -n "$seed_dev" ] &&
     [ "$data_dev" != "$seed_dev" ] || die "missing Kiri data or system disk label"
 log "Mounting persistent root $data_dev and read-only OS seed $seed_dev"
-# The data disk is btrfs (docker/machines/k8s subvolumes); the OS tree that
-# becomes / lives in the docker subvolume. Legacy images are ext4. BusyBox
-# blkid output carries no TYPE= field, so detect by trying btrfs first.
+# Only the Btrfs layout is supported. A pre-existing ext4 data disk is
+# never formatted or migrated implicitly: abort the boot without touching it.
 $bb mkdir -p /data-mnt
-if $bb mount -t btrfs -o nodatasum,nodatacow,noatime "$data_dev" /data-mnt 2>/dev/null; then
-    [ -d /data-mnt/docker ] || die "btrfs data disk missing docker subvolume"
-    $bb mount -o bind /data-mnt/docker /newroot || die "bind docker subvol as newroot"
-    # The btrfs root stays mounted for stage 2 (machines/k8s subvolumes).
-    $bb mkdir -p /newroot/mnt/data
-    $bb mount -o bind /data-mnt /newroot/mnt/data || die "bind btrfs root into newroot"
-else
-    $bb mount -t ext4 -o noatime "$data_dev" /newroot || die "mount Docker data/root disk"
-fi
+$bb mount -t btrfs -o nodatasum,nodatacow,noatime "$data_dev" /data-mnt ||
+    die "unsupported persistent data disk: Btrfs required; existing data left untouched"
+for sub in docker machines k8s; do
+    [ -d "/data-mnt/$sub" ] || die "Btrfs data disk missing $sub subvolume"
+done
+$bb mount -o bind /data-mnt/docker /newroot || die "bind Docker Btrfs subvolume as root"
+# Keep the Btrfs top-level volume available for Machines and Kubernetes.
+$bb mkdir -p /newroot/mnt/data
+$bb mount -o bind /data-mnt /newroot/mnt/data || die "bind Btrfs data root"
 $bb mount -t ext4 -o ro,noatime "$seed_dev" /seed || die "mount signed read-only OS seed"
 
 stamp=.kiri-moby-rootfs-revision
 [ -r "/seed/$stamp" ] || die "system image has no rootfs revision"
-# Legacy data images stored Docker data at /docker and /containerd. Move
-# instead of copying; abort on conflicts to avoid destroying user state.
-$bb mkdir -p /newroot/var/lib
-for directory in docker containerd; do
-    if [ -e "/newroot/$directory" ]; then
-        [ ! -e "/newroot/var/lib/$directory" ] ||
-            die "Docker state layout conflict for $directory"
-        $bb mv "/newroot/$directory" "/newroot/var/lib/$directory" ||
-            die "persistent Docker data migration failed"
-    fi
-done
-
 if ! $bb cmp -s "/seed/$stamp" "/newroot/$stamp" 2>/dev/null; then
-    log "Userspace revision changed; updating OS on ext4 without touching /var/lib"
+    log "Userspace revision changed; updating OS on Btrfs without touching /var/lib"
     # Marker lives at root, not inside copied directories. Removing it BEFORE
     # a copy guarantees a crash mid-upgrade retries the next boot.
     $bb rm -f "/newroot/$stamp"
     for entry in bin etc home lib lib64 media mnt opt root sbin srv usr Users Volumes init; do
         if [ -e "/seed/$entry" ] || [ -L "/seed/$entry" ]; then
             $bb cp -a "/seed/$entry" /newroot/ ||
-                die "failed to update $entry on ext4"
+                die "failed to update $entry on Btrfs"
         fi
     done
     $bb mkdir -p /newroot/var/log /newroot/var/tmp /newroot/var/lib
@@ -91,7 +78,7 @@ else
 fi
 
 [ -x /newroot/init ] && [ -x /newroot/usr/local/sbin/kiri-moby-guest ] ||
-    die "ext4 userspace incomplete"
+    die "Btrfs Docker rootfs incomplete"
 $bb mkdir -p /newroot/dev/pts /newroot/dev/shm /newroot/proc \
     /newroot/sys/fs/cgroup /newroot/run /newroot/tmp /newroot/mnt/mac
 if [ ! -e /newroot/var/run ] && [ ! -L /newroot/var/run ]; then
@@ -101,6 +88,6 @@ $bb umount /seed || die "unmount read-only system seed"
 $bb mount --move /dev /newroot/dev || die "move /dev"
 $bb mount --move /proc /newroot/proc || die "move /proc"
 $bb mount --move /sys /newroot/sys || die "move /sys"
-log "Switching to ext4 root without retaining the boot initramfs in RAM"
-exec /bin/busybox switch_root -c /dev/console /newroot /init --ext4-root
+log "Switching to Btrfs Docker subvolume without retaining the initramfs in RAM"
+exec /bin/busybox switch_root -c /dev/console /newroot /init --btrfs-root
 die "switch_root failed"
