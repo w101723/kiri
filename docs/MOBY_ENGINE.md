@@ -1,4 +1,12 @@
-# Moby Engine migration — macOS Apple Silicon only
+# Moby Engine — macOS Apple Silicon only
+
+> **Current `apple-vc` disk format (2026-11-23):** `vm/data.img` is a
+> writable **Btrfs** filesystem with `docker`, `machines`, and `k8s`
+> subvolumes. `vm/system.img` remains a read-only **ext4** OS upgrade
+> seed. Persistent ext4 `data.img` disks are no longer boot-compatible;
+> the host rejects them without modifying or deleting the old data.
+> Historical implementation notes below describe earlier ext4 prototypes.
+
 
 ## Decision (2026-11-19)
 
@@ -74,7 +82,7 @@ cleanup **must still be validated**.
 The existing Kiri GUI still uses the original Engine; replacing its consumers,
 sleep/balloon integration, UDP, and production hardening remain pending.
 
-## Low-memory ext4 root and OCI pivot_root (2026-11-20)
+## Historical: low-memory ext4 root and OCI pivot_root (2026-11-20)
 
 The real Moby container runtime must run from ext4, not Linux's initial
 ramfs, to support OCI runc pivot_root. An earlier implementation bundled
@@ -83,7 +91,7 @@ to ext4 **at every VM boot**. This could cause large transient Guest memory
 allocation whose physical pages are retained by Apple VZ, but host RSS
 has not yet been measured to establish the cause of an 800 MiB idle VM.
 
-**The current `memory-reclaim` branch eliminates that repeated in-RAM copy:**
+**The historical `memory-reclaim` implementation eliminated that repeated in-RAM copy:**
 
 1. Build-time Linux ARM64 packaging prepopulates the existing sparse ext4
    `data.img` template with Alpine, stock Moby Engine, and the Guest bridge.
@@ -122,7 +130,7 @@ GitHub Actions now contains two distinct build pipelines:
   build with ad-hoc virtualization entitlement and a downloadable binary.
 - [Build standard Moby ARM64 Guest](../../actions/workflows/moby-guest.yml):
   Alpine 3.22 standard Docker Engine (dockerd, containerd, runc), minimal
-  initramfs/BusyBox PID 1, ext4 sparse disk template, and the Kiri ARM64
+  initramfs/BusyBox PID 1, Btrfs persistent data disk, and the Kiri ARM64
   kernel with required filesystem/network capabilities.
 
 The build produces an artifact `kiri-moby-guest-arm64.tgz` (when CI passes)
@@ -131,7 +139,7 @@ with:
 - `Image`: ARM64 kernel from Kiri's existing source/config
 - `initramfs.cpio`: ~2 MiB BusyBox + musl + tiny first-stage init,
   **no Docker Engine or Alpine rootfs**.
-- `data.img.tgz`: 48 GiB **virtual** sparse prepopulated ext4 root + user
+- `data.img.tgz`: 48 GiB **virtual** sparse prepopulated Btrfs root + user
   Docker state; initial template is unpacked only on fresh installs.
 - `system.img.tgz`: separate sealed read-only ext4 userspace upgrade seed
   (about 704 MiB virtual on initial CI build).
