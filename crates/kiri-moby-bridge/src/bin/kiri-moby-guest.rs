@@ -12,7 +12,8 @@ fn main() {
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 fn main() -> std::io::Result<()> {
-    use std::io::{self, Read};
+    use std::io::{self, Read, Write};
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::net::UnixStream;
     use std::net::TcpStream;
@@ -196,15 +197,26 @@ fn main() -> std::io::Result<()> {
 
     let socket = listen(DOCKER_VSOCK_PORT)?;
     let machine_listener = listen(kiri_moby_bridge::machines::MACHINE_VSOCK_PORT)?;
-    // Machines + k8s lifecycle: one JSON request line per connection.
+    // Long image pulls and execs must not block list/status requests.
+    // Limit concurrent handlers to bound Guest memory and file descriptors.
+    let active_machines = Arc::new(AtomicUsize::new(0));
     thread::spawn(move || loop {
         let fd = unsafe {
             libc::accept4(machine_listener.as_raw_fd(), std::ptr::null_mut(),
                 std::ptr::null_mut(), libc::SOCK_CLOEXEC)
         };
         if fd < 0 { continue; }
-        let stream = UnixStream::from(unsafe { OwnedFd::from_raw_fd(fd) });
-        kiri_moby_bridge::machines::serve(stream);
+        let mut stream = UnixStream::from(unsafe { OwnedFd::from_raw_fd(fd) });
+        if active_machines.fetch_update(Ordering::AcqRel, Ordering::Acquire,
+            |running| (running < 8).then_some(running + 1)).is_err() {
+            let _ = stream.write_all(b"{\"ok\":false,\"error\":\"machines controller busy\"}\n");
+            continue;
+        }
+        let active = Arc::clone(&active_machines);
+        thread::spawn(move || {
+            kiri_moby_bridge::machines::serve(stream);
+            active.fetch_sub(1, Ordering::AcqRel);
+        });
     });
     let engine_path = std::env::var("KIRI_MOBY_ENGINE_SOCKET")
         .unwrap_or_else(|_| "/var/run/docker.sock".into());
