@@ -221,6 +221,10 @@ if [ "$idle_drop_caches" = 1 ]; then
             kill -0 "$dockerd_pid" 2>/dev/null || exit 0
             running="$(docker --host unix:///run/docker.sock ps -q 2>/dev/null)" || continue
             [ -z "$running" ] || continue
+            # Docker may be idle while a Linux Machine or k3s remains active.
+            # Skip global cache eviction in that case; probe failure fails closed.
+            other_workloads="$(/usr/local/sbin/kiri-moby-guest --non-docker-workloads 2>/dev/null)" || continue
+            [ "$other_workloads" = idle ] || continue
             before="$(awk '$1 == "Cached:" { print $2; exit }' /proc/meminfo)"
             if printf '1\n' > /proc/sys/vm/drop_caches; then
                 after="$(awk '$1 == "Cached:" { print $2; exit }' /proc/meminfo)"
