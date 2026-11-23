@@ -30,7 +30,7 @@ tar -xzf "$g" -C "$work/guest" Image initramfs.cpio data.img.tgz system.img.tgz 
 tar -xzf "$h" -C "$work/host" kiri-moby-host
 file "$work/host/kiri-moby-host" | grep -q arm64 || { echo "Host not arm64" >&2; exit 2; }
 codesign --verify --strict --verbose=2 "$work/host/kiri-moby-host"
-# Do not modify a mounted ext4 filesystem. Keep a versioned, private backup.
+# Do not modify a mounted Btrfs filesystem. Keep a versioned, private backup.
 backup="$dest/backup-$(date +%Y%m%d-%H%M%S)"
 if [ -e "$backup" ]; then echo "Backup already exists: $backup" >&2; exit 2; fi
 mkdir -m 700 "$backup"
