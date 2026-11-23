@@ -9,15 +9,22 @@ size="$(printenv KIRI_MOBY_DISK_GB || echo 48)"
 case "$size" in ''|*[!0-9]*) echo "KIRI_MOBY_DISK_GB must be an integer" >&2; exit 2 ;; esac
 [ "$size" -ge 8 ] && [ "$size" -le 256 ] || { echo "disk size must be 8-256 GiB" >&2; exit 2; }
 [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = aarch64 ] || { echo "Requires Linux ARM64 native host" >&2; exit 2; }
-for p in docker cpio mkfs.ext4 debugfs tar gzip cargo sudo; do
+for p in docker cpio mkfs.ext4 mkfs.btrfs btrfs debugfs tar gzip cargo sudo; do
   command -v "$p" >/dev/null || { echo "missing $p" >&2; exit 2; }
 done
 
 mkdir -p "$out"
 work="$(mktemp -d)"
-tag="kiri-moby-guest:temp-$$"
+tag="kiri-moby-guest:temp-$"
 cid=""
+data_mnt=""
 cleanup() {
+  if [ -n "$data_mnt" ]; then
+    if ! sudo umount "$data_mnt"; then
+      echo "Refusing to delete a mounted temporary Btrfs directory: $data_mnt" >&2
+      return
+    fi
+  fi
   [ -z "$cid" ] || docker rm -f "$cid" >/dev/null 2>&1 || true
   docker image rm "$tag" >/dev/null 2>&1 || true
   sudo rm -rf "$work"
@@ -98,7 +105,6 @@ sudo mkfs.btrfs -q -L kiri-moby "$disk"
 data_mnt="$work/data-mnt"
 sudo mkdir -p "$data_mnt"
 sudo mount -o loop "$disk" "$data_mnt"
-trap 'sudo umount "$data_mnt" 2>/dev/null || true' EXIT
 # Seed the docker subvolume with the OS tree (same content as before), then
 # create the machines/k8s layout for later use.
 sudo btrfs subvolume create "$data_mnt/docker"
@@ -106,7 +112,7 @@ sudo cp -a "$work/root/." "$data_mnt/docker/"
 sudo btrfs subvolume create "$data_mnt/machines"
 sudo btrfs subvolume create "$data_mnt/k8s"
 sudo umount "$data_mnt"
-trap - EXIT
+data_mnt=""
 
 # Check the ext4 seed stamp while offline (debugfs is ext4-only). The btrfs
 # data disk carries the same revision file inside the docker subvolume; the
@@ -125,4 +131,4 @@ rm -f "$disk" "$seed"
 (cd "$out" && sha256sum initramfs.cpio data.img.tgz system.img.tgz rootfs.revision > SHA256SUMS)
 echo "Tiny initramfs: $out/initramfs.cpio ($initrd_mib MiB)"
 echo "Read-only system upgrade image: $out/system.img.tgz ($system_mib MiB virtual)"
-echo "Prepopulated ext4 Docker data template: $out/data.img.tgz ($size GiB virtual)"
+echo "Prepopulated Btrfs Docker data template: $out/data.img.tgz ($size GiB virtual)"
