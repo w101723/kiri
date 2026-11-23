@@ -1204,6 +1204,7 @@ private struct RootView: View {
                 Button("新建环境") {
                     showingMachineSheet = true
                 }.buttonStyle(.borderedProminent)
+                 .disabled(model.kubernetesState == "unavailable")
             }.padding(.horizontal, 20).frame(height: 47)
             ScrollView([.horizontal, .vertical]) {
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -1262,15 +1263,21 @@ private struct RootView: View {
                         tableDivider
                     }
                     if model.machines.isEmpty {
-                        Text("暂无 Linux 环境").foregroundStyle(KiriPalette.muted(model.isLight))
+                        Text(model.kubernetesState == "unavailable"
+                             ? "当前 Guest 或旧 ext4 数据盘不支持 Linux 环境，Docker 数据保持不变。"
+                             : "暂无 Linux 环境")
+                            .foregroundStyle(KiriPalette.muted(model.isLight))
                             .frame(maxWidth: .infinity, minHeight: 130)
                     }
                 }.frame(minWidth: 660)
             }
             Divider()
-            kubernetesCard
-                .padding(.horizontal, 20)
-                .padding(.vertical, 16)
+            if model.kubernetesState == "running" ||
+                ProcessInfo.processInfo.environment["KIRI_MOBY_EXPERIMENTAL_K8S"] == "1" {
+                kubernetesCard
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 16)
+            }
         }
     }
 
@@ -1309,7 +1316,7 @@ private struct RootView: View {
     private var kubernetesStateLabel: String {
         switch model.kubernetesState {
         case "running": return "运行中 · k3s · kubeconfig 在 /mnt/data/k8s"
-        case "disabled": return "未启用 · 首次启用将下载 k3s 单文件二进制"
+        case "disabled": return "实验功能 · 尚未提供 Mac 端 Kubernetes API 接入"
         case "unavailable": return "暂不可用 · 需要较新的 VM 数据盘布局"
         default: return model.kubernetesState
         }
