@@ -495,3 +495,54 @@ pub fn serve(stream: std::os::unix::net::UnixStream) {
     let _ = reader.get_mut().write_all(reply.as_bytes());
 
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_line_handles_escaped_shell_commands() {
+        let req = r#"{"op":"machine_exec","name":"dev","command":"printf '%s' \"hello world\""}"#;
+        let fields = parse_fields(req).expect("valid escaped JSON");
+        assert_eq!(fields["command"], "printf '%s' \"hello world\"");
+    }
+
+    #[test]
+    fn json_line_decodes_unicode_and_surrogates() {
+        let fields = parse_fields(r#"{"message":"\u4f60\u597d \ud83d\ude80"}"#).unwrap();
+        assert_eq!(fields["message"], "你好 🚀");
+    }
+
+    #[test]
+    fn json_line_rejects_ambiguous_input() {
+        for bad in [
+            r#"{"op":"ping",}"#,
+            r#"{"op":"ping","op":"machine_delete"}"#,
+            r#"{"op":"ping","command":"\z"}"#,
+            r#"{"op":"ping","command":"\ud83d"}"#,
+            r#"{"op":"ping"} invalid"#,
+            r#"["ping"]"#,
+        ] {
+            assert!(parse_fields(bad).is_err(), "invalid payload accepted: {bad}");
+        }
+    }
+
+    #[test]
+    fn rejected_requests_do_not_execute_commands() {
+        assert!(dispatch(r#"{"op":"machine_delete","name":"../bad"}"#)
+            .contains("invalid machine name"));
+        assert!(dispatch(r#"{"op":"ping"}"#).contains(r#""message":"pong""#));
+    }
+
+    #[test]
+    fn request_size_is_bounded() {
+        let (mut client, server) = std::os::unix::net::UnixStream::pair().unwrap();
+        let worker = std::thread::spawn(move || serve(server));
+        client.write_all(&vec![b'x'; MAX_REQUEST_BYTES as usize + 128]).unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut output = String::new();
+        client.read_to_string(&mut output).unwrap();
+        worker.join().unwrap();
+        assert!(output.contains("request too large"));
+    }
+}
