@@ -342,7 +342,7 @@ fn ensure_k3s() -> Result<(), String> {
 
 pub fn k8s_enable() -> Result<String, String> {
     if !data_layout_ready() {
-        return Err("Kubernetes requires the new Btrfs data disk; legacy ext4 data is preserved".into());
+        return Err("Kubernetes requires a mounted Btrfs data disk".into());
     }
     if k8s_status() == "running" {
         return Ok("kubernetes already running".into());
