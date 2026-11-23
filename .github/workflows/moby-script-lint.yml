@@ -52,5 +52,16 @@ jobs:
           fi
           sh -n scripts/moby/guest/stage1-init
           sh -n scripts/moby/guest/init
+          # Persistent data disks must use Btrfs exclusively. Only the
+          # read-only OS seed remains ext4; no silent disk migration.
+          grep -Fq 'mount -t btrfs' scripts/moby/guest/stage1-init
+          grep -Fq -- '/init --btrfs-root' scripts/moby/guest/stage1-init
+          grep -Fq -- '[ "$1" = --btrfs-root ]' scripts/moby/guest/init
+          grep -Fq 'filesystemMagic == Data("_BHRfS_M".utf8)' crates/kiri/native/KiriMobyHost.swift
+          if grep -Eq -- 'mount -t ext4.*data_dev|--ext4-root|legacy ext4 layout' \
+              scripts/moby/guest/stage1-init scripts/moby/guest/init; then
+            echo "Persistent ext4 compatibility is prohibited" >&2
+            exit 1
+          fi
           sh -n scripts/moby/guest/udhcpc-script
           sh -n scripts/moby/guest/rosetta.sh
