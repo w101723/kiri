@@ -21,6 +21,13 @@ fn main() -> std::io::Result<()> {
     use std::time::Duration;
 
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--non-docker-workloads") {
+        let machines_active = kiri_moby_bridge::machines::machine_list()
+            .iter().any(|(_, running, _)| *running);
+        let k8s_active = kiri_moby_bridge::machines::k8s_status() == "running";
+        println!("{}", if machines_active || k8s_active { "active" } else { "idle" });
+        return Ok(());
+    }
     if args.get(1).map(String::as_str) == Some("--version") {
         println!(
             "kiri-moby-guest {} ({})",
