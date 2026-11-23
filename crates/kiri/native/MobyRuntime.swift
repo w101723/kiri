@@ -236,6 +236,16 @@ private func integer(_ value: Any?) -> Int64? {
     (value as? NSNumber)?.int64Value
 }
 private func dict(_ value: Any?) -> [String: Any] { value as? [String: Any] ?? [:] }
+/// Machine base images (`kiri-machine/<distro>:<tag>`) are an implementation
+/// detail of the Machines controller. Docker keeps them locally, but they
+/// must not appear as user-pulled images in the UI.
+private func visibleImages(_ value: Any) -> Any {
+    guard let images = value as? [[String: Any]] else { return value }
+    return images.filter { image in
+        let tags = image["RepoTags"] as? [String] ?? []
+        return !tags.contains { $0.hasPrefix("kiri-machine/") }
+    }
+}
 private func get(_ value: Any?, _ keys: String...) -> Any? {
     keys.reduce(value) { current, key in (current as? [String: Any])?[key] }
 }
@@ -711,7 +721,7 @@ enum MobyRuntime {
             kubernetes = (try? MachinesChannel.call(["op": "k8s_status"])) ?? "unavailable"
         }
         return ["online": true, "containers": try dockerJSON("/containers/json?all=1"),
-                "images": try dockerJSON("/images/json"),
+                "images": visibleImages(try dockerJSON("/images/json")),
                 "volumes": dict(volumes)["Volumes"] ?? [],
                 "networks": try dockerJSON("/networks"),
                 "info": try dockerJSON("/info"), "version": try dockerJSON("/version"),
