@@ -1264,7 +1264,7 @@ private struct RootView: View {
                     }
                     if model.machines.isEmpty {
                         Text(model.kubernetesState == "unavailable"
-                             ? "当前 Guest 或旧 ext4 数据盘不支持 Linux 环境，Docker 数据保持不变。"
+                             ? "需要使用 Btrfs 数据盘及支持 Machines 的 Guest。现有磁盘不会被自动修改。"
                              : "暂无 Linux 环境")
                             .foregroundStyle(KiriPalette.muted(model.isLight))
                             .frame(maxWidth: .infinity, minHeight: 130)
@@ -1520,7 +1520,7 @@ private struct RootView: View {
             VStack(spacing: 14) {
                 panelCard {
                     Text("Kiri Moby VM").font(.system(size:14,weight:.semibold))
-                    Text("使用独立标准 Docker Engine、ext4 数据盘和私有 Docker Socket。不会覆盖 OrbStack。")
+                    Text("使用独立标准 Docker Engine、Btrfs 数据盘和私有 Docker Socket。不会覆盖 OrbStack。")
                         .foregroundStyle(KiriPalette.muted(model.isLight))
                     HStack(spacing:8) {
                         Button("启动 VM") {
