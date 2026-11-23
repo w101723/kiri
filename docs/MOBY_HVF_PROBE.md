@@ -16,10 +16,12 @@ forced stop, not a confirmed disk sync. Files and Docker context from the older
 VZ app are not used. The local build defaults to `~/.kiri-moby-hvf`; use an
 explicit, dedicated `KIRI_MOBY_DATA_DIR` for tests. Newly created
 `vm/data.img` disks are Btrfs (with `docker`, `machines`, and `k8s`
-subvolumes); `vm/system.img` remains a read-only ext4 seed. An existing
-ext4 data disk continues to boot without being reformatted. Linux Machines
-are unavailable on that legacy layout until an explicit migration is
-implemented; do not delete the old disk to enable them.
+subvolumes); `vm/system.img` remains a read-only ext4 OS seed.
+Only Btrfs is supported for the persistent `vm/data.img`. Existing ext4
+data images are rejected **before VM launch**, with no implicit migration,
+reformat, replacement or deletion. Use an entirely separate
+`KIRI_MOBY_DATA_DIR` for a fresh Btrfs installation; retain any previous
+data image separately if needed.
 
 ## Build the local app
 
@@ -243,5 +245,5 @@ Kubernetes API endpoint. Do not advertise the cluster as fully
 Mac-accessible until that path is implemented and tested.
 
 The idle Docker cache eviction worker now checks for running Machines
-and k3s before dropping the Guest's global clean file cache. No
-implicit ext4-to-Btrfs migration or destructive reset is performed.
+and k3s before dropping the Guest's global clean file cache. No ext4 data-disk compatibility, implicit migration, or destructive reset
+is performed. The ext4 OS seed is intentionally still read-only.
