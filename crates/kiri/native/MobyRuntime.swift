@@ -220,9 +220,8 @@ enum MachinesChannel {
     }
 
     static func available() -> Bool {
-        guard let fd = try? DockerUnixHTTP.connect(MobyPaths.machines.path, timeout: 2) else { return false }
-        Darwin.close(fd)
-        return true
+        // A local listener alone does not prove that the Guest controller exists.
+        (try? call(["op": "ping"], timeout: 2)) == "pong"
     }
 }
 
@@ -696,10 +695,11 @@ enum MobyRuntime {
         var kubernetes = "unavailable"
         if MachinesChannel.available() {
             let listing = try? MachinesChannel.call(["op": "machine_list"])
-            machines = (listing ?? "").split(separator: ", ").map { pair -> [String: Any] in
+            machines = (listing ?? "").components(separatedBy: ", ").map { pair -> [String: Any] in
                 let parts = pair.split(separator: ":")
                 return ["name": String(parts.first ?? ""),
-                        "state": parts.count > 1 ? String(parts[1]) : "stopped"]
+                        "state": parts.count > 1 ? String(parts[1]) : "stopped",
+                        "distro": parts.count > 2 ? String(parts[2]) : "linux"]
             }.filter { ($0["name"] as? String)?.isEmpty == false }
             kubernetes = (try? MachinesChannel.call(["op": "k8s_status"])) ?? "unavailable"
         }
