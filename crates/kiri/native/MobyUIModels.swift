@@ -18,12 +18,12 @@ enum Page: String, CaseIterable, Hashable, Identifiable {
     var id: String { rawValue }
     var displayName: String {
         switch self {
-        case .overview: "虚拟机"
+        case .overview: "Docker 引擎"
         case .containers: "容器"
         case .images: "镜像"
         case .volumes: "存储卷"
         case .networks: "网络"
-        case .machines: "虚拟机"
+        case .machines: "Linux 环境"
         case .activity: "活动监视"
         case .compose: "Compose"
         case .builds: "构建"
@@ -182,6 +182,7 @@ struct Snapshot: Decodable {
 struct MachineItem: Decodable, Identifiable, Hashable {
     let name: String
     let state: String
+    let distro: String?
     var id: String { name }
     var isRunning: Bool { state == "running" }
 }
