@@ -1,23 +1,18 @@
 #!/bin/sh
-# Persistent ext4 stage-2 PID1: dockerd never runs from initramfs.
+# Persistent Btrfs stage-2 PID1: dockerd never runs from initramfs.
 set -eu
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 umask 022
 log() { echo "[kiri-moby-init] $*" >&2; }
 die() { log "FATAL: $*"; exec /bin/sh; }
-[ "$#" -eq 1 ] && [ "$1" = --ext4-root ] ||
-    die "refusing to run Docker Engine outside real ext4 root"
+[ "$#" -eq 1 ] && [ "$1" = --btrfs-root ] ||
+    die "refusing to run Docker Engine outside the Btrfs Docker subvolume"
 
 # STAGE 2: PID 1 after switch_root. Verify the root mount.
 root_mount="$(awk '$5 == "/" { print; exit }' /proc/self/mountinfo)"
 case "$root_mount" in
-    *" - ext4 "*)
-        log "Stage 2: ext4 root verified (runc pivot_root compatible)" ;;
-    *" - btrfs "*)
-        # Btrfs data disk: the docker subvolume is the running root. Same
-        # pivot_root compatibility as ext4 (a real mountable filesystem).
-        log "Stage 2: btrfs docker subvolume verified as root" ;;
-    *) die "Stage 2 root is neither ext4 nor btrfs: $root_mount" ;;
+    *" - btrfs "*) log "Stage 2: Btrfs Docker subvolume verified as root" ;;
+    *) die "Stage 2 requires a Btrfs Docker root: $root_mount" ;;
 esac
 log "Guest build: $(/usr/local/sbin/kiri-moby-guest --version 2>&1)"
 mkdir -p /dev/pts /dev/shm /sys/fs/cgroup /run /tmp /var/lib /mnt/mac /Users /Volumes
@@ -26,20 +21,16 @@ mount -t tmpfs tmpfs /dev/shm || die "mount /dev/shm"
 mount -t tmpfs tmpfs /run || die "mount /run"
 mount -t tmpfs tmpfs /tmp || die "mount /tmp"
 mount -t cgroup2 cgroup2 /sys/fs/cgroup || die "mount cgroup v2"
-# Data disk: stage 1 already mounted the btrfs (label kiri-moby) and bind-
-# mounted it at /mnt/data, with the docker subvolume as the running root.
-# Verify the layout; legacy ext4 boots simply have no /mnt/data mount.
-if mount | grep -q " on /mnt/data "; then
-    for sub in docker machines k8s; do
-        [ -d "/mnt/data/$sub" ] || die "btrfs data disk missing subvolume: $sub"
-    done
-    log "Data disk: btrfs with docker/machines/k8s subvolumes"
-    mkdir -p /mnt/data/docker/var/lib/docker /mnt/data/docker/var/lib/containerd
-    mount --bind /mnt/data/docker/var/lib/docker /var/lib/docker ||
-        die "docker state bind failed"
-else
-    log "Data disk: legacy ext4 layout (no btrfs subvolumes)"
-fi
+# Stage 1 mounted the top-level Btrfs filesystem at /mnt/data, and the
+# docker subvolume as /. Both mounts are mandatory; no ext4 compatibility.
+mount | grep -q " on /mnt/data " || die "Btrfs top-level data mount missing"
+for sub in docker machines k8s; do
+    [ -d "/mnt/data/$sub" ] || die "Btrfs data disk missing subvolume: $sub"
+done
+log "Data disk: Btrfs with docker/machines/k8s subvolumes"
+mkdir -p /mnt/data/docker/var/lib/docker /mnt/data/docker/var/lib/containerd
+mount --bind /mnt/data/docker/var/lib/docker /var/lib/docker ||
+    die "Docker state bind failed"
 # Evict cold dentry/inode caches a little more readily while leaving the
 # useful Docker image/build page cache alone. Does not promise macOS RSS drop.
 printf '%s\n' 160 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null || true
@@ -180,7 +171,7 @@ bridge_pid=$!
 
 shutdown() {
     trap - TERM INT
-    log "Stopping dockerd/containerd and flushing ext4 data"
+    log "Stopping dockerd/containerd and flushing Btrfs data"
     [ -z "${idle_cache_worker_pid:-}" ] || kill -TERM "$idle_cache_worker_pid" 2>/dev/null || true
     kill -TERM "$dockerd_pid" "$containerd_pid" "$bridge_pid" 2>/dev/null || true
     n=0
@@ -190,11 +181,11 @@ shutdown() {
     done
     sync
     # The root filesystem cannot be unmounted while PID 1 is running.
-    mount -o remount,ro / 2>/dev/null || log "ext4 root still busy; journaling handles recovery"
+    mount -o remount,ro / 2>/dev/null || log "Btrfs root still busy; filesystem handles recovery"
     poweroff -f
 }
 trap shutdown TERM INT
-log "Moby services started on ext4 root"
+log "Moby services started on Btrfs root"
 # Optional A/B experiment: release only CLEAN Linux file cache after the
 # last container leaves. This is deliberately NOT the normal memory policy:
 # evicting cache on every poll harms Docker builds and may not reduce macOS
